@@ -7,6 +7,10 @@ Hover for reset times.
 
 Pure PowerShell + WinForms. Nothing to install beyond Claude Code itself.
 
+> **Unofficial.** This is a personal project. It is not made, endorsed or supported by
+> Anthropic. "Claude" is a trademark of Anthropic. Use it at your own risk and within
+> Anthropic's terms for your plan.
+
 ## Where the numbers come from
 
 The widget uses **no login and makes no network calls of its own**. It reads a small local
