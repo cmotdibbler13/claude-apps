@@ -76,7 +76,9 @@ function New-YtDlpArguments {
         [string]$Quality = 'best',
         [switch]$Playlist,
         [string]$BinFolder,
-        [string]$JsRuntime = 'deno'
+        [string]$JsRuntime = 'deno',
+        [switch]$SkipSponsors,
+        [switch]$SkipPromos
     )
     $a = New-Object System.Collections.Generic.List[string]
     $a.AddRange([string[]]@(
@@ -109,6 +111,13 @@ function New-YtDlpArguments {
         $res = if ($Quality -eq 'best') { 'res' } else { "res:$Quality" }
         $a.AddRange([string[]]@('-S', "$res,vcodec:h264,acodec:m4a", '--merge-output-format', 'mp4'))
     }
+    if ($SkipSponsors -or $SkipPromos) {
+        # SponsorBlock: viewers mark these sections; yt-dlp looks them up and FFmpeg cuts them out.
+        $cats = @()
+        if ($SkipSponsors) { $cats += 'sponsor' }
+        if ($SkipPromos) { $cats += 'selfpromo', 'interaction' }
+        $a.AddRange([string[]]@('--sponsorblock-remove', ($cats -join ',')))
+    }
     $a.Add('--')
     $a.Add($Url.Trim())
     , $a.ToArray()
@@ -139,7 +148,7 @@ function ConvertTo-CommandLine([string[]]$Arguments) {
 function ConvertFrom-ToolLine([string]$Line) {
     # Turns one line of yt-dlp (or Setup-Tools.ps1) output into something the window can show.
     $t = if ($null -eq $Line) { '' } else { $Line.TrimEnd() }
-    $o = [ordered]@{ Kind = 'Info'; Text = $t; Percent = $null; Speed = ''; Eta = ''; Path = ''; Item = 0; Of = 0 }
+    $o = [ordered]@{ Kind = 'Info'; Text = $t; Percent = $null; Speed = ''; Eta = ''; Path = ''; Item = 0; Of = 0; Segments = -1 }
     if ($t -match '^DL\|\s*([\d.]+)%\|([^|]*)\|(.*)$') {
         $o.Kind = 'Progress'
         $o.Percent = [double]::Parse($Matches[1], [Globalization.CultureInfo]::InvariantCulture)
@@ -156,6 +165,12 @@ function ConvertFrom-ToolLine([string]$Line) {
         $o.Kind = 'Warning'; $o.Text = $Matches[1]
     } elseif ($t -match '^\[download\] Downloading (?:item|video) (\d+) of (\d+)') {
         $o.Kind = 'Item'; $o.Item = [int]$Matches[1]; $o.Of = [int]$Matches[2]
+    } elseif ($t -match '^\[SponsorBlock\] Found (\d+) segments?') {
+        $o.Kind = 'Sponsor'; $o.Segments = [int]$Matches[1]
+    } elseif ($t -match '^\[SponsorBlock\] No matching segments') {
+        $o.Kind = 'Sponsor'; $o.Segments = 0
+    } elseif ($t -match '^\[ModifyChapters\] Removing chapters') {
+        $o.Kind = 'Cutting'
     } elseif ($t -match '^\[(Merger|ExtractAudio|VideoConvertor|FixupM3u8|FixupM4a)\]') {
         $o.Kind = 'Processing'
     } elseif ($t -match '^\[download\] .+ has already been downloaded') {
@@ -241,12 +256,16 @@ function Read-YtdSettings([string]$Path = (Join-Path (Get-YtdDataFolder) 'settin
     $defaults = [pscustomobject]@{
         Folder  = [IO.Path]::Combine($videos, 'YouTube')
         Quality = 'Best available (MP4)'
+        SkipSponsors = $true
+        SkipPromos = $false
     }
     if (-not (Test-Path $Path)) { return $defaults }
     try {
         $s = Get-Content -Raw -Path $Path | ConvertFrom-Json
         if ($s.Folder) { $defaults.Folder = [string]$s.Folder }
         if ($s.Quality -and (Get-QualityNames) -contains $s.Quality) { $defaults.Quality = [string]$s.Quality }
+        if ($null -ne $s.SkipSponsors) { $defaults.SkipSponsors = [bool]$s.SkipSponsors }
+        if ($null -ne $s.SkipPromos) { $defaults.SkipPromos = [bool]$s.SkipPromos }
     } catch { }
     $defaults
 }

@@ -12,74 +12,138 @@ Import-Module (Join-Path $here 'YouTubeDownloader.Core.psm1') -Force
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+Add-Type -TypeDefinition (Get-Content -Raw (Join-Path $here 'Theme.cs')) -ReferencedAssemblies System.Windows.Forms, System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
 
 $bin = Get-YtdBinFolder
 $settings = Read-YtdSettings
 $psExe = (Get-Process -Id $PID).Path
+$P = [SixMinutesOn.Palette]
+$dot = [string][char]0x00B7
 
-# ---------- window ----------
-$font = New-Object Drawing.Font('Segoe UI', 10)
+# ---------- window (Six Minutes On... design system, Night theme) ----------
 $form = New-Object Windows.Forms.Form
 $form.Text = 'YouTube Downloader'
-$form.Font = $font
-$form.ClientSize = New-Object Drawing.Size(640, 470)
-$form.MinimumSize = New-Object Drawing.Size(560, 460)
+$form.Font = $P::Regular(10)
+$form.BackColor = $P::Surface000
+$form.ForeColor = $P::Ink
+$form.ClientSize = New-Object Drawing.Size(680, 640)
+$form.MinimumSize = New-Object Drawing.Size(600, 620)
 $form.StartPosition = 'CenterScreen'
 $iconPath = Join-Path $here 'downloader.ico'
 if (Test-Path $iconPath) { $form.Icon = New-Object Drawing.Icon($iconPath) }
+$form.Add_HandleCreated({ [SixMinutesOn.Native]::DarkTitleBar($form) })
 
-function Add-Control($ctl, [int]$x, [int]$y, [int]$w, [int]$h, [string]$anchor = 'Top,Left') {
+function Add-Control($ctl, [int]$x, [int]$y, [int]$w, [int]$h, [string]$anchor = 'Top,Left', $parent = $form) {
     $ctl.Location = New-Object Drawing.Point($x, $y)
     $ctl.Size = New-Object Drawing.Size($w, $h)
     $ctl.Anchor = $anchor
-    $form.Controls.Add($ctl)
+    $parent.Controls.Add($ctl)
     $ctl
 }
-function New-Label([string]$text) { $l = New-Object Windows.Forms.Label; $l.Text = $text; $l.TextAlign = 'MiddleLeft'; $l }
-function New-Button([string]$text) { $b = New-Object Windows.Forms.Button; $b.Text = $text; $b }
+function New-Eyebrow([string]$text) {
+    # small uppercase brass label, widely tracked
+    $l = New-Object Windows.Forms.Label
+    $l.Text = $P::Track($text); $l.AccessibleName = $text
+    $l.Font = $P::Medium(8.25); $l.ForeColor = $P::Brass; $l.BackColor = [Drawing.Color]::Transparent
+    $l.TextAlign = 'BottomLeft'
+    $l
+}
+function New-Button([string]$text, [switch]$Primary) {
+    $b = New-Object SixMinutesOn.FlatButton
+    $b.Text = $text; $b.Primary = [bool]$Primary; $b.Font = $P::Medium(8.75)
+    $b
+}
+function New-Field([switch]$ReadOnly) {
+    $f = New-Object SixMinutesOn.Field
+    $f.Font = $P::Regular(10)
+    $f.Box.ReadOnly = [bool]$ReadOnly
+    $f.Box.BackColor = $P::Surface200          # stays navy when read-only
+    $f
+}
+function New-Check([string]$text) {
+    $c = New-Object SixMinutesOn.Check
+    $c.Text = $text; $c.Font = $P::Regular(9.75)
+    $c
+}
 
-[void](Add-Control (New-Label 'Video link') 16 16 90 26)
-$urlBox = Add-Control (New-Object Windows.Forms.TextBox) 110 16 420 26 'Top,Left,Right'
-$pasteBtn = Add-Control (New-Button 'Paste') 540 15 84 28 'Top,Right'
+# header band: eyebrow and title, a hairline rule beneath
+$header = Add-Control (New-Object Windows.Forms.Panel) 0 0 680 92 'Top,Left,Right'
+$header.BackColor = $P::Surface100
+[void](Add-Control (New-Eyebrow 'Offline viewing') 24 18 400 20 'Top,Left' $header)
+$title = Add-Control (New-Object Windows.Forms.Label) 21 38 600 40 'Top,Left' $header
+$title.Text = 'YouTube Downloader'; $title.Font = $P::Light(20); $title.ForeColor = $P::Ink
+$rule = Add-Control (New-Object Windows.Forms.Panel) 0 92 680 1 'Top,Left,Right'
+$rule.BackColor = $P::Rule
 
-[void](Add-Control (New-Label 'Quality') 16 56 90 26)
-$qualityBox = Add-Control (New-Object Windows.Forms.ComboBox) 110 56 200 26
-$qualityBox.DropDownStyle = 'DropDownList'
-foreach ($q in Get-QualityNames) { [void]$qualityBox.Items.Add($q) }
+[void](Add-Control (New-Eyebrow 'Video link') 24 112 300 20)
+$urlField = Add-Control (New-Field) 24 136 520 36 'Top,Left,Right'
+$urlBox = $urlField.Box
+$pasteBtn = Add-Control (New-Button 'Paste') 556 136 100 36 'Top,Right'
+
+[void](Add-Control (New-Eyebrow 'Quality') 24 188 200 20)
+$qualityBox = Add-Control (New-Object SixMinutesOn.Picker) 24 212 210 36
+$qualityBox.Font = $P::Regular(10)
+foreach ($q in Get-QualityNames) { $qualityBox.Items.Add($q) }
 $qualityBox.SelectedItem = $settings.Quality
-$playlistBox = Add-Control (New-Object Windows.Forms.CheckBox) 330 56 280 26
-$playlistBox.Text = 'Whole playlist (if the link has one)'
+$qualityBox.AccessibleName = 'Quality'
 
-[void](Add-Control (New-Label 'Save to') 16 96 90 26)
-$folderBox = Add-Control (New-Object Windows.Forms.TextBox) 110 96 420 26 'Top,Left,Right'
-$folderBox.ReadOnly = $true
+[void](Add-Control (New-Eyebrow 'Save to') 250 188 200 20)
+$folderField = Add-Control (New-Field -ReadOnly) 250 212 294 36 'Top,Left,Right'
+$folderBox = $folderField.Box
 $folderBox.Text = $settings.Folder
-$browseBtn = Add-Control (New-Button 'Change...') 540 95 84 28 'Top,Right'
+$browseBtn = Add-Control (New-Button 'Change') 556 212 100 36 'Top,Right'
 
-$downloadBtn = Add-Control (New-Button 'Download') 110 140 140 36
-$downloadBtn.Font = New-Object Drawing.Font('Segoe UI', 10, [Drawing.FontStyle]::Bold)
-$cancelBtn = Add-Control (New-Button 'Cancel') 260 140 100 36
+[void](Add-Control (New-Eyebrow 'Options') 24 264 200 20)
+$playlistBox = Add-Control (New-Check 'Whole playlist (if the link has one)') 24 288 620 28
+$sponsorBox = Add-Control (New-Check 'Cut out sponsor sections (SponsorBlock)') 24 318 620 28
+$sponsorBox.Checked = $settings.SkipSponsors
+$promoBox = Add-Control (New-Check 'Also cut self-promotion and "like and subscribe" reminders') 44 348 600 28
+$promoBox.Checked = $settings.SkipPromos
+$promoBox.Enabled = $sponsorBox.Checked
+
+$downloadBtn = Add-Control (New-Button 'Download' -Primary) 24 396 170 42
+$cancelBtn = Add-Control (New-Button 'Cancel') 206 396 120 42
 $cancelBtn.Enabled = $false
-$updateBtn = Add-Control (New-Button 'Update tools') 504 140 120 36 'Top,Right'
+$updateBtn = Add-Control (New-Button 'Update tools') 506 396 150 42 'Top,Right'
 
-$bar = Add-Control (New-Object Windows.Forms.ProgressBar) 16 190 608 22 'Top,Left,Right'
-$bar.Maximum = 1000
-$status = Add-Control (New-Label 'Paste a YouTube link and press Download.') 16 216 608 26 'Top,Left,Right'
+$bar = Add-Control (New-Object SixMinutesOn.SlimBar) 24 458 632 4 'Top,Left,Right'
+$status = Add-Control (New-Object Windows.Forms.Label) 24 470 632 26 'Top,Left,Right'
+$status.Text = 'Paste a YouTube link and press Download.'
+$status.ForeColor = $P::InkMuted; $status.TextAlign = 'MiddleLeft'; $status.AutoEllipsis = $true
 
-$log = Add-Control (New-Object Windows.Forms.TextBox) 16 248 608 168 'Top,Bottom,Left,Right'
-$log.Multiline = $true; $log.ReadOnly = $true; $log.ScrollBars = 'Vertical'
-$log.Font = New-Object Drawing.Font('Consolas', 9)
-$log.BackColor = [Drawing.SystemColors]::Window
+# log: a surface-100 plate with a hairline border
+$logFrame = Add-Control (New-Object Windows.Forms.Panel) 24 504 632 78 'Top,Bottom,Left,Right'
+$logFrame.BackColor = $P::Rule
+$logFrame.Padding = New-Object Windows.Forms.Padding(1)
+$logInner = New-Object Windows.Forms.Panel
+$logInner.Dock = 'Fill'; $logInner.BackColor = $P::Surface100
+$logInner.Padding = New-Object Windows.Forms.Padding(10, 8, 4, 8)
+$logFrame.Controls.Add($logInner)
+$log = New-Object Windows.Forms.TextBox
+$log.Dock = 'Fill'; $log.Multiline = $true; $log.ReadOnly = $true; $log.ScrollBars = 'Vertical'
+$log.BorderStyle = 'None'; $log.BackColor = $P::Surface100; $log.ForeColor = $P::InkMuted
+$log.Font = $P::Mono(9); $log.TabStop = $false
+$logInner.Controls.Add($log)
+$log.Add_HandleCreated({ [SixMinutesOn.Native]::DarkScrollBars($log) })
 
-$playBtn = Add-Control (New-Button 'Play last download') 16 426 170 32 'Bottom,Left'
+$playBtn = Add-Control (New-Button 'Play last download') 24 594 200 34 'Bottom,Left'
 $playBtn.Enabled = $false
-$openBtn = Add-Control (New-Button 'Open folder') 196 426 120 32 'Bottom,Left'
+$openBtn = Add-Control (New-Button 'Open folder') 236 594 140 34 'Bottom,Left'
 
 $form.AcceptButton = $downloadBtn
 $tip = New-Object Windows.Forms.ToolTip
 $tip.SetToolTip($updateBtn, 'Fetch the newest yt-dlp, FFmpeg and Deno. Try this if downloads stop working.')
 $tip.SetToolTip($playlistBox, 'Off: only the one video in the link. On: every video in its playlist.')
+$tip.SetToolTip($sponsorBox, 'Uses SponsorBlock, where viewers mark the paid sponsor sections of videos. Those parts are cut out of the saved file.')
+$tip.SetToolTip($promoBox, 'Also cuts the creator''s own merch plugs and "like and subscribe" reminders, as marked on SponsorBlock.')
+
+function Show-Notice([string]$heading, [string]$text) { [SixMinutesOn.Notice]::Show($form, $heading, $text) }
+function Save-CurrentSettings {
+    Save-YtdSettings ([pscustomobject]@{
+        Folder = $folderBox.Text; Quality = [string]$qualityBox.SelectedItem
+        SkipSponsors = $sponsorBox.Checked; SkipPromos = $promoBox.Checked })
+}
 
 # ---------- state ----------
 $state = @{
@@ -87,7 +151,7 @@ $state = @{
     Run = $null; Job = $null
     Files = New-Object System.Collections.Generic.List[string]
     LastFile = $null; Errors = New-Object System.Collections.Generic.List[string]
-    LastPct = 0.0; Part = 1; Item = ''; Cancelled = $false
+    LastPct = 0.0; Part = 1; Item = ''; Cancelled = $false; Cut = 0
 }
 
 function Add-LogLine([string]$text) {
@@ -101,6 +165,8 @@ function Set-Busy([bool]$busy) {
     $urlBox.ReadOnly = $busy
     $qualityBox.Enabled = -not $busy
     $playlistBox.Enabled = -not $busy
+    $sponsorBox.Enabled = -not $busy
+    $promoBox.Enabled = (-not $busy) -and $sponsorBox.Checked
     $cancelBtn.Enabled = $busy
 }
 
@@ -109,7 +175,7 @@ function Start-NextJob {
     $job = $state.Jobs.Dequeue()
     $state.Job = $job
     $state.LastPct = 0.0; $state.Part = 1
-    $bar.Style = 'Continuous'; $bar.Value = 0
+    $bar.Busy = $false; $bar.Value = 0
     $status.Text = $job.Title
     Add-LogLine "--- $($job.Title)"
     try {
@@ -125,8 +191,8 @@ function Show-Line([string]$line) {
     $l = ConvertFrom-ToolLine $line
     switch ($l.Kind) {
         'Progress' {
-            if ($null -eq $l.Percent) { $bar.Style = 'Marquee'; $status.Text = "$($state.Item)Downloading..."; return }
-            $bar.Style = 'Continuous'
+            if ($null -eq $l.Percent) { $bar.Busy = $true; $status.Text = "$($state.Item)Downloading..."; return }
+            $bar.Busy = $false
             if ($l.Percent + 50 -lt $state.LastPct) { $state.Part++ }     # next part (sound after picture)
             $state.LastPct = $l.Percent
             $bar.Value = [int][math]::Min(1000, [math]::Max(0, $l.Percent * 10))
@@ -134,10 +200,16 @@ function Show-Line([string]$line) {
             $bits = @("$($state.Item)$what $([math]::Floor($l.Percent))%")
             if ($l.Speed) { $bits += $l.Speed }
             if ($l.Eta) { $bits += "$($l.Eta) left" }
-            $status.Text = $bits -join '  -  '
+            $status.Text = $bits -join "  $dot  "
         }
         'Item'       { $state.Item = "Video $($l.Item) of $($l.Of): "; $state.Part = 1; $state.LastPct = 0; Add-LogLine $l.Text }
-        'Processing' { $bar.Style = 'Marquee'; $status.Text = "$($state.Item)Putting the file together..."; Add-LogLine $l.Text }
+        'Processing' { $bar.Busy = $true; $status.Text = "$($state.Item)Putting the file together..."; Add-LogLine $l.Text }
+        'Sponsor'    {
+            if ($l.Segments -gt 0) { $state.Cut += $l.Segments }
+            if ($l.Segments -eq 0) { Add-LogLine 'SponsorBlock: no sponsor sections marked for this video.' }
+            else { Add-LogLine "SponsorBlock: $($l.Segments) section(s) to cut." }
+        }
+        'Cutting'    { $bar.Busy = $true; $status.Text = "$($state.Item)Cutting out sponsor sections..."; Add-LogLine $l.Text }
         'File'       { $state.Files.Add($l.Path); $state.LastFile = $l.Path; Add-LogLine "Saved: $($l.Path)" }
         'Already'    { Add-LogLine $l.Text }
         'Error'      { $state.Errors.Add($l.Text); Add-LogLine "ERROR: $($l.Text)" }
@@ -189,7 +261,7 @@ function Complete-All {
     $timer.Stop()
     $state.Run = $null
     $state.Jobs.Clear()
-    $bar.Style = 'Continuous'
+    $bar.Busy = $false
     Set-Busy $false
     $state.Item = ''
     $playBtn.Enabled = [bool]($state.LastFile -and (Test-Path -LiteralPath $state.LastFile))
@@ -200,12 +272,15 @@ function Complete-All {
         $msg = Get-FriendlyError $state.Errors[$state.Errors.Count - 1]
         if ($state.Files.Count -gt 0) { $msg = "Saved $($state.Files.Count) file(s), but some failed. $msg" }
         $status.Text = $msg
-        [void][Windows.Forms.MessageBox]::Show($form, $msg, 'YouTube Downloader', 'OK', 'Warning')
+        Show-Notice 'Download problem' $msg
     } elseif ($state.Job -and $state.Job.Kind -eq 'download') {
         $bar.Value = 1000
-        if ($state.Files.Count -gt 1) { $status.Text = "Done: saved $($state.Files.Count) files." }
-        elseif ($state.Files.Count -eq 1) { $status.Text = 'Done: ' + [IO.Path]::GetFileName($state.Files[0]) }
-        else { $status.Text = 'Done (it was already downloaded).' }
+        if ($state.Files.Count -gt 1) { $done = "Done: saved $($state.Files.Count) files" }
+        elseif ($state.Files.Count -eq 1) { $done = 'Done: ' + [IO.Path]::GetFileName($state.Files[0]) }
+        else { $done = 'Done (it was already downloaded)' }
+        if ($state.Cut -gt 0) { $done += "  $dot  $($state.Cut) sponsor section(s) cut" }
+        $status.Text = $done
+        $status.ForeColor = $P::Ink
     } else {
         $bar.Value = 1000; $status.Text = 'The tools are up to date.'
     }
@@ -213,7 +288,8 @@ function Complete-All {
 }
 
 function Start-Work([bool]$download, [bool]$forceUpdate) {
-    $state.Jobs.Clear(); $state.Files.Clear(); $state.Errors.Clear(); $state.Cancelled = $false; $state.Item = ''
+    $state.Jobs.Clear(); $state.Files.Clear(); $state.Errors.Clear(); $state.Cancelled = $false; $state.Item = ''; $state.Cut = 0
+    $status.ForeColor = $P::InkMuted
     if (-not (Test-Path -LiteralPath $bin)) { New-Item -ItemType Directory -Path $bin -Force | Out-Null }   # first run
     $setupArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $here 'Setup-Tools.ps1'), '-BinFolder', $bin)
     if ($forceUpdate) {
@@ -227,7 +303,8 @@ function Start-Work([bool]$download, [bool]$forceUpdate) {
     if ($download) {
         $folder = $folderBox.Text
         if (-not (Test-Path -LiteralPath $folder)) { New-Item -ItemType Directory -Path $folder -Force | Out-Null }
-        $dlArgs = New-YtDlpArguments -Url $urlBox.Text -Folder $folder -Quality (Get-QualityCode $qualityBox.SelectedItem) -Playlist:$playlistBox.Checked -BinFolder $bin
+        $dlArgs = New-YtDlpArguments -Url $urlBox.Text -Folder $folder -Quality (Get-QualityCode $qualityBox.SelectedItem) -Playlist:$playlistBox.Checked -BinFolder $bin `
+            -SkipSponsors:$sponsorBox.Checked -SkipPromos:($sponsorBox.Checked -and $promoBox.Checked)
         $state.Jobs.Enqueue(@{ Kind = 'download'; Title = 'Starting the download...'; Exe = (Join-Path $bin 'yt-dlp.exe'); Args = $dlArgs })
     }
     Set-Busy $true
@@ -238,12 +315,12 @@ function Start-Work([bool]$download, [bool]$forceUpdate) {
 $downloadBtn.Add_Click({
     $u = $urlBox.Text.Trim()
     if (-not (Test-VideoUrl $u)) {
-        [void][Windows.Forms.MessageBox]::Show($form, 'Paste a video link first, for example https://www.youtube.com/watch?v=...', 'YouTube Downloader', 'OK', 'Information')
+        Show-Notice 'Video link' 'Paste a video link first, for example https://www.youtube.com/watch?v=...'
         [void]$urlBox.Focus(); return
     }
     $urlBox.Text = $u
     try {
-        Save-YtdSettings ([pscustomobject]@{ Folder = $folderBox.Text; Quality = [string]$qualityBox.SelectedItem })
+        Save-CurrentSettings
         Start-Work $true $false
     } catch { Stop-WithError $_ }
 })
@@ -267,7 +344,7 @@ $browseBtn.Add_Click({
     if (Test-Path -LiteralPath $folderBox.Text) { $dlg.SelectedPath = $folderBox.Text }
     if ($dlg.ShowDialog($form) -eq 'OK') {
         $folderBox.Text = $dlg.SelectedPath
-        Save-YtdSettings ([pscustomobject]@{ Folder = $folderBox.Text; Quality = [string]$qualityBox.SelectedItem })
+        Save-CurrentSettings
     }
 })
 $openBtn.Add_Click({
@@ -282,6 +359,9 @@ $openBtn.Add_Click({
 $playBtn.Add_Click({
     if ($state.LastFile -and (Test-Path -LiteralPath $state.LastFile)) { Invoke-Item -LiteralPath $state.LastFile }
 })
+$sponsorBox.Add_CheckedChanged({ $promoBox.Enabled = $sponsorBox.Checked -and $sponsorBox.Enabled; Save-CurrentSettings })
+$promoBox.Add_CheckedChanged({ Save-CurrentSettings })
+$qualityBox.Add_SelectedChanged({ Save-CurrentSettings })
 $form.Add_FormClosing({
     if ($state.Run) { $state.Cancelled = $true; Stop-ToolProcess $state.Run }
 })

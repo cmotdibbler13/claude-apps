@@ -57,6 +57,17 @@ Describe 'New-YtDlpArguments' {
         $a[[array]::IndexOf($a, '--ffmpeg-location') + 1] | Should Be 'C:\Tools'
         $a[[array]::IndexOf($a, '--js-runtimes') + 1] | Should Be ('deno:' + [IO.Path]::Combine('C:\Tools', 'deno.exe'))
     }
+    It 'leaves SponsorBlock off unless asked' {
+        $a = New-YtDlpArguments -Url 'https://youtu.be/x' -Folder 'D:\V'
+        $a -contains '--sponsorblock-remove' | Should Be $false
+    }
+    It 'cuts sponsor sections, and optionally self-promotion and subscribe reminders' {
+        $a = New-YtDlpArguments -Url 'https://youtu.be/x' -Folder 'D:\V' -SkipSponsors
+        $a[[array]::IndexOf($a, '--sponsorblock-remove') + 1] | Should Be 'sponsor'
+        $a = New-YtDlpArguments -Url 'https://youtu.be/x' -Folder 'D:\V' -SkipSponsors -SkipPromos
+        $a[[array]::IndexOf($a, '--sponsorblock-remove') + 1] | Should Be 'sponsor,selfpromo,interaction'
+        [array]::IndexOf($a, '--sponsorblock-remove') -lt [array]::IndexOf($a, '--') | Should Be $true
+    }
     It 'stops a link from being read as an option' {
         $a = New-YtDlpArguments -Url '--exec=calc' -Folder 'D:\V'
         $a[$a.Count - 2] | Should Be '--'
@@ -110,7 +121,20 @@ Describe 'ConvertFrom-ToolLine' {
         (ConvertFrom-ToolLine '[ExtractAudio] Destination: x.mp3').Kind | Should Be 'Processing'
         (ConvertFrom-ToolLine '[download] C:\x.mp4 has already been downloaded').Kind | Should Be 'Already'
         (ConvertFrom-ToolLine '[youtube] Extracting URL').Kind | Should Be 'Info'
+        (ConvertFrom-ToolLine '[ModifyChapters] Removing chapters from x.mp4').Kind | Should Be 'Cutting'
         (ConvertFrom-ToolLine $null).Text | Should Be ''
+    }
+}
+
+Describe 'SponsorBlock lines' {
+    It 'reads how many sections SponsorBlock found' {
+        $l = ConvertFrom-ToolLine '[SponsorBlock] Found 3 segments in the SponsorBlock database'
+        $l.Kind | Should Be 'Sponsor'; $l.Segments | Should Be 3
+        $l = ConvertFrom-ToolLine '[SponsorBlock] Found 1 segments in the SponsorBlock database'
+        $l.Segments | Should Be 1
+        $l = ConvertFrom-ToolLine '[SponsorBlock] No matching segments were found in the SponsorBlock database'
+        $l.Kind | Should Be 'Sponsor'; $l.Segments | Should Be 0
+        (ConvertFrom-ToolLine '[SponsorBlock] Fetching SponsorBlock segments').Kind | Should Be 'Info'
     }
 }
 
@@ -153,11 +177,24 @@ Describe 'Settings' {
         $s.Quality | Should Be 'Best available (MP4)'
         $s.Folder | Should Match 'YouTube$'
     }
-    It 'saves and reads back the folder and quality' {
-        Save-YtdSettings ([pscustomobject]@{ Folder = 'E:\Clips'; Quality = '720p (MP4)' }) $file
+    It 'skips sponsors by default, but not self-promotion' {
+        $s = Read-YtdSettings $file
+        $s.SkipSponsors | Should Be $true
+        $s.SkipPromos | Should Be $false
+    }
+    It 'saves and reads back every setting' {
+        Save-YtdSettings ([pscustomobject]@{ Folder = 'E:\Clips'; Quality = '720p (MP4)'; SkipSponsors = $false; SkipPromos = $true }) $file
         $s = Read-YtdSettings $file
         $s.Folder | Should Be 'E:\Clips'
         $s.Quality | Should Be '720p (MP4)'
+        $s.SkipSponsors | Should Be $false
+        $s.SkipPromos | Should Be $true
+    }
+    It 'reads a settings file saved before SponsorBlock was added' {
+        '{"Folder":"E:\\Old","Quality":"480p (MP4)"}' | Set-Content $file
+        $s = Read-YtdSettings $file
+        $s.Folder | Should Be 'E:\Old'
+        $s.SkipSponsors | Should Be $true
     }
     It 'ignores a broken settings file' {
         'not json{' | Set-Content $file

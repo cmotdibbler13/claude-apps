@@ -21,34 +21,37 @@ if ($Remove) {
 }
 
 function New-DownloaderIcon([string]$Path) {
-    # A red rounded square with a white down arrow, at several sizes, written as one .ico file.
+    # Six Minutes On... colours: a square surface-100 tile with a rule hairline, a down arrow in
+    # ink drawn with rounded strokes like the logo, and the tray beneath it in brass.
     Add-Type -AssemblyName System.Drawing
     $sizes = 16, 24, 32, 48, 256
     $images = New-Object System.Collections.ArrayList
+    $navy = [System.Drawing.ColorTranslator]::FromHtml('#091a2e')
+    $hair = [System.Drawing.ColorTranslator]::FromHtml('#24395a')
+    $ink = [System.Drawing.ColorTranslator]::FromHtml('#eaebed')
+    $brass = [System.Drawing.ColorTranslator]::FromHtml('#d5a867')
     foreach ($size in $sizes) {
         $bmp = New-Object System.Drawing.Bitmap $size, $size, ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
         $g = [System.Drawing.Graphics]::FromImage($bmp)
         $g.SmoothingMode = 'AntiAlias'
-        $g.Clear([System.Drawing.Color]::Transparent)
-        $s = [single]$size; $r = [single]($s * 0.22)
-        $shape = New-Object System.Drawing.Drawing2D.GraphicsPath
-        $shape.AddArc(0, 0, $r * 2, $r * 2, 180, 90)
-        $shape.AddArc($s - $r * 2 - 1, 0, $r * 2, $r * 2, 270, 90)
-        $shape.AddArc($s - $r * 2 - 1, $s - $r * 2 - 1, $r * 2, $r * 2, 0, 90)
-        $shape.AddArc(0, $s - $r * 2 - 1, $r * 2, $r * 2, 90, 90)
-        $shape.CloseFigure()
-        $red = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(0xE5, 0x2D, 0x27))
-        $g.FillPath($red, $shape)
-        $white = [System.Drawing.Brushes]::White
-        # arrow: a shaft and a head, then a tray line underneath
-        $g.FillRectangle($white, $s * 0.42, $s * 0.16, $s * 0.16, $s * 0.36)
-        $head = [System.Drawing.PointF[]]@(
-            (New-Object System.Drawing.PointF ($s * 0.24), ($s * 0.46)),
-            (New-Object System.Drawing.PointF ($s * 0.76), ($s * 0.46)),
-            (New-Object System.Drawing.PointF ($s * 0.50), ($s * 0.72)))
-        $g.FillPolygon($white, $head)
-        $g.FillRectangle($white, $s * 0.22, $s * 0.78, $s * 0.56, [math]::Max(1, $s * 0.08))
-        $g.Dispose(); $red.Dispose(); $shape.Dispose()
+        $s = [single]$size
+        $g.Clear($navy)
+        if ($size -ge 32) {
+            $edge = New-Object System.Drawing.Pen($hair, [single][math]::Max(1, $s / 64))
+            $g.DrawRectangle($edge, 0, 0, $s - 1, $s - 1); $edge.Dispose()
+        }
+        $w = [single][math]::Max(1.6, $s * 0.085)                                 # stroke weight
+        $pen = New-Object System.Drawing.Pen($ink, $w)
+        $pen.StartCap = 'Round'; $pen.EndCap = 'Round'; $pen.LineJoin = 'Round'
+        $g.DrawLine($pen, $s * 0.5, $s * 0.18, $s * 0.5, $s * 0.62)              # shaft
+        $g.DrawLines($pen, [System.Drawing.PointF[]]@(                            # head
+            (New-Object System.Drawing.PointF ($s * 0.29), ($s * 0.43)),
+            (New-Object System.Drawing.PointF ($s * 0.5), ($s * 0.64)),
+            (New-Object System.Drawing.PointF ($s * 0.71), ($s * 0.43))))
+        $tray = New-Object System.Drawing.Pen($brass, $w)
+        $tray.StartCap = 'Round'; $tray.EndCap = 'Round'
+        $g.DrawLine($tray, $s * 0.24, $s * 0.81, $s * 0.76, $s * 0.81)            # tray
+        $g.Dispose(); $pen.Dispose(); $tray.Dispose()
         $ms = New-Object System.IO.MemoryStream
         $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)          # PNG entries (Windows Vista and later)
         $bmp.Dispose()
