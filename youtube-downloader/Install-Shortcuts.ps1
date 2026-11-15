@@ -31,14 +31,14 @@ function New-DownloaderIcon([string]$Path) {
         $g.SmoothingMode = 'AntiAlias'
         $g.Clear([System.Drawing.Color]::Transparent)
         $s = [single]$size; $r = [single]($s * 0.22)
-        $path = New-Object System.Drawing.Drawing2D.GraphicsPath
-        $path.AddArc(0, 0, $r * 2, $r * 2, 180, 90)
-        $path.AddArc($s - $r * 2 - 1, 0, $r * 2, $r * 2, 270, 90)
-        $path.AddArc($s - $r * 2 - 1, $s - $r * 2 - 1, $r * 2, $r * 2, 0, 90)
-        $path.AddArc(0, $s - $r * 2 - 1, $r * 2, $r * 2, 90, 90)
-        $path.CloseFigure()
+        $shape = New-Object System.Drawing.Drawing2D.GraphicsPath
+        $shape.AddArc(0, 0, $r * 2, $r * 2, 180, 90)
+        $shape.AddArc($s - $r * 2 - 1, 0, $r * 2, $r * 2, 270, 90)
+        $shape.AddArc($s - $r * 2 - 1, $s - $r * 2 - 1, $r * 2, $r * 2, 0, 90)
+        $shape.AddArc(0, $s - $r * 2 - 1, $r * 2, $r * 2, 90, 90)
+        $shape.CloseFigure()
         $red = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(0xE5, 0x2D, 0x27))
-        $g.FillPath($red, $path)
+        $g.FillPath($red, $shape)
         $white = [System.Drawing.Brushes]::White
         # arrow: a shaft and a head, then a tray line underneath
         $g.FillRectangle($white, $s * 0.42, $s * 0.16, $s * 0.16, $s * 0.36)
@@ -48,7 +48,7 @@ function New-DownloaderIcon([string]$Path) {
             (New-Object System.Drawing.PointF ($s * 0.50), ($s * 0.72)))
         $g.FillPolygon($white, $head)
         $g.FillRectangle($white, $s * 0.22, $s * 0.78, $s * 0.56, [math]::Max(1, $s * 0.08))
-        $g.Dispose(); $red.Dispose(); $path.Dispose()
+        $g.Dispose(); $red.Dispose(); $shape.Dispose()
         $ms = New-Object System.IO.MemoryStream
         $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)          # PNG entries (Windows Vista and later)
         $bmp.Dispose()
