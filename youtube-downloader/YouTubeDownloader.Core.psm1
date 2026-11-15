@@ -53,6 +53,18 @@ function Set-YtDlpChecked([string]$BinFolder = (Get-YtdBinFolder)) {
     Set-Content -Path $stamp -Value (Get-Date -Format o)
 }
 
+$script:AppId = 'SixMinutesOn.YouTubeDownloader'
+function Get-YtdAppId { $script:AppId }
+
+function Get-YtdLauncher([string]$Folder) {
+    # How the app is started: PowerShell under conhost --headless, a console that never shows a
+    # window. Used by the shortcuts and as the taskbar's relaunch command, so the two always match.
+    $script = [IO.Path]::Combine($Folder, 'YouTubeDownloader.ps1')
+    $target = [IO.Path]::Combine($env:SystemRoot, 'System32\conhost.exe')
+    $arguments = "--headless powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File `"$script`""
+    [pscustomobject]@{ Target = $target; Arguments = $arguments; Command = "`"$target`" $arguments" }
+}
+
 function Get-QualityNames { @($script:Qualities.Keys) }
 
 function Get-QualityCode([string]$Name) {

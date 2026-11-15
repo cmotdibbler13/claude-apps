@@ -34,6 +34,10 @@ No admin rights are needed, and nothing is added to your PATH.
    This adds **YouTube Downloader** to the Desktop and the Start menu. Remove both with
    `Install-Shortcuts.ps1 -Remove`.
 3. Double-click **YouTube Downloader**.
+4. To pin it, right-click **YouTube Downloader** in the Start menu (or its button on the taskbar
+   while it's open) and choose **Pin to taskbar**. The app tells Windows its own name, icon and
+   start command, so the pin opens the app rather than plain PowerShell, and the open window shares
+   the pinned button.
 
 If Windows says the files came from the internet and won't run them, run this once in the
 same folder: `Get-ChildItem -Recurse | Unblock-File`.

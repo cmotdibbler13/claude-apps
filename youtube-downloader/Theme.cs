@@ -91,6 +91,92 @@ namespace SixMinutesOn
         {
             try { SetWindowTheme(c.Handle, "DarkMode_Explorer", null); } catch { }
         }
+
+        // ---- taskbar identity ----
+        // The app runs inside powershell.exe, so without this the taskbar treats the window as
+        // PowerShell: a pin would relaunch plain PowerShell with PowerShell's icon. Giving the window
+        // (and the shortcuts) one AppUserModelID, plus a relaunch command and icon, makes Windows pin
+        // and group it as "YouTube Downloader".
+
+        [StructLayout(LayoutKind.Sequential, Pack = 4)]
+        struct PropertyKey
+        {
+            public Guid FormatId; public uint PropertyId;
+            public PropertyKey(uint pid) { FormatId = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"); PropertyId = pid; }
+        }
+
+        [StructLayout(LayoutKind.Explicit)]
+        struct PropVariant
+        {
+            [FieldOffset(0)] public ushort Type;
+            [FieldOffset(8)] public IntPtr Value;
+            [FieldOffset(12)] int pad;              // keeps the struct 16 bytes in 32-bit processes too
+            public static PropVariant FromString(string s)
+            {
+                var v = new PropVariant();
+                v.Type = 31;                         // VT_LPWSTR
+                v.Value = Marshal.StringToCoTaskMemUni(s);
+                return v;
+            }
+        }
+
+        [ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        interface IPropertyStore
+        {
+            [PreserveSig] int GetCount(out uint count);
+            [PreserveSig] int GetAt(uint index, out PropertyKey key);
+            [PreserveSig] int GetValue(ref PropertyKey key, out PropVariant value);
+            [PreserveSig] int SetValue(ref PropertyKey key, ref PropVariant value);
+            [PreserveSig] int Commit();
+        }
+
+        [DllImport("shell32.dll")] static extern int SHGetPropertyStoreForWindow(IntPtr hwnd, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out IPropertyStore store);
+        [DllImport("ole32.dll")] static extern int PropVariantClear(ref PropVariant value);
+
+        static void Set(IPropertyStore store, uint pid, string text)
+        {
+            var key = new PropertyKey(pid);
+            var v = PropVariant.FromString(text);
+            try { Marshal.ThrowExceptionForHR(store.SetValue(ref key, ref v)); }
+            finally { PropVariantClear(ref v); }
+        }
+
+        const uint AppId = 5, RelaunchCommand = 2, RelaunchIcon = 3, RelaunchName = 4;
+
+        public static void SetWindowAppId(Form f, string appId, string relaunchCommand, string iconResource, string displayName)
+        {
+            try
+            {
+                var iid = typeof(IPropertyStore).GUID;
+                IPropertyStore store;
+                if (SHGetPropertyStoreForWindow(f.Handle, ref iid, out store) != 0 || store == null) return;
+                try
+                {
+                    Set(store, RelaunchCommand, relaunchCommand);
+                    Set(store, RelaunchIcon, iconResource);
+                    Set(store, RelaunchName, displayName);
+                    Set(store, AppId, appId);          // the relaunch details go first, the ID last
+                }
+                finally { Marshal.ReleaseComObject(store); }
+            }
+            catch { }
+        }
+
+        // Stamps the same AppUserModelID into a .lnk shortcut, so the window groups with its pin.
+        public static void SetShortcutAppId(string linkPath, string appId)
+        {
+            var link = Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("00021401-0000-0000-C000-000000000046")));
+            try
+            {
+                var file = (System.Runtime.InteropServices.ComTypes.IPersistFile)link;
+                file.Load(linkPath, 2);                 // STGM_READWRITE
+                var store = (IPropertyStore)link;
+                Set(store, AppId, appId);
+                Marshal.ThrowExceptionForHR(store.Commit());
+                file.Save(linkPath, true);
+            }
+            finally { Marshal.ReleaseComObject(link); }
+        }
     }
 
     // Square button. Primary: brass fill with on-brass text, ink on hover.

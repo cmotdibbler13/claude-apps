@@ -170,6 +170,18 @@ Describe 'Tools folder' {
     }
 }
 
+Describe 'Get-YtdLauncher' {
+    It 'starts the app with no console window, and the taskbar relaunch command matches the shortcut' {
+        $l = Get-YtdLauncher 'D:\Apps\youtube downloader'
+        $l.Target | Should Match 'conhost\.exe$'
+        $l.Arguments | Should Match '^--headless powershell\.exe -STA .*-File ".*youtube downloader.YouTubeDownloader\.ps1"$'
+        $l.Command | Should Be ('"' + $l.Target + '" ' + $l.Arguments)
+    }
+    It 'has a fixed app ID for the taskbar' {
+        Get-YtdAppId | Should Be 'SixMinutesOn.YouTubeDownloader'
+    }
+}
+
 Describe 'Settings' {
     $file = Join-Path $TestDrive 'settings.json'
     It 'has defaults when nothing is saved' {

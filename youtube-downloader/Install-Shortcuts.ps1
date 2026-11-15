@@ -7,6 +7,7 @@
 param([switch]$Remove)
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
+Import-Module (Join-Path $here 'YouTubeDownloader.Core.psm1') -Force
 
 $name = 'YouTube Downloader.lnk'
 $desktopLnk = Join-Path ([Environment]::GetFolderPath('Desktop')) $name
@@ -76,20 +77,27 @@ function New-DownloaderIcon([string]$Path) {
 }
 
 function New-AppShortcut([string]$LinkPath) {
-    # conhost --headless gives PowerShell a console that never shows a window.
-    $script = Join-Path $here 'YouTubeDownloader.ps1'
+    $launch = Get-YtdLauncher $here
     $shell = New-Object -ComObject WScript.Shell
     $s = $shell.CreateShortcut($LinkPath)
-    $s.TargetPath = Join-Path $env:SystemRoot 'System32\conhost.exe'
-    $s.Arguments = "--headless powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File `"$script`""
+    $s.TargetPath = $launch.Target
+    $s.Arguments = $launch.Arguments
     $s.WorkingDirectory = $here
     $s.IconLocation = "$iconPath,0"
     $s.Description = 'Download YouTube videos to watch offline'
     $s.Save()
+    # the same app ID as the window, so a pinned shortcut and the open window share one taskbar button
+    [SixMinutesOn.Native]::SetShortcutAppId($LinkPath, (Get-YtdAppId))
     Write-Host "Created $LinkPath"
 }
 
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -TypeDefinition (Get-Content -Raw (Join-Path $here 'Theme.cs')) -ReferencedAssemblies System.Windows.Forms, System.Drawing
 New-DownloaderIcon $iconPath
 New-AppShortcut $desktopLnk
 New-AppShortcut $startLnk
+# ask Windows to reload its icon cache, so shortcuts and pins show the new icon
+$refresh = Join-Path $env:SystemRoot 'System32\ie4uinit.exe'
+if (Test-Path $refresh) { & $refresh -show }
 Write-Host 'Double-click "YouTube Downloader" on the Desktop to start it.'
+Write-Host 'To pin it: right-click the Start menu entry (or the open window''s taskbar button) and choose Pin to taskbar.'

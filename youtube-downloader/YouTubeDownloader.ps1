@@ -32,7 +32,11 @@ $form.MinimumSize = New-Object Drawing.Size(600, 620)
 $form.StartPosition = 'CenterScreen'
 $iconPath = Join-Path $here 'downloader.ico'
 if (Test-Path $iconPath) { $form.Icon = New-Object Drawing.Icon($iconPath) }
-$form.Add_HandleCreated({ [SixMinutesOn.Native]::DarkTitleBar($form) })
+$form.Add_HandleCreated({
+    [SixMinutesOn.Native]::DarkTitleBar($form)
+    # taskbar: pin and group as "YouTube Downloader" with its own icon, not as PowerShell
+    [SixMinutesOn.Native]::SetWindowAppId($form, (Get-YtdAppId), (Get-YtdLauncher $here).Command, "$iconPath,0", 'YouTube Downloader')
+})
 
 function Add-Control($ctl, [int]$x, [int]$y, [int]$w, [int]$h, [string]$anchor = 'Top,Left', $parent = $form) {
     $ctl.Location = New-Object Drawing.Point($x, $y)
