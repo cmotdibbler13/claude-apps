@@ -246,6 +246,17 @@ namespace T2Fans
                 if (on) k.SetValue(RunName, "\"" + Application.ExecutablePath + "\" --tray");
                 else k.DeleteValue(RunName, false);
             }
+            // The logon task created by "build.ps1 -Install" is a second trigger, because Windows
+            // has been seen to skip the Run entry. Keep it in step with the switch.
+            try
+            {
+                System.Diagnostics.ProcessStartInfo p = new System.Diagnostics.ProcessStartInfo(
+                    "schtasks.exe", "/change /tn \"T2 Fan Control\" " + (on ? "/enable" : "/disable"));
+                p.CreateNoWindow = true;
+                p.UseShellExecute = false;
+                System.Diagnostics.Process.Start(p);
+            }
+            catch { }
         }
 
         // ---- settings ----

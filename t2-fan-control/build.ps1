@@ -36,6 +36,16 @@ if ($Install) {
     New-Item -ItemType Directory -Force $dst | Out-Null
     Copy-Item "$out\T2FanControl.exe" $exe -Force
     Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'T2FanControl' -Value "`"$exe`" --tray"
+    # Second trigger: a per-user logon task. Windows has been seen to skip the Run entry.
+    try {
+        $me = "$env:USERDOMAIN\$env:USERNAME"
+        $action = New-ScheduledTaskAction -Execute $exe -Argument '--tray'
+        $trigger = New-ScheduledTaskTrigger -AtLogOn -User $me
+        $trigger.Delay = 'PT20S'
+        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+        $principal = New-ScheduledTaskPrincipal -UserId $me -LogonType Interactive -RunLevel Limited
+        Register-ScheduledTask -TaskName 'T2 Fan Control' -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description 'Starts T2 Fan Control in the tray at logon' -Force | Out-Null
+    } catch { Write-Warning "Could not create the logon task: $($_.Exception.Message)" }
     Start-Process $exe
     Write-Host "Installed to $dst, registered to start with Windows, and launched."
 }

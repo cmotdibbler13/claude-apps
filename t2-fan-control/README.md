@@ -87,7 +87,10 @@ Command line:
 
 Settings are stored in `%APPDATA%\T2FanControl\settings.txt`. "Start with
 Windows" writes a per-user entry under
-`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. Because Windows has been
+seen to skip that entry, `build.ps1 -Install` also registers a per-user logon
+task named "T2 Fan Control" (no administrator rights needed); the switch
+enables and disables it too. To remove it: `schtasks /delete /tn "T2 Fan Control" /f`.
 
 ## Safety
 
