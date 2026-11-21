@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+Recordings/
+*_line_script.txt
