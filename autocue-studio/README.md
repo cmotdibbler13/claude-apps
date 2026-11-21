@@ -71,3 +71,10 @@ python main.py
   a take: `ffmpeg -i recording.wav -b:a 192k recording.mp3`.
 - Windows lists the same mic through several host APIs; the dropdown
   de-duplicates by device name.
+
+## Changes
+
+- **2026-11-21** — Line mode: long script lines now wrap at the window edge on
+  high-DPI displays (e.g. a Mac running Windows). The wrap width was in screen
+  pixels but CustomTkinter scales it again, so on 200% scaling the text ran off
+  the right-hand side.

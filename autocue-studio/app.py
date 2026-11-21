@@ -821,7 +821,14 @@ class AutocueApp(ctk.CTk):
         self.timer_label.configure(text="00:00")
 
     def _on_line_view_resize(self, event) -> None:
-        wrap = max(200, event.width - 60)
+        # event.width is in physical pixels, but CTkLabel multiplies
+        # wraplength by the widget scaling (e.g. 2x on a high-DPI display),
+        # so convert back to unscaled units or the text never wraps.
+        try:
+            scale = self.line_view._get_widget_scaling() or 1.0
+        except AttributeError:
+            scale = 1.0
+        wrap = max(200, int(event.width / scale) - 60)
         for label in (self.line_label, self.note_label, self.next_label):
             label.configure(wraplength=wrap)
 
