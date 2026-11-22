@@ -235,10 +235,20 @@ def write_audio(path: str, audio: np.ndarray, samplerate: int) -> None:
 # --------------------------------------------------------------- playback
 
 class Player:
-    """Plays a Mixer through the default output device."""
+    """Plays a Mixer through the sound card.
+
+    Windows offers each output through several drivers, and some outputs are
+    mono (a Bluetooth headset in call mode) or refuse the song's sample rate.
+    So play() tries the default output first and then works through the
+    alternatives until one opens.
+    """
+
+    HOST_ORDER = ("Windows WASAPI", "Windows DirectSound", "MME")
 
     def __init__(self):
         self.mixer = None
+        self.device_name = ""
+        self.mono = False
         self._stream = None
 
     @property
@@ -254,7 +264,71 @@ class Player:
         if mixer is None or mixer.ended:
             outdata.fill(0)
             return
-        outdata[:] = mixer.render_block(frames)
+        block = mixer.render_block(frames)
+        if outdata.shape[1] == 1:
+            outdata[:, 0] = block.mean(axis=1)
+        else:
+            outdata[:, :2] = block
+            outdata[:, 2:] = 0
+
+    @staticmethod
+    def _candidates(sd) -> list:
+        """(device index or None, channels, host API name) in the order to try."""
+        tries = [(None, 2, "")]
+        try:
+            devices, hosts = sd.query_devices(), sd.query_hostapis()
+        except Exception:
+            return tries
+        seen = set()
+
+        def add(index):
+            if index is None or index < 0 or index in seen or index >= len(devices):
+                return
+            seen.add(index)
+            most = int(devices[index]["max_output_channels"])
+            if most >= 1:
+                host = hosts[devices[index]["hostapi"]]["name"]
+                if most >= 2:
+                    tries.append((index, 2, host))
+                tries.append((index, 1, host))  # mono as a last resort for this device
+
+        try:
+            add(sd.default.device[1])
+        except Exception:
+            pass
+        ranked = sorted(hosts, key=lambda h: Player.HOST_ORDER.index(h["name"])
+                        if h["name"] in Player.HOST_ORDER else len(Player.HOST_ORDER))
+        for host in ranked:
+            add(host.get("default_output_device", -1))
+        return tries
+
+    def _open(self, sd):
+        errors = []
+        for device, channels, host in self._candidates(sd):
+            extra = None
+            if "WASAPI" in host:
+                try:  # lets Windows convert the sample rate if the device differs
+                    extra = sd.WasapiSettings(auto_convert=True)
+                except Exception:
+                    extra = None
+            try:
+                stream = sd.OutputStream(
+                    samplerate=self.mixer.samplerate, channels=channels, dtype="float32",
+                    device=device, extra_settings=extra, callback=self._callback)
+                stream.start()
+            except Exception as err:
+                errors.append(str(err))
+                continue
+            self.mono = channels == 1
+            try:
+                self.device_name = sd.query_devices(stream.device)["name"]
+            except Exception:
+                self.device_name = ""
+            return stream
+        raise RuntimeError(
+            "Windows wouldn't open any sound output. Check a speaker or headphones "
+            "are set as the output in Windows sound settings, then press Play again."
+            + (f"\n\n({errors[0]})" if errors else ""))
 
     def play(self) -> None:
         if self.mixer is None or self.playing:
@@ -264,10 +338,7 @@ class Player:
         if self.mixer.ended or self.mixer.position >= self.mixer.length - 1:
             self.mixer.seek(0)
         self.mixer.forget_gains()
-        self._stream = sd.OutputStream(
-            samplerate=self.mixer.samplerate, channels=2, dtype="float32",
-            callback=self._callback)
-        self._stream.start()
+        self._stream = self._open(sd)
 
     def stop(self) -> None:
         stream, self._stream = self._stream, None

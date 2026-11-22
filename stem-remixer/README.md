@@ -78,6 +78,13 @@ command from [pytorch.org/get-started](https://pytorch.org/get-started/locally/)
 - Only split music you have the right to use. Remixes of other people's songs are theirs to
   license, not yours to publish.
 
+## Changes
+
+- **2026-11-22**: Play failed with "Invalid number of channels [PaErrorCode -9998]" when the
+  default Windows output would not open in stereo (for example a Bluetooth headset in call
+  mode). Play now tries the same output in mono, then the output through Windows' other audio
+  drivers, and says so when it is playing in mono.
+
 ## Files
 
 ```
@@ -104,7 +111,7 @@ python -m pytest tests
 
 Built and tested in a Linux cloud session. It has not been run on Windows yet.
 
-- The 15 unit tests pass: mixing, mute and solo, pan, speed, export level, WAV and MP3 writing,
+- The 18 unit tests pass: mixing, mute and solo, pan, speed, export level, WAV and MP3 writing,
   saved mixes and the Stems folders.
 - Real splits with the 4-stem and 6-stem Demucs models on a 30-second test track, including
   Cancel and an unreadable file.
@@ -113,6 +120,6 @@ Built and tested in a Linux cloud session. It has not been run on Windows yet.
 - **Not checked:** the installer. It is PowerShell for Windows and could not be run in the
   cloud session, so its first real run will be yours.
 - **Not checked:** sound output. The cloud machine has no sound card, so Play has not been
-  heard. With no sound device the app shows a message instead of crashing.
+  heard there. The fallback between outputs is tested against a stand-in sound card.
 
 Unofficial personal project. Not made, endorsed or supported by Anthropic or Meta.

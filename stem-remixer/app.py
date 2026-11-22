@@ -497,8 +497,13 @@ class StemRemixerApp(ctk.CTk):
         else:
             try:
                 self.player.play()
+                if self.player.mono:
+                    self._set_status(
+                        f"Playing in mono through {self.player.device_name or 'this output'}"
+                        ", so panning won't be heard. Exports are still stereo.")
             except Exception as err:
-                self._set_status(f"Couldn't start the sound output: {err}", WARN)
+                self._set_status("Couldn't start the sound output.", WARN)
+                messagebox.showerror("Stem Remixer", str(err))
         self._play_label()
 
     def _on_stop(self):

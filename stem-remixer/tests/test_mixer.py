@@ -157,3 +157,88 @@ def test_split_progress():
     info = {"models": 4, "model_idx_in_bag": 1, "segment_offset": 50, "audio_length": 100}
     assert separator.split_progress(info) == pytest.approx(0.375)
     assert separator.split_progress({}) == 0.0
+
+
+class FakeSound:
+    """Stands in for sounddevice: a PC whose default output only opens in mono."""
+
+    class default:
+        device = (0, 1)
+
+    def __init__(self, works):
+        self.works = works   # set of (device, channels) that open
+        self.tried = []
+        outer = self
+
+        class OutputStream:
+            def __init__(self, samplerate, channels, dtype, device, extra_settings, callback):
+                outer.tried.append((device, channels))
+                if (device, channels) not in outer.works:
+                    raise RuntimeError("Invalid number of channels [PaErrorCode -9998]")
+                self.device, self.channels, self.callback, self.active = device, channels, callback, False
+
+            def start(self):
+                self.active = True
+
+            def abort(self):
+                self.active = False
+
+            def close(self):
+                pass
+
+        self.OutputStream = OutputStream
+
+    def WasapiSettings(self, auto_convert=False):
+        return "wasapi"
+
+    def query_hostapis(self):
+        return [{"name": "MME", "default_output_device": 1},
+                {"name": "Windows WASAPI", "default_output_device": 3},
+                {"name": "Windows WDM-KS", "default_output_device": 4}]
+
+    def query_devices(self, index=None):
+        devices = [{"name": "Mic", "hostapi": 0, "max_output_channels": 0},
+                   {"name": "Headset (MME)", "hostapi": 0, "max_output_channels": 1},
+                   {"name": "Mic", "hostapi": 1, "max_output_channels": 0},
+                   {"name": "Speakers (WASAPI)", "hostapi": 1, "max_output_channels": 8},
+                   {"name": "Speakers (KS)", "hostapi": 2, "max_output_channels": 2}]
+        return devices if index is None else devices[index]
+
+
+def play_with(monkeypatch, works):
+    from mixer import Player
+    fake = FakeSound(works)
+    monkeypatch.setitem(sys.modules, "sounddevice", fake)
+    left = np.full(1000, 0.2, np.float32)
+    player = Player()
+    player.load(Mixer([Stem("a", np.stack([left, left * 0], axis=1))], RATE))
+    return player, fake
+
+
+def test_player_falls_back_to_a_mono_output(monkeypatch):
+    player, fake = play_with(monkeypatch, {(1, 1)})
+    player.play()
+    assert fake.tried == [(None, 2), (1, 1)]
+    assert player.playing and player.mono and player.device_name == "Headset (MME)"
+    out = np.ones((64, 1), np.float32)
+    player._callback(out, 64, None, None)
+    assert np.allclose(out, 0.1)  # left and right averaged
+    player.stop()
+    assert not player.playing
+
+
+def test_player_tries_other_drivers_and_fills_surround(monkeypatch):
+    player, fake = play_with(monkeypatch, {(3, 2)})
+    player.play()
+    assert fake.tried == [(None, 2), (1, 1), (3, 2)]  # then WASAPI, before WDM-KS
+    assert not player.mono
+    out = np.ones((64, 8), np.float32)
+    player._callback(out, 64, None, None)
+    assert np.allclose(out[:, 0], 0.2) and np.allclose(out[:, 1:], 0.0)
+
+
+def test_player_explains_when_nothing_opens(monkeypatch):
+    player, _ = play_with(monkeypatch, set())
+    with pytest.raises(RuntimeError, match="sound output"):
+        player.play()
+    assert not player.playing
