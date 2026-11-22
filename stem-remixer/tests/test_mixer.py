@@ -317,3 +317,89 @@ def test_quiet_console_gives_a_windowed_app_somewhere_to_print(monkeypatch):
     separator.quiet_console()
     print("a progress bar", file=sys.stderr)
     sys.stdout.write("and another")
+
+
+def ramp_mixer(seconds=2.0):
+    """A stem whose value is its own position, so a block shows where it came from."""
+    n = int(RATE * seconds)
+    return Mixer([Stem("r", np.linspace(0, 0.5, n, dtype=np.float32))], RATE), n
+
+
+def test_loop_needs_a_real_section():
+    mixer, n = ramp_mixer()
+    assert not mixer.set_loop(1000, 1200)
+    assert mixer.loop_start is None and not mixer.looping
+    assert mixer.set_loop(30000, 10000)  # either order
+    assert (mixer.loop_start, mixer.loop_end) == (10000, 30000)
+    assert not mixer.looping  # marked but not switched on
+    mixer.loop_on = True
+    assert mixer.looping
+
+
+def test_loop_goes_round_and_never_ends():
+    mixer, n = ramp_mixer()
+    mixer.set_loop(10000, 20000)
+    mixer.loop_on = True
+    mixer.seek(9000)  # starting before the section plays into it
+    seen = []
+    for _ in range(100):
+        block = mixer.render_block(441)
+        seen.append(mixer.position)
+        assert not mixer.ended
+    assert max(seen) <= 20000 and min(seen[5:]) >= 10000
+    assert sum(b < a for a, b in zip(seen, seen[1:])) == 4  # 44100 frames = 4 and a bit laps
+    # the join dips to silence instead of jumping
+    mixer.seek(19900)
+    block = mixer.render_block(441)[:, 0]
+    assert abs(block[99]) < 0.01 and abs(block[100]) < 0.01
+    assert np.abs(np.diff(block)).max() < 0.01
+    assert block[300] == pytest.approx(0.5 * 10200 / n, abs=1e-3)  # back in the section, at full level
+
+
+def test_playing_after_the_loop_carries_on_to_the_end():
+    mixer, n = ramp_mixer()
+    mixer.set_loop(10000, 20000)
+    mixer.loop_on = True
+    mixer.seek(n - 1000)
+    mixer.render_block(2000)
+    assert mixer.ended
+
+
+@pytest.mark.parametrize("tempo,pitch", [(0.8, 0), (1.0, 3)])
+def test_loop_while_stretching(tempo, pitch):
+    mixer = Mixer([Stem("a", tone(440, 4.0))], RATE)
+    mixer.tempo, mixer.pitch = tempo, pitch
+    mixer.set_loop(RATE, 2 * RATE)
+    mixer.loop_on = True
+    mixer.seek(RATE)
+    blocks, seen = [], []
+    for _ in range(400):  # four seconds of sound
+        blocks.append(mixer.render_block(441))
+        seen.append(mixer.position)
+    assert not mixer.ended
+    assert min(seen) >= RATE and max(seen) <= 2 * RATE + 1
+    assert sum(b < a for a, b in zip(seen, seen[1:])) == int(4 * tempo)
+    audio = np.concatenate(blocks)
+    assert rms(audio[RATE:]) == pytest.approx(0.25 / np.sqrt(2), rel=0.08)  # no gaps at the joins
+
+
+def test_export_of_a_section():
+    mixer, n = ramp_mixer()
+    audio, _ = mixer.render_all(section=(10000, 20000))
+    assert len(audio) == 10000
+    assert audio[0, 0] == pytest.approx(0.5 * 10000 / n, abs=1e-4)
+    mixer.tempo = 0.5
+    audio, _ = mixer.render_all(section=(10000, 20000))
+    assert len(audio) == 20000
+
+
+def test_loop_is_saved_and_reset():
+    mixer, n = ramp_mixer()
+    mixer.set_loop(10000, 20000)
+    mixer.loop_on = True
+    other, _ = ramp_mixer()
+    other.apply_settings(mixer.settings())
+    assert (other.loop_start, other.loop_end, other.loop_on) == (10000, 20000, True)
+    other.reset()
+    assert other.loop_start is None and not other.looping
+    assert other.settings()["loop"] is None

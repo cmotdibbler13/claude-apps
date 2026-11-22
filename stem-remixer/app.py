@@ -69,6 +69,8 @@ class StemLane:
         self.peaks = waveform_peaks(stem.data)
         self.scale = scale
         self._shape = None
+        self._section = None
+        self._edges = []
         self._playhead = None
         self._drawn_on = None
 
@@ -120,6 +122,11 @@ class StemLane:
         self.canvas.bind("<Configure>", lambda _e: self.draw())
         self.canvas.bind("<Button-1>", self._on_seek)
         self.canvas.bind("<B1-Motion>", self._on_seek)
+        # Shift+drag, or a drag with the right button, marks the section to loop.
+        for press, drag in (("<Shift-Button-1>", "<Shift-B1-Motion>"),
+                            ("<Button-3>", "<B3-Motion>")):
+            self.canvas.bind(press, self._on_mark_start)
+            self.canvas.bind(drag, self._on_mark_drag)
 
         self.refresh()
 
@@ -153,9 +160,19 @@ class StemLane:
             self.stem.pan = pan
         self.refresh()
 
+    def _fraction(self, event) -> float:
+        return max(0.0, min(1.0, event.x / max(1, self.canvas.winfo_width())))
+
     def _on_seek(self, event):
-        width = max(1, self.canvas.winfo_width())
-        self.app.seek_fraction(event.x / width)
+        self.app.seek_fraction(self._fraction(event))
+
+    def _on_mark_start(self, event):
+        self.app.mark_from = self._fraction(event)
+        return "break"
+
+    def _on_mark_drag(self, event):
+        self.app.mark_section(self.app.mark_from, self._fraction(event))
+        return "break"
 
     def _labels(self):
         self.volume_text.configure(text=f"{round(self.stem.volume * 100)}%")
@@ -195,10 +212,34 @@ class StemLane:
             points += [x, mid - max(0.5, top * reach)]
         for x, top in zip(reversed(xs), reversed(tops)):
             points += [x, mid + max(0.5, top * reach)]
+        self._section = self.canvas.create_rectangle(0, 0, 0, 0, outline="", state="hidden")
         self._shape = self.canvas.create_polygon(points, outline="", fill=self.colour)
+        self._edges = [self.canvas.create_line(0, 0, 0, 0, width=1, state="hidden")
+                       for _ in range(2)]
         self._playhead = self.canvas.create_line(0, 0, 0, height, fill=INK, width=1)
         self.colour_wave()
+        self.place_section()
         self.app.place_playheads()
+
+    def place_section(self):
+        """Show the marked section: lit when looping, a faint outline when not."""
+        mixer = self.app.mixer
+        if self._shape is None or mixer is None:
+            return
+        if mixer.loop_start is None:
+            for item in [self._section] + self._edges:
+                self.canvas.itemconfigure(item, state="hidden")
+            return
+        width, height = self.canvas.winfo_width(), self.canvas.winfo_height()
+        left = mixer.loop_start / max(1, mixer.length - 1) * width
+        right = mixer.loop_end / max(1, mixer.length - 1) * width
+        self.canvas.coords(self._section, left, 0, right, height)
+        self.canvas.itemconfigure(self._section, state="normal",
+                                  fill=SURFACE_300 if mixer.loop_on else SURFACE_200)
+        for item, x in zip(self._edges, (left, right)):
+            self.canvas.coords(item, x, 0, x, height)
+            self.canvas.itemconfigure(item, state="normal",
+                                      fill=BRASS if mixer.loop_on else INK_FAINT)
 
     def colour_wave(self):
         if self._shape is not None:
@@ -216,8 +257,8 @@ class StemRemixerApp(ctk.CTk):
         super().__init__()
         ctk.set_appearance_mode("dark")
         self.title("Stem Remixer")
-        self.geometry("1120x760")
-        self.minsize(1080, 640)
+        self.geometry("1180x760")
+        self.minsize(1120, 640)
         self.configure(fg_color=SURFACE_000)
         icon_path = os.path.join(APP_DIR, "assets", "icon.ico")
         if os.path.exists(icon_path):
@@ -237,9 +278,13 @@ class StemRemixerApp(ctk.CTk):
         self._splitting = False
         self._split_started = 0.0
         self._clip_until = 0.0
+        self.mark_from = 0.0        # where a section drag began, as a fraction of the song
 
         self._build()
         self.bind("<space>", self._on_space)
+        self.bind("<l>", lambda _e: self._on_loop())
+        self.bind("<bracketleft>", lambda _e: self._mark_at_playhead(start=True))
+        self.bind("<bracketright>", lambda _e: self._mark_at_playhead(start=False))
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(TICK_MS, self._tick)
 
@@ -302,38 +347,40 @@ class StemRemixerApp(ctk.CTk):
 
         bar = ctk.CTkFrame(self, fg_color=SURFACE_100, corner_radius=0)
         bar.grid(row=3, column=0, sticky="ew")
-        bar.grid_columnconfigure(11, weight=1)
+        bar.grid_columnconfigure(12, weight=1)
         self.play_btn = self._button(bar, "▶  Play", self._on_play, primary=True, width=100)
         self.play_btn.grid(row=0, column=0, padx=(16, 8), pady=12)
         self.stop_btn = self._button(bar, "■  Stop", self._on_stop, width=80)
         self.stop_btn.grid(row=0, column=1)
         self.time_label = ctk.CTkLabel(bar, text="0:00 / 0:00", text_color=INK, width=100,
                                        font=ctk.CTkFont(size=15))
-        self.time_label.grid(row=0, column=2, padx=10)
+        self.time_label.grid(row=0, column=2, padx=(10, 6))
+        self.loop_btn = self._button(bar, "Loop", self._on_loop, width=64)
+        self.loop_btn.grid(row=0, column=3)
 
-        ctk.CTkLabel(bar, text="Tempo", text_color=INK_FAINT).grid(row=0, column=3, padx=(8, 6))
+        ctk.CTkLabel(bar, text="Tempo", text_color=INK_FAINT).grid(row=0, column=4, padx=(12, 6))
         self.tempo = self._slider(bar, MIN_TEMPO, MAX_TEMPO, self._on_tempo)
-        self.tempo.grid(row=0, column=4)
+        self.tempo.grid(row=0, column=5)
         self.tempo_text = ctk.CTkLabel(bar, text="100%", text_color=INK_MUTED, width=44)
-        self.tempo_text.grid(row=0, column=5)
-        ctk.CTkLabel(bar, text="Pitch", text_color=INK_FAINT).grid(row=0, column=6, padx=(12, 6))
+        self.tempo_text.grid(row=0, column=6)
+        ctk.CTkLabel(bar, text="Pitch", text_color=INK_FAINT).grid(row=0, column=7, padx=(12, 6))
         self.pitch = self._slider(bar, -MAX_PITCH, MAX_PITCH, self._on_pitch,
                                   steps=2 * MAX_PITCH, start=0)
-        self.pitch.grid(row=0, column=7)
+        self.pitch.grid(row=0, column=8)
         self.pitch_text = ctk.CTkLabel(bar, text="0", text_color=INK_MUTED, width=30)
-        self.pitch_text.grid(row=0, column=8)
-        ctk.CTkLabel(bar, text="Master", text_color=INK_FAINT).grid(row=0, column=9, padx=(12, 6))
+        self.pitch_text.grid(row=0, column=9)
+        ctk.CTkLabel(bar, text="Master", text_color=INK_FAINT).grid(row=0, column=10, padx=(12, 6))
         self.master_slider = self._slider(bar, 0, MAX_VOLUME, self._on_master)
-        self.master_slider.grid(row=0, column=10)
+        self.master_slider.grid(row=0, column=11)
         self.master_text = ctk.CTkLabel(bar, text="100%", text_color=INK_MUTED, width=110,
                                         anchor="w")
-        self.master_text.grid(row=0, column=11, sticky="w", padx=(4, 0))
+        self.master_text.grid(row=0, column=12, sticky="w", padx=(4, 0))
         self.tempo.bind("<Double-Button-1>", lambda _e: self._set_tempo(1.0))
         self.pitch.bind("<Double-Button-1>", lambda _e: self._set_pitch(0))
         self.master_slider.bind("<Double-Button-1>", lambda _e: self._set_master(1.0))
 
         self.export_btn = self._button(bar, "Export mix…", self._on_export, primary=True, width=110)
-        self.export_btn.grid(row=0, column=12, padx=(0, 16))
+        self.export_btn.grid(row=0, column=13, padx=(0, 16))
 
         self._set_status("Ready. The first split downloads the model (about 80 MB), once.")
         self._enable()
@@ -353,7 +400,7 @@ class StemRemixerApp(ctk.CTk):
         loaded = "normal" if self.mixer is not None and not self._splitting else "disabled"
         idle = "disabled" if self._splitting else "normal"
         for widget in (self.play_btn, self.stop_btn, self.reset_btn, self.export_btn,
-                       self.show_btn, self.tempo, self.pitch, self.master_slider):
+                       self.show_btn, self.tempo, self.pitch, self.master_slider, self.loop_btn):
             widget.configure(state=loaded)
         for widget in (self.open_btn, self.folder_btn, self.model_menu):
             widget.configure(state=idle)
@@ -488,8 +535,12 @@ class StemRemixerApp(ctk.CTk):
         self._labels()
         self._enable()
         self._set_status("Space plays and pauses. Click a waveform to jump. "
-                         "M mutes a part, S plays it alone. Pitch is in semitones. "
-                         "Double-click a slider to reset it.")
+                         "M mutes a part, S plays it alone. Shift+drag marks a "
+                         "section to loop. Double-click a slider to reset it.")
+        if self.mixer.loop_start is not None:
+            self._show_loop()
+        else:
+            self._show_loop_button_off()
 
     # ----------------------------------------------------------- transport
 
@@ -539,6 +590,62 @@ class StemRemixerApp(ctk.CTk):
         self.time_label.configure(
             text=f"{clock(self.mixer.position / self.mixer.samplerate)} / "
                  f"{clock(self.mixer.duration)}")
+
+    # ---------------------------------------------------------------- loop
+
+    def mark_section(self, one: float, other: float):
+        """Mark the section between two fractions of the song and loop it."""
+        if self.mixer is None or self._splitting:
+            return
+        if self.mixer.set_loop(one * self.mixer.length, other * self.mixer.length):
+            self.mixer.loop_on = True
+            self._show_loop()
+
+    def _mark_at_playhead(self, start: bool):
+        """[ and ] move the start or end of the section to the playhead."""
+        mixer = self.mixer
+        if mixer is None or self._splitting:
+            return
+        here = mixer.position
+        if mixer.loop_start is None:
+            ok = mixer.set_loop(here, mixer.length) if start else mixer.set_loop(0, here)
+        elif start:
+            ok = here < mixer.loop_end and mixer.set_loop(here, mixer.loop_end)
+        else:
+            ok = here > mixer.loop_start and mixer.set_loop(mixer.loop_start, here)
+        if ok:
+            mixer.loop_on = True
+            self._show_loop()
+
+    def _show_loop_button_off(self):
+        self.loop_btn.configure(fg_color=SURFACE_200, text_color=INK, hover_color=SURFACE_300)
+
+    def _on_loop(self):
+        mixer = self.mixer
+        if mixer is None or self._splitting:
+            return
+        if mixer.loop_start is None:
+            self._set_status("To loop a section, hold Shift and drag across a waveform "
+                             "(or drag with the right mouse button). Or press [ and ] "
+                             "while it plays to mark the start and end.")
+            return
+        mixer.loop_on = not mixer.loop_on
+        self._show_loop()
+
+    def _show_loop(self):
+        mixer = self.mixer
+        on = mixer is not None and mixer.loop_on
+        self.loop_btn.configure(
+            fg_color=BRASS if on else SURFACE_200, text_color=ON_BRASS if on else INK,
+            hover_color=BRASS_HOVER if on else SURFACE_300)
+        for lane in self.lanes:
+            lane.place_section()
+        if mixer is not None and mixer.loop_start is not None:
+            start, end = mixer.loop_start / mixer.samplerate, mixer.loop_end / mixer.samplerate
+            self._set_status(
+                f"{'Looping' if on else 'Loop is off. Marked:'} {clock(start)} to {clock(end)} "
+                f"({end - start:.1f} seconds). L turns the loop on and off; "
+                "[ and ] move its start and end to the playhead.")
 
     def _on_tempo(self, value):
         value = float(value)
@@ -594,6 +701,8 @@ class StemRemixerApp(ctk.CTk):
         self.master_slider.set(1.0)
         self._labels()
         self.refresh_lanes()
+        self._show_loop()
+        self._set_status("Mix reset.")
 
     # -------------------------------------------------------------- files
 
@@ -607,16 +716,25 @@ class StemRemixerApp(ctk.CTk):
     def _on_export(self):
         if self.mixer is None:
             return
+        section = None
+        if self.mixer.loop_start is not None:
+            answer = messagebox.askyesnocancel(
+                "Stem Remixer", "Export just the marked section?\n\n"
+                "Yes saves the section once through. No saves the whole song.")
+            if answer is None:
+                return
+            if answer:
+                section = (self.mixer.loop_start, self.mixer.loop_end)
         path = filedialog.asksaveasfilename(
             title="Export mix", defaultextension=".wav",
-            initialfile=f"{self.song_name} (remix)",
+            initialfile=f"{self.song_name} ({'loop' if section else 'remix'})",
             filetypes=[("WAV, full quality", "*.wav"), ("MP3, 320 kbps", "*.mp3")])
         if not path:
             return
         self._set_status("Exporting…")
         self.update_idletasks()
         try:
-            audio, factor = self.mixer.render_all()
+            audio, factor = self.mixer.render_all(section)
             write_audio(path, audio, self.mixer.samplerate)
         except Exception as err:
             self._set_status("The export failed.", WARN)

@@ -18,8 +18,13 @@ open-source model from Meta. Nothing is uploaded.
 - **Play / Pause** (or Space), **Stop**, and click or drag on any waveform to jump.
 - **Tempo** from 50% to 150% without changing the pitch, and **Pitch** up or down by up to
   6 semitones without changing the tempo. Both work live and in the export.
+- **Loop a section.** Hold Shift and drag across a waveform (or drag with the right mouse
+  button) to mark a section; it plays round and round while you work on the mix. **Loop** (or
+  the L key) turns it on and off. `[` and `]` move the section's start and end to the
+  playhead, which is handy for trimming it by ear. One section per song, saved with the mix.
 - **Master** volume, with a "too loud" warning if the mix is clipping.
-- **Export mix** saves what you hear as a WAV or a 320 kbps MP3. If the mix would distort, the
+- **Export mix** saves what you hear as a WAV or a 320 kbps MP3. With a section marked, it
+  asks whether to save just that section (once through, ready to use as a sample) or the whole song. If the mix would distort, the
   export is turned down just enough and the status line says so.
 - **Stems are kept.** Each song's stems are saved as WAVs in `Stems/<song> [model]/`, so
   opening the same song again is instant and brings back your last mix. **Show stems** opens
@@ -86,6 +91,8 @@ command from [pytorch.org/get-started](https://pytorch.org/get-started/locally/)
 
 ## Changes
 
+- **2026-11-22**: Loop sections: mark a section on a waveform and it repeats. Exports can be
+  just the marked section.
 - **2026-11-22**: Splitting with a model that had not been downloaded yet failed with
   "'NoneType' object has no attribute 'write'" when the app was started from its shortcut.
   The download's progress bar had no console to print to; it now has somewhere to go.
@@ -124,8 +131,8 @@ python -m pytest tests
 
 Built and tested in a Linux cloud session. It has not been run on Windows yet.
 
-- The 29 unit tests pass: mixing, mute and solo, pan, tempo and pitch (length, pitch and beat
-  spacing measured on test tones and clicks), export level, WAV and MP3 writing,
+- The 37 unit tests pass: mixing, mute and solo, pan, tempo and pitch (length, pitch and beat
+  spacing measured on test tones and clicks), looping, export level, WAV and MP3 writing,
   saved mixes and the Stems folders.
 - Real splits with the 4-stem and 6-stem Demucs models on a 30-second test track, including
   Cancel and an unreadable file.

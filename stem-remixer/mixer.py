@@ -14,6 +14,8 @@ MIN_TEMPO = 0.5
 MAX_TEMPO = 1.5
 MAX_PITCH = 6         # semitones up or down
 EXPORT_CEILING = 0.98  # exports louder than full scale are turned down to this
+MIN_LOOP_SECONDS = 0.1
+_LOOP_FADE = 128       # frames faded either side of the loop join, so it doesn't click
 _EXPORT_CHUNK = 1 << 18
 
 
@@ -118,6 +120,9 @@ class Mixer:
         self.master = 1.0
         self.ended = False
         self.clipped = False  # set when a played block went over full scale
+        self.loop_start = None   # the marked section, in song frames (None = none marked)
+        self.loop_end = None
+        self.loop_on = False
         self._last_gains = None
         self._stretch = None
         self._lock = threading.Lock()   # the sound card and the window both move the playhead
@@ -153,7 +158,29 @@ class Mixer:
             self.ended = False
             self._stretch = None
 
+    @property
+    def looping(self) -> bool:
+        return self.loop_on and self.loop_start is not None
+
+    def set_loop(self, start: float, end: float) -> bool:
+        """Mark the section between two song frames (either order). Returns
+        False, changing nothing, if it is too short to loop."""
+        start, end = sorted((float(start), float(end)))
+        start = max(0.0, start)
+        end = min(float(self.length - 1), end)
+        if end - start < MIN_LOOP_SECONDS * self.samplerate:
+            return False
+        with self._lock:
+            self.loop_start, self.loop_end = start, end
+        return True
+
+    def clear_loop(self) -> None:
+        with self._lock:
+            self.loop_start = self.loop_end = None
+            self.loop_on = False
+
     def reset(self) -> None:
+        self.clear_loop()
         for stem in self.stems:
             stem.reset()
         self.tempo = 1.0
@@ -161,13 +188,19 @@ class Mixer:
         self.master = 1.0
 
     def settings(self) -> dict:
-        return {"tempo": self.tempo, "pitch": self.pitch, "master": self.master,
+        loop = None
+        if self.loop_start is not None:
+            loop = {"start": self.loop_start, "end": self.loop_end, "on": self.loop_on}
+        return {"tempo": self.tempo, "pitch": self.pitch, "master": self.master, "loop": loop,
                 "stems": {s.name: s.settings() for s in self.stems}}
 
     def apply_settings(self, values: dict) -> None:
         self.tempo = float(np.clip(values.get("tempo", 1.0), MIN_TEMPO, MAX_TEMPO))
         self.pitch = int(np.clip(round(values.get("pitch", 0)), -MAX_PITCH, MAX_PITCH))
         self.master = float(np.clip(values.get("master", 1.0), 0.0, MAX_VOLUME))
+        loop = values.get("loop")
+        if isinstance(loop, dict) and self.set_loop(loop.get("start", 0), loop.get("end", 0)):
+            self.loop_on = bool(loop.get("on", False))
         saved = values.get("stems", {})
         for stem in self.stems:
             if isinstance(saved.get(stem.name), dict):
@@ -239,11 +272,11 @@ class Mixer:
             tempo, ratio = self.tempo, self.pitch_ratio
             target = self.gains()
             last = self.length - 1
+            loop = (self.loop_start, self.loop_end) if self.looping else None
             if self._plain(tempo, ratio):
                 self._stretch = None
                 previous = self._last_gains if self._last_gains is not None else target
-                out = self._mix(self.position, frames, ratio, previous, target)
-                position = self.position + frames * ratio
+                out, position = self._plain_block(frames, ratio, previous, target, loop)
             else:
                 stretch = self._stretch
                 if stretch is None:
@@ -252,7 +285,12 @@ class Mixer:
                 made = [stretch.ready]
                 count = len(stretch.ready)
                 while count < frames and stretch.ideal < last:
+                    before = stretch.ideal
                     made.append(stretch.hop(fetch, tempo, ratio))
+                    if loop and before < loop[1] <= stretch.ideal:
+                        # Reached the end of the section: carry on from its start.
+                        # The stretcher's overlap blends the join.
+                        stretch.ideal = loop[0] + (stretch.ideal - loop[1]) % (loop[1] - loop[0])
                     count += Stretcher.HOP
                 audio = np.concatenate(made) if len(made) > 1 else made[0]
                 out = np.zeros((frames, 2), dtype=np.float32)
@@ -260,6 +298,9 @@ class Mixer:
                 stretch.ready = audio[frames:]
                 # Past the end only once what was made has been played out.
                 position = stretch.ideal - len(stretch.ready) * tempo
+                if loop and position < loop[0] <= self.position:
+                    # Just went round: what's still to be played is the section's tail.
+                    position = max(loop[0], loop[1] - (loop[0] - position))
                 if count < frames:
                     position = float(last)
             self._last_gains = target
@@ -272,26 +313,52 @@ class Mixer:
             self.position = max(0.0, position)
             return out
 
+    def _plain_block(self, frames, ratio, previous, target, loop) -> tuple:
+        """A block read straight from the stems, going round the loop if one
+        is on. Returns (audio, new position)."""
+        position = self.position
+        if not loop or position >= loop[1]:
+            return self._mix(position, frames, ratio, previous, target), position + frames * ratio
+        start, end = loop
+        out = np.zeros((frames, 2), dtype=np.float32)
+        done = 0
+        while done < frames:
+            count = min(frames - done, max(1, int(np.ceil((end - position) / ratio))))
+            piece = self._mix(position, count, ratio, previous, target)
+            # Dip to silence for a few milliseconds either side of the join.
+            where = position + np.arange(count) * ratio
+            near = np.minimum(end - where, where - start) / (_LOOP_FADE * ratio)
+            piece *= np.clip(np.where(where < start, 1.0, near), 0.0, 1.0)[:, None].astype(np.float32)
+            out[done:done + count] = piece
+            done += count
+            position += count * ratio
+            previous = target
+            if position >= end:
+                position = start + (position - end) % (end - start)
+        return out, position
+
     def forget_gains(self) -> None:
         """Call when playback (re)starts, so it doesn't glide from stale gains
         or carry on from a stale stretch."""
         self._last_gains = None
         self._stretch = None
 
-    def render_all(self) -> tuple:
-        """The whole song with the current settings, for an export.
+    def render_all(self, section=None) -> tuple:
+        """The whole song with the current settings, for an export, or just
+        the (start, end) song frames given as `section`.
         Returns (audio, turned_down_by): audio is float32 within -1..1, and
         turned_down_by is the factor applied to avoid clipping (1.0 = none)."""
         gains = self.gains()
         tempo, ratio = self.tempo, self.pitch_ratio
-        total = int(np.ceil((self.length - 1) / tempo)) if self.length > 1 else 0
+        first, last = section if section else (0.0, float(self.length - 1))
+        total = int(np.ceil((last - first) / tempo)) if last > first else 0
         parts = []
         if self._plain(tempo, ratio):
             for start in range(0, total, _EXPORT_CHUNK):
                 frames = min(_EXPORT_CHUNK, total - start)
-                parts.append(self._mix(start * ratio, frames, ratio, gains, gains))
+                parts.append(self._mix(first + start * ratio, frames, ratio, gains, gains))
         else:
-            stretch, fetch = Stretcher(0.0), self._fetcher(gains)
+            stretch, fetch = Stretcher(first), self._fetcher(gains)
             for _ in range(0, total, Stretcher.HOP):
                 parts.append(stretch.hop(fetch, tempo, ratio))
         audio = np.concatenate(parts)[:total] if parts else np.zeros((0, 2), np.float32)
