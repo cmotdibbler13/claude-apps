@@ -10,7 +10,6 @@ import io
 import os
 import subprocess
 import sys
-import time
 import urllib.request
 import zipfile
 
@@ -45,17 +44,25 @@ def local_version(folder: str = APP_DIR) -> str:
 
 
 def _fetch(url: str) -> bytes:
-    request = urllib.request.Request(url, headers={"User-Agent": "stem-remixer-updater"})
+    request = urllib.request.Request(url, headers={
+        "User-Agent": "stem-remixer-updater", "Accept": "application/vnd.github.raw"})
     with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
         return response.read()
 
 
 def remote_version(branch: str, fetch=_fetch) -> str:
-    # GitHub serves a copy of this file up to five minutes old. A different
-    # address each time gets a fresh one, so a new version shows up straight away.
-    url = (f"https://raw.githubusercontent.com/{REPOSITORY}/{branch}/{FOLDER}/{VERSION_FILE}"
-           f"?t={int(time.time())}")
-    return fetch(url).decode("utf-8", "replace").strip()
+    """The version number on a branch. GitHub's API is asked first because it
+    is always current; the plain file address is the fallback, and can be up
+    to five minutes behind."""
+    path = f"{FOLDER}/{VERSION_FILE}"
+    try:
+        text = fetch(f"https://api.github.com/repos/{REPOSITORY}/contents/{path}?ref={branch}")
+        if parse_version(text.decode("utf-8", "replace")):
+            return text.decode("utf-8", "replace").strip()
+    except Exception:
+        pass  # rate-limited or blocked: try the other way
+    text = fetch(f"https://raw.githubusercontent.com/{REPOSITORY}/{branch}/{path}")
+    return text.decode("utf-8", "replace").strip()
 
 
 def check(folder: str = APP_DIR, fetch=_fetch):

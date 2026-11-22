@@ -20,11 +20,13 @@ def repo_zip(files: dict) -> bytes:
     return buffer.getvalue()
 
 
-def fake_github(versions: dict, files: dict = None):
+def fake_github(versions: dict, files: dict = None, api=True, stale=None):
     def fetch(url):
         for branch, version in versions.items():
-            if url.split("?")[0].endswith(f"/{branch}/stem-remixer/VERSION"):
+            if url.endswith(f"/contents/stem-remixer/VERSION?ref={branch}") and api:
                 return version.encode()
+            if url.endswith(f"/{branch}/stem-remixer/VERSION"):
+                return (stale or version).encode()
             if url.endswith(f"/refs/heads/{branch}"):
                 return repo_zip(files or {})
         raise OSError("404")
@@ -79,3 +81,11 @@ def test_apply_reports_new_requirements_and_bad_downloads(installed):
     with pytest.raises(updater.UpdateError, match="download failed"):
         updater.apply("gone", str(installed), fake_github({"main": "1.4.0"}))
     assert (installed / "main.py").read_text() == "new"  # failed updates changed nothing
+
+
+def test_version_comes_from_the_api_with_the_file_as_fallback(installed):
+    folder = str(installed)
+    fresh = fake_github({"main": "1.5.0"}, stale="1.2.0")
+    assert updater.check(folder, fresh) == ("1.5.0", "main")
+    no_api = fake_github({"main": "1.5.0"}, api=False)
+    assert updater.check(folder, no_api) == ("1.5.0", "main")
