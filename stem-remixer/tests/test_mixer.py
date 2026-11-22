@@ -72,25 +72,92 @@ def test_playback_reaches_the_end():
     assert not mixer.ended and mixer.position == 0
 
 
-def test_speed_changes_length_and_pitch():
-    mixer = Mixer([Stem("a", tone(440))], RATE)
-    mixer.speed = 1.25
+def peak_hz(audio):
+    spectrum = np.abs(np.fft.rfft(audio[:, 0] * np.hanning(len(audio))))
+    return np.argmax(spectrum) * RATE / len(audio)
+
+
+def rms(audio):
+    return float(np.sqrt(np.mean(audio.astype(np.float64) ** 2)))
+
+
+@pytest.mark.parametrize("tempo", [0.6, 0.85, 1.25, 1.5])
+def test_tempo_changes_length_but_not_pitch(tempo):
+    mixer = Mixer([Stem("a", tone(440, 3.0))], RATE)
+    mixer.tempo = tempo
     audio, _ = mixer.render_all()
-    assert len(audio) == pytest.approx(RATE / 1.25, abs=2)
-    spectrum = np.abs(np.fft.rfft(audio[:, 0]))
-    peak_hz = np.argmax(spectrum) * RATE / len(audio)
-    assert peak_hz == pytest.approx(550, abs=3)
+    assert len(audio) == pytest.approx(3 * RATE / tempo, abs=2)
+    assert peak_hz(audio) == pytest.approx(440, abs=1.5)
+    middle = audio[RATE // 2:-RATE // 2]
+    assert rms(middle) == pytest.approx(0.25 / np.sqrt(2), rel=0.05)  # no warble or level change
 
 
-def test_blocks_at_speed_match_the_export():
-    mixer = Mixer([Stem("a", tone(440)), Stem("b", tone(660))], RATE)
-    mixer.speed = 0.8
+@pytest.mark.parametrize("pitch", [-5, 3])
+def test_pitch_changes_pitch_but_not_length(pitch):
+    mixer = Mixer([Stem("a", tone(440, 3.0))], RATE)
+    mixer.pitch = pitch
+    audio, _ = mixer.render_all()
+    assert len(audio) == pytest.approx(3 * RATE, abs=2)
+    assert peak_hz(audio) == pytest.approx(440 * 2 ** (pitch / 12), abs=1.5)
+
+
+def test_tempo_and_pitch_together_like_a_record_deck():
+    mixer = Mixer([Stem("a", tone(440, 2.0))], RATE)
+    mixer.pitch = 6
+    mixer.tempo = mixer.pitch_ratio
+    audio, _ = mixer.render_all()
+    assert len(audio) == pytest.approx(2 * RATE / mixer.tempo, abs=2)
+    assert peak_hz(audio) == pytest.approx(440 * mixer.tempo, abs=2)
+
+
+def test_tempo_keeps_drum_hits_in_time():
+    clicks = np.zeros(RATE * 4, np.float32)
+    clicks[::RATE // 2] = 0.9  # a hit every half second
+    mixer = Mixer([Stem("d", clicks)], RATE)
+    mixer.tempo = 0.8
+    audio, _ = mixer.render_all()
+    hits = np.flatnonzero(np.abs(audio[:, 0]) > 0.3)
+    starts = hits[np.insert(np.diff(hits) > 2000, 0, True)]
+    assert len(starts) == 8
+    assert np.allclose(np.diff(starts), RATE / 2 / 0.8, atol=1100)
+
+
+@pytest.mark.parametrize("tempo,pitch", [(0.8, 0), (1.0, 2), (2 ** (3 / 12), 3)])
+def test_blocks_match_the_export(tempo, pitch):
+    mixer = Mixer([Stem("a", tone(440, 2.0)), Stem("b", tone(660, 2.0))], RATE)
+    mixer.tempo, mixer.pitch = tempo, pitch
     whole, _ = mixer.render_all()
     blocks = []
     while not mixer.ended:
-        blocks.append(mixer.render_block(512))
-    played = np.concatenate(blocks)[:len(whole)]
-    assert np.allclose(played, whole, atol=1e-4)
+        blocks.append(mixer.render_block(441))
+        assert 0 <= mixer.position <= mixer.length
+    played = np.concatenate(blocks)
+    assert len(played) >= len(whole) - 441
+    size = min(len(played), len(whole))
+    assert np.allclose(played[:size], whole[:size], atol=1e-4)
+
+
+def test_seek_while_stretching():
+    mixer = Mixer([Stem("a", tone(440, 4.0))], RATE)
+    mixer.tempo = 0.5
+    mixer.render_block(4096)
+    assert 0 < mixer.position < 4096  # half speed: fewer song frames than output frames
+    mixer.seek(2 * RATE)
+    mixer.render_block(441)
+    assert mixer.position == pytest.approx(2 * RATE + 220, abs=5)
+
+
+def test_stretching_keeps_up_with_playback():
+    import time
+    rng = np.random.default_rng(0)
+    stems = [Stem(f"s{i}", rng.standard_normal((RATE * 10, 2)).astype(np.float32) * 0.05)
+             for i in range(6)]
+    mixer = Mixer(stems, RATE)
+    mixer.tempo, mixer.pitch = 0.8, 2
+    started = time.perf_counter()
+    for _ in range(100):
+        mixer.render_block(441)  # one second of sound
+    assert time.perf_counter() - started < 0.5
 
 
 def test_export_is_turned_down_rather_than_clipped():
@@ -104,7 +171,7 @@ def test_export_is_turned_down_rather_than_clipped():
 
 def test_settings_round_trip():
     mixer = make(0.1, 0.2)
-    mixer.speed, mixer.master = 0.9, 1.2
+    mixer.tempo, mixer.pitch, mixer.master = 0.9, -2, 1.2
     mixer.stems[1].apply_settings({"volume": 9, "pan": -0.4, "mute": True})
     saved = mixer.settings()
     other = make(0.1, 0.2)

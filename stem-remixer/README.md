@@ -16,7 +16,8 @@ open-source model from Meta. Nothing is uploaded.
 - **One lane per stem**, each with a waveform, volume (0 to 150%), pan, **M** (mute) and
   **S** (solo: hear only that part).
 - **Play / Pause** (or Space), **Stop**, and click or drag on any waveform to jump.
-- **Speed** from 50% to 150%. It works like a record deck: slower is also lower in pitch.
+- **Tempo** from 50% to 150% without changing the pitch, and **Pitch** up or down by up to
+  6 semitones without changing the tempo. Both work live and in the export.
 - **Master** volume, with a "too loud" warning if the mix is clipping.
 - **Export mix** saves what you hear as a WAV or a 320 kbps MP3. If the mix would distort, the
   export is turned down just enough and the status line says so.
@@ -71,6 +72,11 @@ command from [pytorch.org/get-started](https://pytorch.org/get-started/locally/)
 
 - M4A, AAC and WMA files need [FFmpeg](https://ffmpeg.org/) installed and on your PATH. The
   other types work without it.
+- Tempo and pitch changes are best kept modest. Up to about 20% either way (or 3 semitones)
+  sounds clean on most music; further out, drums can start to flam and sustained notes to
+  flutter. At 100% and 0 the audio is untouched.
+- For the record-deck effect (faster and higher together), move both: for example Tempo 106%
+  with Pitch +1.
 - The split is a best guess by the model. Expect a little of one instrument to bleed into
   another stem, most often in "other" and in the guitar and piano stems.
 - A 4-minute song takes about 250 MB of memory while open, and its stems about 170 MB on disk
@@ -80,6 +86,9 @@ command from [pytorch.org/get-started](https://pytorch.org/get-started/locally/)
 
 ## Changes
 
+- **2026-11-22**: Tempo now leaves the pitch alone (it replaces Speed, which changed both),
+  and there is a separate Pitch control in semitones. Reset mix and Show stems moved to the
+  top bar to make room.
 - **2026-11-22**: Play failed with "Invalid number of channels [PaErrorCode -9998]" when the
   default Windows output would not open in stereo (for example a Bluetooth headset in call
   mode). Play now tries the same output in mono, then the output through Windows' other audio
@@ -112,7 +121,8 @@ python -m pytest tests
 
 Built and tested in a Linux cloud session. It has not been run on Windows yet.
 
-- The 18 unit tests pass: mixing, mute and solo, pan, speed, export level, WAV and MP3 writing,
+- The 29 unit tests pass: mixing, mute and solo, pan, tempo and pitch (length, pitch and beat
+  spacing measured on test tones and clicks), export level, WAV and MP3 writing,
   saved mixes and the Stems folders.
 - Real splits with the 4-stem and 6-stem Demucs models on a 30-second test track, including
   Cancel and an unreadable file.
@@ -121,6 +131,6 @@ Built and tested in a Linux cloud session. It has not been run on Windows yet.
 - **Not checked:** the installer. It is PowerShell for Windows and could not be run in the
   cloud session, so its first real run will be yours.
 - **Not checked:** sound output. The cloud machine has no sound card, so Play has not been
-  heard there. The fallback between outputs is tested against a stand-in sound card.
+  heard there, and the tempo and pitch changes have been measured but not listened to. The fallback between outputs is tested against a stand-in sound card.
 
 Unofficial personal project. Not made, endorsed or supported by Anthropic or Meta.

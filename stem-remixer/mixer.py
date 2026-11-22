@@ -5,11 +5,14 @@ at a time for live playback or the whole song at once for an export. Pure
 NumPy, so it can be tested without a sound card.
 """
 
+import threading
+
 import numpy as np
 
 MAX_VOLUME = 1.5      # sliders go up to 150%
-MIN_SPEED = 0.5
-MAX_SPEED = 1.5
+MIN_TEMPO = 0.5
+MAX_TEMPO = 1.5
+MAX_PITCH = 6         # semitones up or down
 EXPORT_CEILING = 0.98  # exports louder than full scale are turned down to this
 _EXPORT_CHUNK = 1 << 18
 
@@ -50,6 +53,55 @@ def pan_gains(pan: float) -> tuple:
     return (min(1.0, 1.0 - pan), min(1.0, 1.0 + pan))
 
 
+class Stretcher:
+    """Changes how fast audio plays without changing its pitch (WSOLA).
+
+    The output is built from short overlapping slices of the input. To play
+    slower or faster, the slices are taken closer together or further apart
+    than they are laid down. Each slice is nudged to the spot, near where it
+    should come from, that lines up best with the end of the previous one, so
+    the joins don't warble.
+    """
+
+    FRAME = 2048    # slice length, about 46 ms
+    HOP = 1024      # output made per slice: slices overlap by half
+    SEARCH = 1024   # how far a slice may be nudged either way
+
+    def __init__(self, position: float):
+        self.ideal = float(position)   # song frame the next slice should start at
+        self.template = None           # what would naturally have come next
+        self.tail = np.zeros((self.HOP, 2), dtype=np.float32)
+        self.ready = np.zeros((0, 2), dtype=np.float32)   # made but not yet played
+        window = np.hanning(self.FRAME + 1)[:self.FRAME]  # halves sum to exactly 1
+        self.window = window.astype(np.float32)[:, None]
+
+    def hop(self, fetch, tempo: float, ratio: float) -> np.ndarray:
+        """Make the next HOP frames. fetch(song_position, frames, ratio) returns
+        mixed audio read at `ratio` song frames per frame; `tempo` is how many
+        song frames go by per output frame."""
+        frame, hop, search = self.FRAME, self.HOP, self.SEARCH
+        region = fetch(self.ideal - search * ratio, frame + 2 * search + hop, ratio)
+        offset = search
+        if self.template is not None:
+            mono = region[:hop + 2 * search].sum(axis=1)
+            match = np.correlate(mono, self.template, "valid")
+            squares = np.concatenate(([0.0], np.cumsum(mono.astype(np.float64) ** 2)))
+            energy = squares[hop:hop + 2 * search + 1] - squares[:2 * search + 1]
+            score = match / np.sqrt(energy + 1e-9)
+            best = int(np.argmax(score))
+            if score[best] > 0:
+                offset = best
+        piece = region[offset:offset + frame] * self.window
+        if self.template is None:
+            out = region[offset:offset + hop].copy()   # the very start: nothing to fade in from
+        else:
+            out = piece[:hop] + self.tail
+        self.tail = piece[hop:].copy()
+        self.template = region[offset + hop:offset + 2 * hop].sum(axis=1)
+        self.ideal += hop * tempo
+        return out
+
+
 class Mixer:
     def __init__(self, stems: list, samplerate: int):
         if not stems:
@@ -60,14 +112,21 @@ class Mixer:
         self.stems = stems
         self.samplerate = int(samplerate)
         self.length = length
-        self.position = 0.0   # in frames of the song; fractional when speed != 1
-        self.speed = 1.0      # like a turntable: faster is also higher
+        self.position = 0.0   # in frames of the song; can be fractional
+        self.tempo = 1.0      # how fast the song goes by; pitch is unaffected
+        self.pitch = 0        # semitones up or down; tempo is unaffected
         self.master = 1.0
         self.ended = False
         self.clipped = False  # set when a played block went over full scale
         self._last_gains = None
+        self._stretch = None
+        self._lock = threading.Lock()   # the sound card and the window both move the playhead
 
     # ------------------------------------------------------------- settings
+
+    @property
+    def pitch_ratio(self) -> float:
+        return float(2.0 ** (self.pitch / 12.0))
 
     @property
     def duration(self) -> float:
@@ -89,21 +148,25 @@ class Mixer:
         return table
 
     def seek(self, frame: float) -> None:
-        self.position = float(np.clip(frame, 0, max(0, self.length - 1)))
-        self.ended = False
+        with self._lock:
+            self.position = float(np.clip(frame, 0, max(0, self.length - 1)))
+            self.ended = False
+            self._stretch = None
 
     def reset(self) -> None:
         for stem in self.stems:
             stem.reset()
-        self.speed = 1.0
+        self.tempo = 1.0
+        self.pitch = 0
         self.master = 1.0
 
     def settings(self) -> dict:
-        return {"speed": self.speed, "master": self.master,
+        return {"tempo": self.tempo, "pitch": self.pitch, "master": self.master,
                 "stems": {s.name: s.settings() for s in self.stems}}
 
     def apply_settings(self, values: dict) -> None:
-        self.speed = float(np.clip(values.get("speed", 1.0), MIN_SPEED, MAX_SPEED))
+        self.tempo = float(np.clip(values.get("tempo", 1.0), MIN_TEMPO, MAX_TEMPO))
+        self.pitch = int(np.clip(round(values.get("pitch", 0)), -MAX_PITCH, MAX_PITCH))
         self.master = float(np.clip(values.get("master", 1.0), 0.0, MAX_VOLUME))
         saved = values.get("stems", {})
         for stem in self.stems:
@@ -150,40 +213,88 @@ class Mixer:
                 out[:count] += audio * glide
         return out
 
+    def _fetcher(self, gains: np.ndarray):
+        """A fetch function for the Stretcher: mixed audio from any song
+        position, silent before the start and after the end."""
+        def fetch(position: float, frames: int, ratio: float) -> np.ndarray:
+            lead = 0
+            if position < 0:
+                lead = min(frames, int(np.ceil(-position / ratio)))
+                position += lead * ratio
+            audio = self._mix(position, frames - lead, ratio, gains, gains)
+            if lead:
+                audio = np.concatenate([np.zeros((lead, 2), np.float32), audio])
+            return audio
+        return fetch
+
+    @staticmethod
+    def _plain(tempo: float, ratio: float) -> bool:
+        """True when tempo and pitch move together, as on a record deck, so
+        reading the stems faster or slower is all that's needed."""
+        return abs(tempo - ratio) < 1e-6
+
     def render_block(self, frames: int) -> np.ndarray:
         """Next block for the sound card; moves the playhead on."""
-        target = self.gains()
-        previous = self._last_gains if self._last_gains is not None else target
-        speed = self.speed
-        position = self.position
-        out = self._mix(position, frames, speed, previous, target)
-        self._last_gains = target
-        if np.abs(out).max(initial=0.0) > 1.0:
-            self.clipped = True
-            np.clip(out, -1.0, 1.0, out=out)
-        position += frames * speed
-        if position >= self.length - 1:
-            position = float(self.length - 1)
-            self.ended = True
-        self.position = position
-        return out
+        with self._lock:
+            tempo, ratio = self.tempo, self.pitch_ratio
+            target = self.gains()
+            last = self.length - 1
+            if self._plain(tempo, ratio):
+                self._stretch = None
+                previous = self._last_gains if self._last_gains is not None else target
+                out = self._mix(self.position, frames, ratio, previous, target)
+                position = self.position + frames * ratio
+            else:
+                stretch = self._stretch
+                if stretch is None:
+                    stretch = self._stretch = Stretcher(self.position)
+                fetch = self._fetcher(target)
+                made = [stretch.ready]
+                count = len(stretch.ready)
+                while count < frames and stretch.ideal < last:
+                    made.append(stretch.hop(fetch, tempo, ratio))
+                    count += Stretcher.HOP
+                audio = np.concatenate(made) if len(made) > 1 else made[0]
+                out = np.zeros((frames, 2), dtype=np.float32)
+                out[:min(frames, count)] = audio[:frames]
+                stretch.ready = audio[frames:]
+                # Past the end only once what was made has been played out.
+                position = stretch.ideal - len(stretch.ready) * tempo
+                if count < frames:
+                    position = float(last)
+            self._last_gains = target
+            if np.abs(out).max(initial=0.0) > 1.0:
+                self.clipped = True
+                np.clip(out, -1.0, 1.0, out=out)
+            if position >= last:
+                position = float(last)
+                self.ended = True
+            self.position = max(0.0, position)
+            return out
 
     def forget_gains(self) -> None:
-        """Call when playback (re)starts, so it doesn't glide from stale gains."""
+        """Call when playback (re)starts, so it doesn't glide from stale gains
+        or carry on from a stale stretch."""
         self._last_gains = None
+        self._stretch = None
 
     def render_all(self) -> tuple:
         """The whole song with the current settings, for an export.
         Returns (audio, turned_down_by): audio is float32 within -1..1, and
         turned_down_by is the factor applied to avoid clipping (1.0 = none)."""
         gains = self.gains()
-        speed = self.speed
-        total = int(np.ceil((self.length - 1) / speed)) if self.length > 1 else 0
+        tempo, ratio = self.tempo, self.pitch_ratio
+        total = int(np.ceil((self.length - 1) / tempo)) if self.length > 1 else 0
         parts = []
-        for start in range(0, total, _EXPORT_CHUNK):
-            frames = min(_EXPORT_CHUNK, total - start)
-            parts.append(self._mix(start * speed, frames, speed, gains, gains))
-        audio = np.concatenate(parts) if parts else np.zeros((0, 2), np.float32)
+        if self._plain(tempo, ratio):
+            for start in range(0, total, _EXPORT_CHUNK):
+                frames = min(_EXPORT_CHUNK, total - start)
+                parts.append(self._mix(start * ratio, frames, ratio, gains, gains))
+        else:
+            stretch, fetch = Stretcher(0.0), self._fetcher(gains)
+            for _ in range(0, total, Stretcher.HOP):
+                parts.append(stretch.hop(fetch, tempo, ratio))
+        audio = np.concatenate(parts)[:total] if parts else np.zeros((0, 2), np.float32)
         peak = float(np.abs(audio).max(initial=0.0))
         factor = 1.0
         if peak > 1.0:

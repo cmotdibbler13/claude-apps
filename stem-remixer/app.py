@@ -16,7 +16,7 @@ import tkinter.messagebox as messagebox
 import customtkinter as ctk
 
 import separator
-from mixer import (MAX_SPEED, MAX_VOLUME, MIN_SPEED, Mixer, Player, Stem,
+from mixer import (MAX_PITCH, MAX_TEMPO, MAX_VOLUME, MIN_TEMPO, Mixer, Player, Stem,
                    waveform_peaks, write_audio)
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -217,7 +217,7 @@ class StemRemixerApp(ctk.CTk):
         ctk.set_appearance_mode("dark")
         self.title("Stem Remixer")
         self.geometry("1120x760")
-        self.minsize(940, 640)
+        self.minsize(1080, 640)
         self.configure(fg_color=SURFACE_000)
         icon_path = os.path.join(APP_DIR, "assets", "icon.ico")
         if os.path.exists(icon_path):
@@ -260,7 +260,7 @@ class StemRemixerApp(ctk.CTk):
 
         top = ctk.CTkFrame(self, fg_color=SURFACE_100, corner_radius=0)
         top.grid(row=0, column=0, sticky="ew")
-        top.grid_columnconfigure(3, weight=1)
+        top.grid_columnconfigure(5, weight=1)
         self.open_btn = self._button(top, "Open song…", self._on_open, primary=True, width=120)
         self.open_btn.grid(row=0, column=0, padx=(16, 8), pady=12)
         self.model_label = tk.StringVar(value=separator.DEFAULT_MODEL_LABEL)
@@ -271,9 +271,13 @@ class StemRemixerApp(ctk.CTk):
             dropdown_hover_color=SURFACE_300, dropdown_text_color=INK)
         self.model_menu.grid(row=0, column=1, padx=(0, 8))
         self.folder_btn = self._button(top, "Open stems folder…", self._on_open_folder, width=150)
-        self.folder_btn.grid(row=0, column=2)
+        self.folder_btn.grid(row=0, column=2, padx=(0, 8))
+        self.show_btn = self._button(top, "Show stems", self._on_show_folder, width=100)
+        self.show_btn.grid(row=0, column=3, padx=(0, 8))
+        self.reset_btn = self._button(top, "Reset mix", self._on_reset, width=90)
+        self.reset_btn.grid(row=0, column=4)
         self.song_label = ctk.CTkLabel(top, text="", text_color=INK_MUTED, anchor="e")
-        self.song_label.grid(row=0, column=3, sticky="e", padx=16)
+        self.song_label.grid(row=0, column=5, sticky="e", padx=16)
 
         status = ctk.CTkFrame(self, fg_color="transparent")
         status.grid(row=1, column=0, sticky="ew", padx=16, pady=(10, 6))
@@ -298,7 +302,7 @@ class StemRemixerApp(ctk.CTk):
 
         bar = ctk.CTkFrame(self, fg_color=SURFACE_100, corner_radius=0)
         bar.grid(row=3, column=0, sticky="ew")
-        bar.grid_columnconfigure(8, weight=1)
+        bar.grid_columnconfigure(11, weight=1)
         self.play_btn = self._button(bar, "▶  Play", self._on_play, primary=True, width=100)
         self.play_btn.grid(row=0, column=0, padx=(16, 8), pady=12)
         self.stop_btn = self._button(bar, "■  Stop", self._on_stop, width=80)
@@ -307,35 +311,38 @@ class StemRemixerApp(ctk.CTk):
                                        font=ctk.CTkFont(size=15))
         self.time_label.grid(row=0, column=2, padx=10)
 
-        ctk.CTkLabel(bar, text="Speed", text_color=INK_FAINT).grid(row=0, column=3, padx=(8, 6))
-        self.speed = self._slider(bar, MIN_SPEED, MAX_SPEED, self._on_speed)
-        self.speed.grid(row=0, column=4)
-        self.speed_text = ctk.CTkLabel(bar, text="100%", text_color=INK_MUTED, width=44)
-        self.speed_text.grid(row=0, column=5)
-        ctk.CTkLabel(bar, text="Master", text_color=INK_FAINT).grid(row=0, column=6, padx=(12, 6))
+        ctk.CTkLabel(bar, text="Tempo", text_color=INK_FAINT).grid(row=0, column=3, padx=(8, 6))
+        self.tempo = self._slider(bar, MIN_TEMPO, MAX_TEMPO, self._on_tempo)
+        self.tempo.grid(row=0, column=4)
+        self.tempo_text = ctk.CTkLabel(bar, text="100%", text_color=INK_MUTED, width=44)
+        self.tempo_text.grid(row=0, column=5)
+        ctk.CTkLabel(bar, text="Pitch", text_color=INK_FAINT).grid(row=0, column=6, padx=(12, 6))
+        self.pitch = self._slider(bar, -MAX_PITCH, MAX_PITCH, self._on_pitch,
+                                  steps=2 * MAX_PITCH, start=0)
+        self.pitch.grid(row=0, column=7)
+        self.pitch_text = ctk.CTkLabel(bar, text="0", text_color=INK_MUTED, width=30)
+        self.pitch_text.grid(row=0, column=8)
+        ctk.CTkLabel(bar, text="Master", text_color=INK_FAINT).grid(row=0, column=9, padx=(12, 6))
         self.master_slider = self._slider(bar, 0, MAX_VOLUME, self._on_master)
-        self.master_slider.grid(row=0, column=7)
-        self.master_text = ctk.CTkLabel(bar, text="100%", text_color=INK_MUTED, width=120,
+        self.master_slider.grid(row=0, column=10)
+        self.master_text = ctk.CTkLabel(bar, text="100%", text_color=INK_MUTED, width=110,
                                         anchor="w")
-        self.master_text.grid(row=0, column=8, sticky="w", padx=(4, 0))
-        self.speed.bind("<Double-Button-1>", lambda _e: self._set_speed(1.0))
+        self.master_text.grid(row=0, column=11, sticky="w", padx=(4, 0))
+        self.tempo.bind("<Double-Button-1>", lambda _e: self._set_tempo(1.0))
+        self.pitch.bind("<Double-Button-1>", lambda _e: self._set_pitch(0))
         self.master_slider.bind("<Double-Button-1>", lambda _e: self._set_master(1.0))
 
-        self.reset_btn = self._button(bar, "Reset mix", self._on_reset, width=90)
-        self.reset_btn.grid(row=0, column=9, padx=(0, 8))
-        self.show_btn = self._button(bar, "Show stems", self._on_show_folder, width=100)
-        self.show_btn.grid(row=0, column=10, padx=(0, 8))
         self.export_btn = self._button(bar, "Export mix…", self._on_export, primary=True, width=110)
-        self.export_btn.grid(row=0, column=11, padx=(0, 16))
+        self.export_btn.grid(row=0, column=12, padx=(0, 16))
 
         self._set_status("Ready. The first split downloads the model (about 80 MB), once.")
         self._enable()
 
-    def _slider(self, parent, low, high, command):
-        slider = ctk.CTkSlider(parent, from_=low, to=high, width=120, command=command,
-                               progress_color=BRASS, button_color=INK,
+    def _slider(self, parent, low, high, command, steps=None, start=1.0):
+        slider = ctk.CTkSlider(parent, from_=low, to=high, width=110, command=command,
+                               number_of_steps=steps, progress_color=BRASS, button_color=INK,
                                button_hover_color=BRASS, fg_color=SURFACE_000)
-        slider.set(1.0)
+        slider.set(start)
         return slider
 
     def _set_status(self, text, colour=INK_MUTED):
@@ -346,7 +353,7 @@ class StemRemixerApp(ctk.CTk):
         loaded = "normal" if self.mixer is not None and not self._splitting else "disabled"
         idle = "disabled" if self._splitting else "normal"
         for widget in (self.play_btn, self.stop_btn, self.reset_btn, self.export_btn,
-                       self.show_btn, self.speed, self.master_slider):
+                       self.show_btn, self.tempo, self.pitch, self.master_slider):
             widget.configure(state=loaded)
         for widget in (self.open_btn, self.folder_btn, self.model_menu):
             widget.configure(state=idle)
@@ -475,12 +482,14 @@ class StemRemixerApp(ctk.CTk):
             lane.frame.grid(row=row, column=0, sticky="nsew", pady=(0, 8))
 
         self.song_label.configure(text=self.song_name)
-        self.speed.set(self.mixer.speed)
+        self.tempo.set(self.mixer.tempo)
+        self.pitch.set(self.mixer.pitch)
         self.master_slider.set(self.mixer.master)
         self._labels()
         self._enable()
         self._set_status("Space plays and pauses. Click a waveform to jump. "
-                         "M mutes a part, S plays it alone. Double-click a slider to reset it.")
+                         "M mutes a part, S plays it alone. Pitch is in semitones. "
+                         "Double-click a slider to reset it.")
 
     # ----------------------------------------------------------- transport
 
@@ -531,15 +540,25 @@ class StemRemixerApp(ctk.CTk):
             text=f"{clock(self.mixer.position / self.mixer.samplerate)} / "
                  f"{clock(self.mixer.duration)}")
 
-    def _on_speed(self, value):
+    def _on_tempo(self, value):
         value = float(value)
-        self._set_speed(1.0 if abs(value - 1.0) < 0.025 else round(value, 2), move=False)
+        self._set_tempo(1.0 if abs(value - 1.0) < 0.025 else round(value, 2), move=False)
 
-    def _set_speed(self, value, move=True):
+    def _set_tempo(self, value, move=True):
         if self.mixer is not None:
-            self.mixer.speed = value
+            self.mixer.tempo = value
             if move:
-                self.speed.set(value)
+                self.tempo.set(value)
+            self._labels()
+
+    def _on_pitch(self, value):
+        self._set_pitch(int(round(float(value))), move=False)
+
+    def _set_pitch(self, value, move=True):
+        if self.mixer is not None:
+            self.mixer.pitch = value
+            if move:
+                self.pitch.set(value)
             self._labels()
 
     def _on_master(self, value):
@@ -555,7 +574,8 @@ class StemRemixerApp(ctk.CTk):
     def _labels(self):
         if self.mixer is None:
             return
-        self.speed_text.configure(text=f"{round(self.mixer.speed * 100)}%")
+        self.tempo_text.configure(text=f"{round(self.mixer.tempo * 100)}%")
+        self.pitch_text.configure(text=f"{self.mixer.pitch:+d}" if self.mixer.pitch else "0")
         clipping = time.monotonic() < self._clip_until
         self.master_text.configure(
             text=f"{round(self.mixer.master * 100)}%" + ("  too loud" if clipping else ""),
@@ -569,7 +589,8 @@ class StemRemixerApp(ctk.CTk):
         if self.mixer is None:
             return
         self.mixer.reset()
-        self.speed.set(1.0)
+        self.tempo.set(1.0)
+        self.pitch.set(0)
         self.master_slider.set(1.0)
         self._labels()
         self.refresh_lanes()
