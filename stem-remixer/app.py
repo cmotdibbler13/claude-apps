@@ -12,11 +12,12 @@ import time
 import tkinter as tk
 import tkinter.filedialog as filedialog
 import tkinter.messagebox as messagebox
+import tkinter.simpledialog as simpledialog
 
 import customtkinter as ctk
 
 import separator
-from mixer import (MAX_PITCH, MAX_TEMPO, MAX_VOLUME, MIN_TEMPO, Mixer, Player, Stem,
+from mixer import (MAX_PITCH, MAX_SECTIONS, MAX_TEMPO, MAX_VOLUME, MIN_TEMPO, Mixer, Player, Stem,
                    waveform_peaks, write_audio)
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -219,7 +220,21 @@ class StemLane:
         self._playhead = self.canvas.create_line(0, 0, 0, height, fill=INK, width=1)
         self.colour_wave()
         self.place_section()
+        self.place_saved()
         self.app.place_playheads()
+
+    def place_saved(self):
+        """A thin bar along the top for each saved section."""
+        mixer = self.app.mixer
+        if self._shape is None or mixer is None:
+            return
+        self.canvas.delete("saved")
+        width = self.canvas.winfo_width()
+        for section in mixer.sections:
+            left = section["start"] / max(1, mixer.length - 1) * width
+            right = section["end"] / max(1, mixer.length - 1) * width
+            self.canvas.create_rectangle(left, 0, max(left + 2, right - 1), 3, outline="",
+                                         fill=INK_FAINT, tags="saved")
 
     def place_section(self):
         """Show the marked section: lit when looping, a faint outline when not."""
@@ -283,6 +298,8 @@ class StemRemixerApp(ctk.CTk):
         self._build()
         self.bind("<space>", self._on_space)
         self.bind("<l>", lambda _e: self._on_loop())
+        for number in range(1, MAX_SECTIONS + 1):
+            self.bind(str(number), lambda _e, i=number - 1: self._on_section(i))
         self.bind("<bracketleft>", lambda _e: self._mark_at_playhead(start=True))
         self.bind("<bracketright>", lambda _e: self._mark_at_playhead(start=False))
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -301,7 +318,7 @@ class StemRemixerApp(ctk.CTk):
 
     def _build(self):
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1)
+        self.grid_rowconfigure(3, weight=1)
 
         top = ctk.CTkFrame(self, fg_color=SURFACE_100, corner_radius=0)
         top.grid(row=0, column=0, sticky="ew")
@@ -334,8 +351,21 @@ class StemRemixerApp(ctk.CTk):
                                            fg_color=SURFACE_200, progress_color=BRASS)
         self.cancel_btn = self._button(status, "Cancel", self._on_cancel, width=80)
 
+        # Saved sections: shown once a song is open.
+        self.sections_row = ctk.CTkFrame(self, fg_color="transparent")
+        ctk.CTkLabel(self.sections_row, text="Sections", text_color=INK_FAINT).pack(
+            side="left", padx=(0, 8))
+        self.chips_frame = ctk.CTkFrame(self.sections_row, fg_color="transparent")
+        self.chips_frame.pack(side="left")
+        self.save_section_btn = ctk.CTkButton(
+            self.sections_row, text="+  Save section", command=self._on_save_section,
+            width=110, height=26, corner_radius=0, fg_color=SURFACE_200,
+            hover_color=SURFACE_300, text_color=INK, border_width=1, border_color=RULE)
+        self.save_section_btn.pack(side="left")
+        self.chips = []
+
         self.body = ctk.CTkFrame(self, fg_color=SURFACE_000, corner_radius=0)
-        self.body.grid(row=2, column=0, sticky="nsew", padx=16)
+        self.body.grid(row=3, column=0, sticky="nsew", padx=16)
         self.body.grid_columnconfigure(0, weight=1)
         self.empty = ctk.CTkLabel(
             self.body, text_color=INK_FAINT, justify="center",
@@ -346,7 +376,7 @@ class StemRemixerApp(ctk.CTk):
         self.empty.grid(row=0, column=0)
 
         bar = ctk.CTkFrame(self, fg_color=SURFACE_100, corner_radius=0)
-        bar.grid(row=3, column=0, sticky="ew")
+        bar.grid(row=4, column=0, sticky="ew")
         bar.grid_columnconfigure(12, weight=1)
         self.play_btn = self._button(bar, "▶  Play", self._on_play, primary=True, width=100)
         self.play_btn.grid(row=0, column=0, padx=(16, 8), pady=12)
@@ -537,6 +567,8 @@ class StemRemixerApp(ctk.CTk):
         self._set_status("Space plays and pauses. Click a waveform to jump. "
                          "M mutes a part, S plays it alone. Shift+drag marks a "
                          "section to loop. Double-click a slider to reset it.")
+        self.sections_row.grid(row=2, column=0, sticky="w", padx=16, pady=(0, 8))
+        self._refresh_sections()
         if self.mixer.loop_start is not None:
             self._show_loop()
         else:
@@ -617,6 +649,93 @@ class StemRemixerApp(ctk.CTk):
             mixer.loop_on = True
             self._show_loop()
 
+    # ------------------------------------------------------ saved sections
+
+    def _section_label(self, index: int) -> str:
+        section = self.mixer.sections[index]
+        rate = self.mixer.samplerate
+        name = section["name"] or f"{clock(section['start'] / rate)} to {clock(section['end'] / rate)}"
+        return f"  {index + 1}   {name}  "
+
+    def _refresh_sections(self):
+        """Rebuild the row of saved-section buttons."""
+        for chip in self.chips:
+            chip.destroy()
+        self.chips = []
+        if self.mixer is None:
+            return
+        for index in range(len(self.mixer.sections)):
+            chip = ctk.CTkButton(
+                self.chips_frame, text=self._section_label(index), height=26, width=40,
+                corner_radius=0, border_width=1, border_color=RULE,
+                command=lambda i=index: self._on_section(i))
+            chip.bind("<Button-3>", lambda event, i=index: self._section_menu(event, i))
+            chip.bind("<Double-Button-1>", lambda _e, i=index: self._rename_section(i))
+            chip.pack(side="left", padx=(0, 6))
+            self.chips.append(chip)
+        self._colour_chips()
+        for lane in self.lanes:
+            lane.place_saved()
+
+    def _colour_chips(self):
+        active = self.mixer.active_section() if self.mixer is not None else None
+        for index, chip in enumerate(self.chips):
+            on = index == active
+            chip.configure(fg_color=BRASS if on else SURFACE_200,
+                           text_color=ON_BRASS if on else INK,
+                           hover_color=BRASS_HOVER if on else SURFACE_300)
+
+    def _on_save_section(self):
+        mixer = self.mixer
+        if mixer is None or self._splitting:
+            return
+        if mixer.loop_start is None:
+            self._set_status("Mark a section first: hold Shift and drag across a waveform "
+                             "(or drag with the right mouse button). Then save it.")
+            return
+        if mixer.active_section() is None and len(mixer.sections) >= MAX_SECTIONS:
+            self._set_status(f"A song can keep {MAX_SECTIONS} sections. Right-click one to delete it.")
+            return
+        index = mixer.save_section()
+        self._refresh_sections()
+        self._save_mix()
+        self._set_status(f"Saved as section {index + 1}. Press {index + 1} to come back to it; "
+                         "double-click it to name it, right-click to delete it.")
+
+    def _on_section(self, index: int):
+        if self.mixer is None or self._splitting:
+            return
+        if self.mixer.select_section(index):
+            self._show_loop()
+            self.place_playheads()
+
+    def _section_menu(self, event, index: int):
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="Rename…", command=lambda: self._rename_section(index))
+        menu.add_command(label="Delete", command=lambda: self._delete_section(index))
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _rename_section(self, index: int):
+        if self.mixer is None or index >= len(self.mixer.sections):
+            return
+        section = self.mixer.sections[index]
+        name = simpledialog.askstring("Stem Remixer", f"Name for section {index + 1}:",
+                                      initialvalue=section["name"], parent=self)
+        if name is not None:
+            section["name"] = name.strip()[:24]
+            self._refresh_sections()
+            self._save_mix()
+
+    def _delete_section(self, index: int):
+        if self.mixer is None:
+            return
+        self.mixer.delete_section(index)
+        self._refresh_sections()
+        self._save_mix()
+
     def _show_loop_button_off(self):
         self.loop_btn.configure(fg_color=SURFACE_200, text_color=INK, hover_color=SURFACE_300)
 
@@ -640,6 +759,7 @@ class StemRemixerApp(ctk.CTk):
             hover_color=BRASS_HOVER if on else SURFACE_300)
         for lane in self.lanes:
             lane.place_section()
+        self._colour_chips()
         if mixer is not None and mixer.loop_start is not None:
             start, end = mixer.loop_start / mixer.samplerate, mixer.loop_end / mixer.samplerate
             self._set_status(

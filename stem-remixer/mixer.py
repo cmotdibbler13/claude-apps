@@ -15,6 +15,7 @@ MAX_TEMPO = 1.5
 MAX_PITCH = 6         # semitones up or down
 EXPORT_CEILING = 0.98  # exports louder than full scale are turned down to this
 MIN_LOOP_SECONDS = 0.1
+MAX_SECTIONS = 9       # saved sections per song: one for each number key
 _LOOP_FADE = 128       # frames faded either side of the loop join, so it doesn't click
 _EXPORT_CHUNK = 1 << 18
 
@@ -123,6 +124,7 @@ class Mixer:
         self.loop_start = None   # the marked section, in song frames (None = none marked)
         self.loop_end = None
         self.loop_on = False
+        self.sections = []       # saved sections: [{"name", "start", "end"}]
         self._last_gains = None
         self._stretch = None
         self._lock = threading.Lock()   # the sound card and the window both move the playhead
@@ -179,7 +181,47 @@ class Mixer:
             self.loop_start = self.loop_end = None
             self.loop_on = False
 
+    # ------------------------------------------------------ saved sections
+
+    def active_section(self):
+        """Index of the saved section that is the one marked now, or None."""
+        if self.loop_start is None:
+            return None
+        for index, section in enumerate(self.sections):
+            if abs(section["start"] - self.loop_start) < 1 and abs(section["end"] - self.loop_end) < 1:
+                return index
+        return None
+
+    def save_section(self, name: str = ""):
+        """Keep the marked section. Returns its index, or None if nothing is
+        marked or the song already has MAX_SECTIONS."""
+        if self.loop_start is None:
+            return None
+        already = self.active_section()
+        if already is not None:
+            return already
+        if len(self.sections) >= MAX_SECTIONS:
+            return None
+        self.sections.append({"name": name, "start": self.loop_start, "end": self.loop_end})
+        return len(self.sections) - 1
+
+    def select_section(self, index: int) -> bool:
+        """Mark a saved section, loop it, and jump to its start."""
+        if not 0 <= index < len(self.sections):
+            return False
+        section = self.sections[index]
+        if not self.set_loop(section["start"], section["end"]):
+            return False
+        self.loop_on = True
+        self.seek(self.loop_start)
+        return True
+
+    def delete_section(self, index: int) -> None:
+        if 0 <= index < len(self.sections):
+            del self.sections[index]
+
     def reset(self) -> None:
+        """Back to the plain song. Saved sections are kept."""
         self.clear_loop()
         for stem in self.stems:
             stem.reset()
@@ -192,12 +234,25 @@ class Mixer:
         if self.loop_start is not None:
             loop = {"start": self.loop_start, "end": self.loop_end, "on": self.loop_on}
         return {"tempo": self.tempo, "pitch": self.pitch, "master": self.master, "loop": loop,
+                "sections": [dict(section) for section in self.sections],
                 "stems": {s.name: s.settings() for s in self.stems}}
 
     def apply_settings(self, values: dict) -> None:
         self.tempo = float(np.clip(values.get("tempo", 1.0), MIN_TEMPO, MAX_TEMPO))
         self.pitch = int(np.clip(round(values.get("pitch", 0)), -MAX_PITCH, MAX_PITCH))
         self.master = float(np.clip(values.get("master", 1.0), 0.0, MAX_VOLUME))
+        self.sections = []
+        saved_sections = values.get("sections")
+        for section in saved_sections if isinstance(saved_sections, list) else []:
+            try:
+                start, end = float(section["start"]), float(section["end"])
+            except (TypeError, KeyError, ValueError):
+                continue
+            fits = 0 <= start and end <= self.length
+            if fits and end - start >= MIN_LOOP_SECONDS * self.samplerate \
+                    and len(self.sections) < MAX_SECTIONS:
+                self.sections.append({"name": str(section.get("name", "")),
+                                      "start": start, "end": end})
         loop = values.get("loop")
         if isinstance(loop, dict) and self.set_loop(loop.get("start", 0), loop.get("end", 0)):
             self.loop_on = bool(loop.get("on", False))

@@ -21,7 +21,12 @@ open-source model from Meta. Nothing is uploaded.
 - **Loop a section.** Hold Shift and drag across a waveform (or drag with the right mouse
   button) to mark a section; it plays round and round while you work on the mix. **Loop** (or
   the L key) turns it on and off. `[` and `]` move the section's start and end to the
-  playhead, which is handy for trimming it by ear. One section per song, saved with the mix.
+  playhead, which is handy for trimming it by ear.
+- **Save sections.** **+ Save section** keeps the marked section in the Sections row, up to
+  nine per song. Click one (or press its number, 1 to 9) to jump to it and loop it.
+  Double-click to name it ("Chorus"), right-click to rename or delete. Saved sections show as
+  thin bars along the top of the waveforms and are kept with the song. To change one, select
+  it, adjust with `[` and `]` or a new drag, save that, and delete the old one.
 - **Master** volume, with a "too loud" warning if the mix is clipping.
 - **Export mix** saves what you hear as a WAV or a 320 kbps MP3. With a section marked, it
   asks whether to save just that section (once through, ready to use as a sample) or the whole song. If the mix would distort, the
@@ -91,6 +96,7 @@ command from [pytorch.org/get-started](https://pytorch.org/get-started/locally/)
 
 ## Changes
 
+- **2026-11-22**: Several saved sections per song, in a Sections row above the lanes.
 - **2026-11-22**: Loop sections: mark a section on a waveform and it repeats. Exports can be
   just the marked section.
 - **2026-11-22**: Splitting with a model that had not been downloaded yet failed with
@@ -131,8 +137,8 @@ python -m pytest tests
 
 Built and tested in a Linux cloud session. It has not been run on Windows yet.
 
-- The 37 unit tests pass: mixing, mute and solo, pan, tempo and pitch (length, pitch and beat
-  spacing measured on test tones and clicks), looping, export level, WAV and MP3 writing,
+- The 38 unit tests pass: mixing, mute and solo, pan, tempo and pitch (length, pitch and beat
+  spacing measured on test tones and clicks), looping, saved sections, export level, WAV and MP3 writing,
   saved mixes and the Stems folders.
 - Real splits with the 4-stem and 6-stem Demucs models on a 30-second test track, including
   Cancel and an unreadable file.

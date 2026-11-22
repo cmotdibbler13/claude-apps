@@ -403,3 +403,35 @@ def test_loop_is_saved_and_reset():
     other.reset()
     assert other.loop_start is None and not other.looping
     assert other.settings()["loop"] is None
+
+
+def test_saved_sections():
+    mixer, n = ramp_mixer()
+    assert mixer.save_section() is None  # nothing marked
+    mixer.set_loop(10000, 20000)
+    assert mixer.save_section("verse") == 0
+    assert mixer.save_section() == 0  # the same section isn't saved twice
+    mixer.set_loop(30000, 50000)
+    assert mixer.active_section() is None
+    assert mixer.save_section() == 1
+    assert mixer.select_section(0) and mixer.looping
+    assert (mixer.loop_start, mixer.loop_end, mixer.position) == (10000, 20000, 10000)
+    assert mixer.active_section() == 0
+    assert not mixer.select_section(5)
+
+    other, _ = ramp_mixer()
+    other.apply_settings(mixer.settings())
+    assert [s["name"] for s in other.sections] == ["verse", ""]
+    other.reset()
+    assert len(other.sections) == 2 and other.loop_start is None  # reset keeps them
+    other.delete_section(0)
+    assert other.sections[0]["start"] == 30000
+
+    for i in range(20):
+        mixer.set_loop(i * 4000, i * 4000 + 5000)
+        mixer.save_section()
+    assert len(mixer.sections) == 9
+    junk = {"sections": [{"start": 5, "end": 6}, {"start": "x"}, "no", {"start": 0, "end": 9e9},
+                         {"start": 100, "end": 9000, "name": 7}]}
+    other.apply_settings(junk)
+    assert other.sections == [{"name": "7", "start": 100.0, "end": 9000.0}]
