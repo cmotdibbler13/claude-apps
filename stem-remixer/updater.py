@@ -10,6 +10,7 @@ import io
 import os
 import subprocess
 import sys
+import time
 import urllib.request
 import zipfile
 
@@ -50,7 +51,10 @@ def _fetch(url: str) -> bytes:
 
 
 def remote_version(branch: str, fetch=_fetch) -> str:
-    url = f"https://raw.githubusercontent.com/{REPOSITORY}/{branch}/{FOLDER}/{VERSION_FILE}"
+    # GitHub serves a copy of this file up to five minutes old. A different
+    # address each time gets a fresh one, so a new version shows up straight away.
+    url = (f"https://raw.githubusercontent.com/{REPOSITORY}/{branch}/{FOLDER}/{VERSION_FILE}"
+           f"?t={int(time.time())}")
     return fetch(url).decode("utf-8", "replace").strip()
 
 

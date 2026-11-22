@@ -115,6 +115,8 @@ command from [pytorch.org/get-started](https://pytorch.org/get-started/locally/)
 
 ## Changes
 
+- **2026-11-22** (1.8.2): Update could say "you have the newest version" for up to five
+  minutes after a new one came out, because GitHub served an old copy of the version number.
 - **2026-11-22** (1.8.1): The taskbar icon could still be Python's logo. Python from the
   Microsoft Store forces its own logo onto anything it runs, so the installer now uses the
   standard Python (installing it if needed) and rebuilds a `.venv` that was made with the

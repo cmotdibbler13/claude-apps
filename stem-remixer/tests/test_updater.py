@@ -23,7 +23,7 @@ def repo_zip(files: dict) -> bytes:
 def fake_github(versions: dict, files: dict = None):
     def fetch(url):
         for branch, version in versions.items():
-            if url.endswith(f"/{branch}/stem-remixer/VERSION"):
+            if url.split("?")[0].endswith(f"/{branch}/stem-remixer/VERSION"):
                 return version.encode()
             if url.endswith(f"/refs/heads/{branch}"):
                 return repo_zip(files or {})
