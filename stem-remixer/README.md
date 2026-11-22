@@ -86,6 +86,9 @@ command from [pytorch.org/get-started](https://pytorch.org/get-started/locally/)
 
 ## Changes
 
+- **2026-11-22**: Splitting with a model that had not been downloaded yet failed with
+  "'NoneType' object has no attribute 'write'" when the app was started from its shortcut.
+  The download's progress bar had no console to print to; it now has somewhere to go.
 - **2026-11-22**: Tempo now leaves the pitch alone (it replaces Speed, which changed both),
   and there is a separate Pitch control in semitones. Reset mix and Show stems moved to the
   top bar to make room.

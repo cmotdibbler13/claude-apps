@@ -309,3 +309,11 @@ def test_player_explains_when_nothing_opens(monkeypatch):
     with pytest.raises(RuntimeError, match="sound output"):
         player.play()
     assert not player.playing
+
+
+def test_quiet_console_gives_a_windowed_app_somewhere_to_print(monkeypatch):
+    monkeypatch.setattr(sys, "stdout", None)
+    monkeypatch.setattr(sys, "stderr", None)
+    separator.quiet_console()
+    print("a progress bar", file=sys.stderr)
+    sys.stdout.write("and another")

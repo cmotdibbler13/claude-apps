@@ -24,6 +24,17 @@ PROJECT_FILE = "project.json"
 AUDIO_TYPES = (".wav", ".flac", ".mp3", ".ogg", ".m4a", ".aac", ".wma", ".aiff", ".aif", ".opus")
 
 
+def quiet_console() -> None:
+    """Started from a shortcut (pythonw.exe) the app has no console, and
+    Python's stdout and stderr are None. The model download prints a progress
+    bar, which then fails with "'NoneType' object has no attribute 'write'".
+    Give it somewhere harmless to print."""
+    import sys
+    for name in ("stdout", "stderr"):
+        if getattr(sys, name) is None:
+            setattr(sys, name, open(os.devnull, "w", encoding="utf-8"))
+
+
 class Cancelled(Exception):
     """The user pressed Cancel during a split."""
 
@@ -102,6 +113,7 @@ def split(song_path: str, folder: str, model: str, on_status, cancel) -> dict:
     threading.Event. Returns the project dict. Raises Cancelled or SplitError.
     """
     on_status("Starting the splitter…", None)
+    quiet_console()
     try:
         import torch
         import soundfile as sf
