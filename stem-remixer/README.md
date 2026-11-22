@@ -27,6 +27,15 @@ open-source model from Meta. Nothing is uploaded.
   Double-click to name it ("Chorus"), right-click to rename or delete. Saved sections show as
   thin bars along the top of the waveforms and are kept with the song. To change one, select
   it, adjust with `[` and `]` or a new drag, save that, and delete the old one.
+- **Chain sections.** Type an order into the **Chain** box by section number, for example
+  `1 2 2 3`, and press **Play chain** (or Enter). The sections play one after another, round
+  and round, so you can rearrange the song. **Stop chain** goes back to normal play. With a
+  chain playing, Export offers to save it once through.
+- **EQ per stem.** The **EQ** button on a lane opens Low, Mid and High controls (up to 12 dB
+  up or down); **Flat** clears them. A change is heard a second or two after you let go of the
+  slider, because the whole stem is reworked. The button lights up when a stem has EQ on it.
+- **Level meters.** A bar beside each waveform shows how loud that part is in the mix, and one
+  under Master shows the mix as a whole. They turn red when over full scale.
 - **Master** volume, with a "too loud" warning if the mix is clipping.
 - **Export mix** saves what you hear as a WAV or a 320 kbps MP3. With a section marked, it
   asks whether to save just that section (once through, ready to use as a sample) or the whole song. If the mix would distort, the
@@ -37,6 +46,13 @@ open-source model from Meta. Nothing is uploaded.
   muted and exported). **Open stems folder** loads a folder split earlier, or any folder of
   equal-length WAVs.
 
+## Updating
+
+Press **Update** in the top right of the window. If there is a newer version the button
+says so (the app looks once each time it starts); pressing it downloads the new version
+from this repository, replaces the app's files and restarts the app. Your stems, mixes
+and the `.venv` folder are left alone. The version you have is in the window's title.
+
 ## Install
 
 1. [Download the zip](https://github.com/cmotdibbler13/claude-apps/archive/refs/heads/claude/peaceful-davinci-h3btsz.zip),
@@ -46,6 +62,8 @@ open-source model from Meta. Nothing is uploaded.
    security warning, choose **More info**, then **Run anyway** (or **Run**).
 3. Wait for "Done". It downloads about 1 GB and takes 5 to 15 minutes.
 4. Double-click **Stem Remixer** on the Desktop or in the Start menu.
+5. To pin it, right-click **Stem Remixer** in the Start menu (or its taskbar button while it
+   is open) and choose **Pin to taskbar**.
 
 The installer needs no admin rights. It:
 
@@ -89,6 +107,7 @@ command from [pytorch.org/get-started](https://pytorch.org/get-started/locally/)
   with Pitch +1.
 - The split is a best guess by the model. Expect a little of one instrument to bleed into
   another stem, most often in "other" and in the guitar and piano stems.
+- Each stem with EQ on it takes about another 85 MB of memory for a 4-minute song.
 - A 4-minute song takes about 250 MB of memory while open, and its stems about 170 MB on disk
   (4 stems). Delete folders in `Stems/` you no longer want.
 - Only split music you have the right to use. Remixes of other people's songs are theirs to
@@ -96,6 +115,9 @@ command from [pytorch.org/get-started](https://pytorch.org/get-started/locally/)
 
 ## Changes
 
+- **2026-11-22** (1.8.0): Chains of sections, EQ per stem, level meters, and an Update button.
+  A pinned taskbar icon showed Python's logo: the installer now ties the shortcuts to the
+  app's window. Run Install.cmd once more to get that, unpin the old icon and pin again.
 - **2026-11-22**: Several saved sections per song, in a Sections row above the lanes.
 - **2026-11-22**: Loop sections: mark a section on a waveform and it repeats. Exports can be
   just the marked section.
@@ -120,6 +142,8 @@ stem-remixer/
 ├── main.py            # entry point
 ├── app.py             # the window (CustomTkinter)
 ├── mixer.py           # mixing engine, export, playback (sounddevice)
+├── updater.py         # the Update button: fetches the newest version from GitHub
+├── VERSION            # this version's number
 ├── separator.py       # runs Demucs, reads and writes the Stems folders
 ├── tests/             # pytest tests for the mixer and the Stems folders
 ├── requirements.txt
@@ -137,13 +161,15 @@ python -m pytest tests
 
 Built and tested in a Linux cloud session. It has not been run on Windows yet.
 
-- The 38 unit tests pass: mixing, mute and solo, pan, tempo and pitch (length, pitch and beat
-  spacing measured on test tones and clicks), looping, saved sections, export level, WAV and MP3 writing,
+- The 48 unit tests pass: mixing, mute and solo, pan, tempo and pitch (length, pitch and beat
+  spacing measured on test tones and clicks), looping, saved sections, chains, EQ, meters, the updater, export level, WAV and MP3 writing,
   saved mixes and the Stems folders.
 - Real splits with the 4-stem and 6-stem Demucs models on a 30-second test track, including
   Cancel and an unreadable file.
 - The window was opened on a virtual display and driven through opening stems, changing a mix,
   a full split with its progress bar, and saving and restoring a mix.
+- The updater downloaded the real repository zip from GitHub into a scratch folder and
+  replaced an older copy of the app there.
 - **Not checked:** the installer. It is PowerShell for Windows and could not be run in the
   cloud session, so its first real run will be yours.
 - **Not checked:** sound output. The cloud machine has no sound card, so Play has not been

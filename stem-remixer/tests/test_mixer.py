@@ -435,3 +435,92 @@ def test_saved_sections():
                          {"start": 100, "end": 9000, "name": 7}]}
     other.apply_settings(junk)
     assert other.sections == [{"name": "7", "start": 100.0, "end": 9000.0}]
+
+
+def chain_mixer():
+    mixer, n = ramp_mixer(4.0)
+    for start in (10000, 60000, 110000):
+        mixer.set_loop(start, start + 10000)
+        mixer.save_section()
+    mixer.clear_loop()
+    return mixer, n
+
+
+@pytest.mark.parametrize("tempo", [1.0, 0.8])
+def test_chain_plays_sections_in_order_and_goes_round(tempo):
+    mixer, n = chain_mixer()
+    mixer.tempo = tempo
+    assert mixer.set_chain([2, 0, 0, 7]) == [2, 0, 0]  # section 8 doesn't exist
+    assert mixer.start_chain() and mixer.position == 110000
+    steps, where = [], []
+    for _ in range(int(120 / tempo)):  # a bit over one time round
+        mixer.render_block(441)
+        steps.append(mixer.chain_step)
+        where.append(mixer.position)
+        section = mixer.sections[mixer.chain[mixer.chain_step]]
+        assert section["start"] <= mixer.position <= section["end"] + 1
+    changes = [b for a, b in zip(steps, steps[1:]) if a != b]
+    assert changes[:3] == [1, 2, 0]
+    assert not mixer.ended
+    assert sum(b < a for a, b in zip(where, where[1:])) >= 2  # jumped back for the 0, 0
+
+
+def test_chain_export_is_the_sections_end_to_end():
+    mixer, n = chain_mixer()
+    mixer.set_chain([1, 0])
+    audio, _ = mixer.render_chain()
+    assert len(audio) == 20000
+    assert audio[5000, 0] == pytest.approx(0.5 * 65000 / n, abs=1e-3)
+    assert audio[15000, 0] == pytest.approx(0.5 * 15000 / n, abs=1e-3)
+    assert abs(audio[10000, 0]) < 0.01 and abs(audio[0, 0]) < 0.01  # joins dip, no click
+    mixer.tempo = 0.5
+    assert len(mixer.render_chain()[0]) == 40000
+
+
+def test_chain_survives_saving_deleting_and_seeking():
+    mixer, n = chain_mixer()
+    mixer.set_chain([0, 1, 2, 1])
+    mixer.chain_on = True
+    other, _ = ramp_mixer(4.0)
+    other.apply_settings(mixer.settings())
+    assert other.chain == [0, 1, 2, 1] and other.chaining
+    other.seek(115000)  # clicking into section 3 carries on from there
+    assert other.chain_step == 2
+    other.delete_section(1)
+    assert other.chain == [0, 1] and len(other.sections) == 2
+    other.delete_section(0)
+    other.delete_section(0)
+    assert other.chain == [] and not other.chaining and other.region() is None
+    other.reset()
+    assert not other.chain_on
+
+
+def test_equalise_moves_only_its_band():
+    low, mid, high = tone(60, 1.0), tone(1000, 1.0), tone(12000, 1.0)
+    stem = Stem("x", low + mid + high)
+    mixer = Mixer([stem], RATE)
+    stem.eq = [-12.0, 0.0, 6.0]
+    stem.apply_eq()
+    assert stem.data.shape == stem.source.shape and stem.data is not stem.source
+    spectrum = np.abs(np.fft.rfft(stem.data[:, 0])) / (RATE / 2)
+    assert spectrum[60] == pytest.approx(0.25 * 10 ** (-12 / 20), rel=0.03)
+    assert spectrum[1000] == pytest.approx(0.25, rel=0.03)
+    assert spectrum[12000] == pytest.approx(0.25 * 10 ** (6 / 20), rel=0.03)
+    assert np.allclose(mixer.render_block(64), stem.data[:64])
+    saved = mixer.settings()
+    assert saved["stems"]["x"]["eq"] == [-12.0, 0.0, 6.0]
+    stem.reset()
+    assert stem.data is stem.source and stem.eq == [0.0, 0.0, 0.0]
+    stem.apply_settings({"eq": [99, "x", 0]})
+    assert stem.eq == [0.0, 0.0, 0.0]
+    stem.apply_settings({"eq": [99, -99, 3]})
+    assert stem.eq == [12.0, -12.0, 3.0]
+
+
+def test_levels_follow_what_is_heard():
+    mixer = make(0.5, 0.2)
+    mixer.stems[1].mute = True
+    mixer.master = 0.5
+    mixer.render_block(64)
+    assert mixer.levels[0] == pytest.approx(0.25) and mixer.levels[1] == 0
+    assert mixer.master_level == pytest.approx(0.25)

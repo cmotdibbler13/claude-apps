@@ -30,7 +30,11 @@ class Stem:
         if data.shape[1] == 1:
             data = np.repeat(data, 2, axis=1)
         self.name = name
-        self.data = np.ascontiguousarray(data[:, :2])
+        self.source = np.ascontiguousarray(data[:, :2])   # as split
+        self.data = self.source                           # what is mixed: source, or with EQ
+        self.samplerate = 44100     # the Mixer sets the real one
+        self.eq = [0.0, 0.0, 0.0]   # low, mid, high in dB
+        self.eq_applied = [0.0, 0.0, 0.0]   # the EQ that self.data has
         self.volume = 1.0   # 0 .. MAX_VOLUME
         self.pan = 0.0      # -1 (left) .. +1 (right)
         self.mute = False
@@ -38,16 +42,55 @@ class Stem:
 
     def reset(self) -> None:
         self.volume, self.pan, self.mute, self.solo = 1.0, 0.0, False, False
+        self.eq = [0.0, 0.0, 0.0]
+        self.apply_eq()
 
     def settings(self) -> dict:
         return {"volume": self.volume, "pan": self.pan,
-                "mute": self.mute, "solo": self.solo}
+                "mute": self.mute, "solo": self.solo, "eq": list(self.eq)}
+
+    def apply_eq(self) -> None:
+        """Make self.data match self.eq. Slow for a whole song (a second or
+        so), so the window calls it off the UI thread."""
+        wanted = list(self.eq)
+        if wanted == self.eq_applied:
+            return
+        self.data = equalise(self.source, wanted, self.samplerate) if any(wanted) else self.source
+        self.eq_applied = wanted
 
     def apply_settings(self, values: dict) -> None:
         self.volume = float(np.clip(values.get("volume", 1.0), 0.0, MAX_VOLUME))
         self.pan = float(np.clip(values.get("pan", 0.0), -1.0, 1.0))
         self.mute = bool(values.get("mute", False))
         self.solo = bool(values.get("solo", False))
+        eq = values.get("eq")
+        if isinstance(eq, list) and len(eq) == 3:
+            try:
+                self.eq = [float(np.clip(v, -MAX_EQ, MAX_EQ)) for v in eq]
+            except (TypeError, ValueError):
+                pass
+
+
+EQ_BANDS = (120.0, 1000.0, 8000.0)   # Hz: where Low, Mid and High are centred
+MAX_EQ = 12.0                         # dB up or down
+
+
+def equalise(data: np.ndarray, gains_db, samplerate: int) -> np.ndarray:
+    """A three-band tone control over a whole stem. The boost or cut glides
+    smoothly from one band to the next and adds no delay, so the stems stay
+    lined up."""
+    frames = len(data)
+    if frames == 0:
+        return data
+    size = 1 << int(np.ceil(np.log2(frames)))   # a fast size for the transform
+    freqs = np.fft.rfftfreq(size, 1.0 / samplerate)
+    curve_db = np.interp(np.log(np.maximum(freqs, 1.0)), np.log(EQ_BANDS), gains_db)
+    curve = (10.0 ** (curve_db / 20.0)).astype(np.float32)
+    out = np.empty_like(data)
+    for channel in range(data.shape[1]):
+        spectrum = np.fft.rfft(data[:, channel], size)
+        out[:, channel] = np.fft.irfft(spectrum * curve, size)[:frames]
+    return out
 
 
 def pan_gains(pan: float) -> tuple:
@@ -75,6 +118,7 @@ class Stretcher:
         self.template = None           # what would naturally have come next
         self.tail = np.zeros((self.HOP, 2), dtype=np.float32)
         self.ready = np.zeros((0, 2), dtype=np.float32)   # made but not yet played
+        self.wrapped = False           # just jumped back to the start of a loop
         window = np.hanning(self.FRAME + 1)[:self.FRAME]  # halves sum to exactly 1
         self.window = window.astype(np.float32)[:, None]
 
@@ -111,7 +155,8 @@ class Mixer:
             raise ValueError("A mix needs at least one stem.")
         length = min(len(s.data) for s in stems)
         for s in stems:
-            s.data = s.data[:length]
+            s.source = s.data = s.source[:length]
+            s.samplerate = int(samplerate)
         self.stems = stems
         self.samplerate = int(samplerate)
         self.length = length
@@ -125,6 +170,11 @@ class Mixer:
         self.loop_end = None
         self.loop_on = False
         self.sections = []       # saved sections: [{"name", "start", "end"}]
+        self.chain = []          # saved sections to play one after another, by index
+        self.chain_on = False
+        self.chain_step = 0      # which entry of the chain is playing
+        self.levels = np.zeros(len(stems), dtype=np.float32)   # loudest recent peak per stem
+        self.master_level = 0.0                                # and of the whole mix
         self._last_gains = None
         self._stretch = None
         self._lock = threading.Lock()   # the sound card and the window both move the playhead
@@ -159,10 +209,58 @@ class Mixer:
             self.position = float(np.clip(frame, 0, max(0, self.length - 1)))
             self.ended = False
             self._stretch = None
+            if self.chaining:
+                # Carry on from the chain entry that was clicked into, if any.
+                order = [self.chain_step] + list(range(len(self.chain)))
+                for step in order:
+                    section = self.sections[self.chain[step % len(self.chain)]]
+                    if section["start"] <= self.position < section["end"]:
+                        self.chain_step = step % len(self.chain)
+                        break
+
+    @property
+    def chaining(self) -> bool:
+        return self.chain_on and bool(self.chain)
+
+    def region(self):
+        """(start, end) of what is going round now: the chain's current
+        section, else the loop, else None."""
+        if self.chaining:
+            section = self.sections[self.chain[self.chain_step % len(self.chain)]]
+            return section["start"], section["end"]
+        if self.loop_on and self.loop_start is not None:
+            return self.loop_start, self.loop_end
+        return None
+
+    def _next_region(self):
+        """Called when play reaches the end of the region: the same loop
+        again, or the next section of the chain."""
+        if self.chaining:
+            self.chain_step = (self.chain_step + 1) % len(self.chain)
+        return self.region()
 
     @property
     def looping(self) -> bool:
-        return self.loop_on and self.loop_start is not None
+        return self.region() is not None
+
+    def set_chain(self, steps) -> list:
+        """Set the order to play saved sections in (indices; repeats are
+        fine). Ones that don't exist are dropped. Returns the chain."""
+        with self._lock:
+            self.chain = [int(i) for i in steps if 0 <= int(i) < len(self.sections)]
+            self.chain_step = 0
+            if not self.chain:
+                self.chain_on = False
+        return self.chain
+
+    def start_chain(self) -> bool:
+        """Switch the chain on and jump to its first section."""
+        if not self.chain:
+            return False
+        self.chain_step = 0
+        self.chain_on = True
+        self.seek(self.region()[0])
+        return True
 
     def set_loop(self, start: float, end: float) -> bool:
         """Mark the section between two song frames (either order). Returns
@@ -218,11 +316,17 @@ class Mixer:
 
     def delete_section(self, index: int) -> None:
         if 0 <= index < len(self.sections):
-            del self.sections[index]
+            with self._lock:
+                del self.sections[index]
+                self.chain = [i - (i > index) for i in self.chain if i != index]
+                self.chain_step = 0
+                if not self.chain:
+                    self.chain_on = False
 
     def reset(self) -> None:
         """Back to the plain song. Saved sections are kept."""
         self.clear_loop()
+        self.chain_on = False
         for stem in self.stems:
             stem.reset()
         self.tempo = 1.0
@@ -235,6 +339,7 @@ class Mixer:
             loop = {"start": self.loop_start, "end": self.loop_end, "on": self.loop_on}
         return {"tempo": self.tempo, "pitch": self.pitch, "master": self.master, "loop": loop,
                 "sections": [dict(section) for section in self.sections],
+                "chain": {"steps": list(self.chain), "on": self.chain_on},
                 "stems": {s.name: s.settings() for s in self.stems}}
 
     def apply_settings(self, values: dict) -> None:
@@ -253,6 +358,13 @@ class Mixer:
                     and len(self.sections) < MAX_SECTIONS:
                 self.sections.append({"name": str(section.get("name", "")),
                                       "start": start, "end": end})
+        chain = values.get("chain")
+        if isinstance(chain, dict) and isinstance(chain.get("steps"), list):
+            try:
+                self.set_chain(chain["steps"])
+                self.chain_on = bool(chain.get("on", False)) and bool(self.chain)
+            except (TypeError, ValueError):
+                self.set_chain([])
         loop = values.get("loop")
         if isinstance(loop, dict) and self.set_loop(loop.get("start", 0), loop.get("end", 0)):
             self.loop_on = bool(loop.get("on", False))
@@ -295,10 +407,13 @@ class Mixer:
                 a = stem.data[index]
                 audio = a + (stem.data[index + 1] - a) * frac
             if steady:
-                out[:count] += audio * gains_from[i]
+                part = audio * gains_from[i]
             else:
-                glide = gains_from[i] + (gains_to[i] - gains_from[i]) * ramp[:count]
-                out[:count] += audio * glide
+                part = audio * (gains_from[i] + (gains_to[i] - gains_from[i]) * ramp[:count])
+            out[:count] += part
+            peak = np.abs(part).max(initial=0.0)
+            if peak > self.levels[i]:
+                self.levels[i] = peak
         return out
 
     def _fetcher(self, gains: np.ndarray):
@@ -327,7 +442,7 @@ class Mixer:
             tempo, ratio = self.tempo, self.pitch_ratio
             target = self.gains()
             last = self.length - 1
-            loop = (self.loop_start, self.loop_end) if self.looping else None
+            loop = self.region()
             if self._plain(tempo, ratio):
                 self._stretch = None
                 previous = self._last_gains if self._last_gains is not None else target
@@ -343,9 +458,13 @@ class Mixer:
                     before = stretch.ideal
                     made.append(stretch.hop(fetch, tempo, ratio))
                     if loop and before < loop[1] <= stretch.ideal:
-                        # Reached the end of the section: carry on from its start.
-                        # The stretcher's overlap blends the join.
-                        stretch.ideal = loop[0] + (stretch.ideal - loop[1]) % (loop[1] - loop[0])
+                        # Reached the end of the section: carry on from its start, or
+                        # from the next one in the chain. The stretcher's overlap
+                        # blends the join.
+                        over = stretch.ideal - loop[1]
+                        loop = self._next_region() or loop
+                        stretch.ideal = loop[0] + over % (loop[1] - loop[0])
+                        stretch.wrapped = True
                     count += Stretcher.HOP
                 audio = np.concatenate(made) if len(made) > 1 else made[0]
                 out = np.zeros((frames, 2), dtype=np.float32)
@@ -353,13 +472,19 @@ class Mixer:
                 stretch.ready = audio[frames:]
                 # Past the end only once what was made has been played out.
                 position = stretch.ideal - len(stretch.ready) * tempo
-                if loop and position < loop[0] <= self.position:
-                    # Just went round: what's still to be played is the section's tail.
-                    position = max(loop[0], loop[1] - (loop[0] - position))
+                if stretch.wrapped:
+                    # Just went round: don't show the playhead before the section.
+                    if loop and position < loop[0]:
+                        position = loop[0]
+                    else:
+                        stretch.wrapped = False
                 if count < frames:
                     position = float(last)
             self._last_gains = target
-            if np.abs(out).max(initial=0.0) > 1.0:
+            peak = float(np.abs(out).max(initial=0.0))
+            if peak > self.master_level:
+                self.master_level = peak
+            if peak > 1.0:
                 self.clipped = True
                 np.clip(out, -1.0, 1.0, out=out)
             if position >= last:
@@ -389,7 +514,9 @@ class Mixer:
             position += count * ratio
             previous = target
             if position >= end:
-                position = start + (position - end) % (end - start)
+                over = position - end
+                start, end = self._next_region() or (start, end)
+                position = start + over % (end - start)
         return out, position
 
     def forget_gains(self) -> None:
@@ -398,11 +525,39 @@ class Mixer:
         self._last_gains = None
         self._stretch = None
 
+    def render_chain(self) -> tuple:
+        """The chain, once through, for an export. Each join gets the same
+        few-millisecond dip as it has when playing."""
+        parts = []
+        for index in self.chain:
+            section = self.sections[index]
+            audio = self._render((section["start"], section["end"]))
+            fade = min(_LOOP_FADE, len(audio) // 2)
+            if fade:
+                ramp = np.linspace(0.0, 1.0, fade, dtype=np.float32)[:, None]
+                audio[:fade] *= ramp
+                audio[-fade:] *= ramp[::-1]
+            parts.append(audio)
+        audio = np.concatenate(parts) if parts else np.zeros((0, 2), np.float32)
+        return self._ceiling(audio)
+
     def render_all(self, section=None) -> tuple:
         """The whole song with the current settings, for an export, or just
         the (start, end) song frames given as `section`.
         Returns (audio, turned_down_by): audio is float32 within -1..1, and
         turned_down_by is the factor applied to avoid clipping (1.0 = none)."""
+        return self._ceiling(self._render(section))
+
+    @staticmethod
+    def _ceiling(audio: np.ndarray) -> tuple:
+        peak = float(np.abs(audio).max(initial=0.0))
+        factor = 1.0
+        if peak > 1.0:
+            factor = EXPORT_CEILING / peak
+            audio *= factor
+        return audio, factor
+
+    def _render(self, section=None) -> np.ndarray:
         gains = self.gains()
         tempo, ratio = self.tempo, self.pitch_ratio
         first, last = section if section else (0.0, float(self.length - 1))
@@ -416,13 +571,7 @@ class Mixer:
             stretch, fetch = Stretcher(first), self._fetcher(gains)
             for _ in range(0, total, Stretcher.HOP):
                 parts.append(stretch.hop(fetch, tempo, ratio))
-        audio = np.concatenate(parts)[:total] if parts else np.zeros((0, 2), np.float32)
-        peak = float(np.abs(audio).max(initial=0.0))
-        factor = 1.0
-        if peak > 1.0:
-            factor = EXPORT_CEILING / peak
-            audio *= factor
-        return audio, factor
+        return np.concatenate(parts)[:total] if parts else np.zeros((0, 2), np.float32)
 
 
 def waveform_peaks(data: np.ndarray, bins: int = 2000) -> np.ndarray:

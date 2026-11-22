@@ -5,8 +5,10 @@ stem with volume, pan, mute and solo, a shared playhead, and an export of
 whatever mix is playing.
 """
 
+import math
 import os
 import queue
+import re
 import threading
 import time
 import tkinter as tk
@@ -17,7 +19,8 @@ import tkinter.simpledialog as simpledialog
 import customtkinter as ctk
 
 import separator
-from mixer import (MAX_PITCH, MAX_SECTIONS, MAX_TEMPO, MAX_VOLUME, MIN_TEMPO, Mixer, Player, Stem,
+import updater
+from mixer import (MAX_EQ, MAX_PITCH, MAX_SECTIONS, MAX_TEMPO, MAX_VOLUME, MIN_TEMPO, Mixer, Player, Stem,
                    waveform_peaks, write_audio)
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -60,6 +63,13 @@ def time_left(seconds: float) -> str:
     return f"about {minutes} minute{'s' if minutes != 1 else ''} left"
 
 
+def meter_fraction(level: float) -> float:
+    """How full a meter is for a peak level: empty at -48 dB, full at 0 dB."""
+    if level <= 0.004:
+        return 0.0
+    return max(0.0, min(1.0, 1.0 + 20.0 * math.log10(level) / 48.0))
+
+
 class StemLane:
     """One row of the mixer: the controls and waveform of a single stem."""
 
@@ -76,8 +86,10 @@ class StemLane:
         self._drawn_on = None
 
         self.frame = ctk.CTkFrame(parent, fg_color=SURFACE_200, corner_radius=0)
-        self.frame.grid_columnconfigure(2, weight=1)
+        self.frame.grid_columnconfigure(3, weight=1)
         self.frame.grid_rowconfigure((0, 1), weight=1)
+        self.eq_busy = False
+        self.eq_panel = None
 
         tk.Frame(self.frame, bg=self.colour, width=4).grid(
             row=0, column=0, rowspan=2, sticky="ns")
@@ -89,7 +101,10 @@ class StemLane:
         self.mute_btn = self._toggle(head, "M", self._on_mute)
         self.mute_btn.pack(side="left", padx=(4, 4))
         self.solo_btn = self._toggle(head, "S", self._on_solo)
-        self.solo_btn.pack(side="left")
+        self.solo_btn.pack(side="left", padx=(0, 4))
+        self.eq_btn = self._toggle(head, "EQ", self._on_eq_button)
+        self.eq_btn.configure(width=36)
+        self.eq_btn.pack(side="left")
 
         knobs = ctk.CTkFrame(self.frame, fg_color="transparent")
         knobs.grid(row=1, column=1, sticky="nw", padx=(12, 8), pady=(2, 8))
@@ -119,7 +134,13 @@ class StemLane:
 
         self.canvas = tk.Canvas(self.frame, height=WAVE_HEIGHT, bg=SURFACE_100,
                                 highlightthickness=0, cursor="hand2")
-        self.canvas.grid(row=0, column=2, rowspan=2, sticky="nsew", padx=(4, 10), pady=8)
+        self.canvas.grid(row=0, column=3, rowspan=2, sticky="nsew", padx=(4, 10), pady=8)
+        # Level meter: a thin bar that rises with how loud this part is in the mix.
+        self.meter = tk.Canvas(self.frame, width=5, height=WAVE_HEIGHT, bg=SURFACE_000,
+                               highlightthickness=0)
+        self.meter.grid(row=0, column=2, rowspan=2, sticky="ns", pady=8)
+        self._meter_bar = self.meter.create_rectangle(0, 0, 0, 0, outline="", fill=self.colour)
+        self._meter_shown = -1.0
         self.canvas.bind("<Configure>", lambda _e: self.draw())
         self.canvas.bind("<Button-1>", self._on_seek)
         self.canvas.bind("<B1-Motion>", self._on_seek)
@@ -161,6 +182,73 @@ class StemLane:
             self.stem.pan = pan
         self.refresh()
 
+    def show_level(self, level: float):
+        """Draw the meter for a peak level (1.0 = full scale), on a dB scale."""
+        shown = meter_fraction(level)
+        if abs(shown - self._meter_shown) < 0.01:
+            return
+        self._meter_shown = shown
+        height = self.meter.winfo_height()
+        self.meter.coords(self._meter_bar, 0, height * (1 - shown), 5, height)
+        self.meter.itemconfigure(self._meter_bar, fill=WARN if level > 1.0 else self.colour)
+
+    # ----------------------------------------------------------------- EQ
+
+    def _on_eq_button(self):
+        if self.eq_panel is not None:
+            self.eq_panel.destroy()
+            self.eq_panel = None
+            return
+        panel = self.eq_panel = ctk.CTkFrame(self.frame, fg_color=SURFACE_200, corner_radius=0,
+                                             border_width=1, border_color=RULE)
+        self._eq_sliders, self._eq_texts = [], []
+        for band, label in enumerate(("Low", "Mid", "High")):
+            ctk.CTkLabel(panel, text=label, text_color=INK_FAINT).pack(side="left", padx=(12, 6))
+            slider = ctk.CTkSlider(
+                panel, from_=-MAX_EQ, to=MAX_EQ, number_of_steps=int(2 * MAX_EQ), width=100,
+                command=lambda value, b=band: self._on_eq(b, value), progress_color=self.colour,
+                button_color=INK, button_hover_color=BRASS, fg_color=SURFACE_000)
+            slider.set(self.stem.eq[band])
+            slider.pack(side="left")
+            slider.bind("<ButtonRelease-1>", lambda _e: self.app.apply_eq(self))
+            slider.bind("<Double-Button-1>", lambda _e, b=band: self._set_eq(b, 0.0))
+            text = ctk.CTkLabel(panel, text="", text_color=INK_MUTED, width=46)
+            text.pack(side="left")
+            self._eq_sliders.append(slider)
+            self._eq_texts.append(text)
+        ctk.CTkButton(panel, text="Flat", width=50, height=26, corner_radius=0,
+                      fg_color=SURFACE_000, hover_color=SURFACE_300, text_color=INK,
+                      command=self._eq_flat).pack(side="left", padx=(6, 12))
+        panel.place(in_=self.canvas, x=0, y=0, relheight=1.0)
+        panel.lift()
+        self._eq_labels()
+
+    def _on_eq(self, band: int, value: float):
+        self.stem.eq[band] = float(round(value))
+        self._eq_labels()
+
+    def _set_eq(self, band: int, value: float):
+        self.stem.eq[band] = value
+        self._eq_sliders[band].set(value)
+        self._eq_labels()
+        self.app.apply_eq(self)
+
+    def _eq_flat(self):
+        self.stem.eq = [0.0, 0.0, 0.0]
+        for slider in self._eq_sliders:
+            slider.set(0.0)
+        self._eq_labels()
+        self.app.apply_eq(self)
+
+    def _eq_labels(self):
+        if self.eq_panel is not None:
+            for text, value in zip(self._eq_texts, self.stem.eq):
+                text.configure(text=f"{value:+.0f} dB" if value else "0 dB")
+        used = any(self.stem.eq)
+        self.eq_btn.configure(fg_color=TIDE if used else SURFACE_000,
+                              text_color=ON_BRASS if used else INK_MUTED,
+                              hover_color=TIDE if used else SURFACE_300)
+
     def _fraction(self, event) -> float:
         return max(0.0, min(1.0, event.x / max(1, self.canvas.winfo_width())))
 
@@ -191,6 +279,10 @@ class StemLane:
                                      (self.solo_btn, self.stem.solo, on)):
             fg, text, hover = fill if active else off
             button.configure(fg_color=fg, text_color=text, hover_color=hover)
+        if self.eq_panel is not None:
+            for slider, value in zip(self._eq_sliders, self.stem.eq):
+                slider.set(value)
+        self._eq_labels()
         self.colour_wave()
 
     # ---------------------------------------------------------- waveform
@@ -241,20 +333,22 @@ class StemLane:
         mixer = self.app.mixer
         if self._shape is None or mixer is None:
             return
-        if mixer.loop_start is None:
+        region, lit = mixer.region(), True
+        if region is None and mixer.loop_start is not None:
+            region, lit = (mixer.loop_start, mixer.loop_end), False
+        if region is None:
             for item in [self._section] + self._edges:
                 self.canvas.itemconfigure(item, state="hidden")
             return
         width, height = self.canvas.winfo_width(), self.canvas.winfo_height()
-        left = mixer.loop_start / max(1, mixer.length - 1) * width
-        right = mixer.loop_end / max(1, mixer.length - 1) * width
+        left = region[0] / max(1, mixer.length - 1) * width
+        right = region[1] / max(1, mixer.length - 1) * width
         self.canvas.coords(self._section, left, 0, right, height)
         self.canvas.itemconfigure(self._section, state="normal",
-                                  fill=SURFACE_300 if mixer.loop_on else SURFACE_200)
+                                  fill=SURFACE_300 if lit else SURFACE_200)
         for item, x in zip(self._edges, (left, right)):
             self.canvas.coords(item, x, 0, x, height)
-            self.canvas.itemconfigure(item, state="normal",
-                                      fill=BRASS if mixer.loop_on else INK_FAINT)
+            self.canvas.itemconfigure(item, state="normal", fill=BRASS if lit else INK_FAINT)
 
     def colour_wave(self):
         if self._shape is not None:
@@ -271,7 +365,7 @@ class StemRemixerApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         ctk.set_appearance_mode("dark")
-        self.title("Stem Remixer")
+        self.title(f"Stem Remixer {updater.local_version()}")
         self.geometry("1180x760")
         self.minsize(1120, 640)
         self.configure(fg_color=SURFACE_000)
@@ -294,14 +388,20 @@ class StemRemixerApp(ctk.CTk):
         self._split_started = 0.0
         self._clip_until = 0.0
         self.mark_from = 0.0        # where a section drag began, as a fraction of the song
+        self._shown_step = None     # the chain entry the lanes are showing
+        self._update = None         # (version, branch) of a newer version, once found
+        self._updating = False
 
         self._build()
         self.bind("<space>", self._on_space)
-        self.bind("<l>", lambda _e: self._on_loop())
+        self.bind("<l>", lambda _e: self._typing() or self._on_loop())
         for number in range(1, MAX_SECTIONS + 1):
-            self.bind(str(number), lambda _e, i=number - 1: self._on_section(i))
-        self.bind("<bracketleft>", lambda _e: self._mark_at_playhead(start=True))
-        self.bind("<bracketright>", lambda _e: self._mark_at_playhead(start=False))
+            self.bind(str(number), lambda _e, i=number - 1: self._typing() or self._on_section(i))
+        # Clicking anywhere else takes the keyboard back from the chain box.
+        self.bind_all("<Button-1>", self._on_any_click, add="+")
+        self.after(1500, lambda: self._check_for_update(quiet=True))
+        self.bind("<bracketleft>", lambda _e: self._typing() or self._mark_at_playhead(start=True))
+        self.bind("<bracketright>", lambda _e: self._typing() or self._mark_at_playhead(start=False))
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(TICK_MS, self._tick)
 
@@ -339,7 +439,9 @@ class StemRemixerApp(ctk.CTk):
         self.reset_btn = self._button(top, "Reset mix", self._on_reset, width=90)
         self.reset_btn.grid(row=0, column=4)
         self.song_label = ctk.CTkLabel(top, text="", text_color=INK_MUTED, anchor="e")
-        self.song_label.grid(row=0, column=5, sticky="e", padx=16)
+        self.song_label.grid(row=0, column=5, sticky="e", padx=(16, 12))
+        self.update_btn = self._button(top, "Update", self._on_update, width=80)
+        self.update_btn.grid(row=0, column=6, padx=(0, 16))
 
         status = ctk.CTkFrame(self, fg_color="transparent")
         status.grid(row=1, column=0, sticky="ew", padx=16, pady=(10, 6))
@@ -363,6 +465,19 @@ class StemRemixerApp(ctk.CTk):
             hover_color=SURFACE_300, text_color=INK, border_width=1, border_color=RULE)
         self.save_section_btn.pack(side="left")
         self.chips = []
+        ctk.CTkLabel(self.sections_row, text="Chain", text_color=INK_FAINT).pack(
+            side="left", padx=(24, 8))
+        self.chain_entry = ctk.CTkEntry(
+            self.sections_row, width=150, height=26, corner_radius=0, border_width=1,
+            border_color=RULE, fg_color=SURFACE_100, text_color=INK,
+            placeholder_text="e.g. 1 2 2 3", placeholder_text_color=INK_FAINT)
+        self.chain_entry.pack(side="left")
+        self.chain_entry.bind("<Return>", lambda _e: self._on_chain(start=True))
+        self.chain_btn = ctk.CTkButton(
+            self.sections_row, text="Play chain", command=self._on_chain, width=90, height=26,
+            corner_radius=0, fg_color=SURFACE_200, hover_color=SURFACE_300, text_color=INK,
+            border_width=1, border_color=RULE)
+        self.chain_btn.pack(side="left", padx=(6, 0))
 
         self.body = ctk.CTkFrame(self, fg_color=SURFACE_000, corner_radius=0)
         self.body.grid(row=3, column=0, sticky="nsew", padx=16)
@@ -400,8 +515,14 @@ class StemRemixerApp(ctk.CTk):
         self.pitch_text = ctk.CTkLabel(bar, text="0", text_color=INK_MUTED, width=30)
         self.pitch_text.grid(row=0, column=9)
         ctk.CTkLabel(bar, text="Master", text_color=INK_FAINT).grid(row=0, column=10, padx=(12, 6))
-        self.master_slider = self._slider(bar, 0, MAX_VOLUME, self._on_master)
-        self.master_slider.grid(row=0, column=11)
+        master_box = ctk.CTkFrame(bar, fg_color="transparent")
+        master_box.grid(row=0, column=11)
+        self.master_slider = self._slider(master_box, 0, MAX_VOLUME, self._on_master)
+        self.master_slider.pack()
+        self.master_meter = tk.Canvas(master_box, height=3, width=10, bg=SURFACE_000,
+                                      highlightthickness=0)
+        self.master_meter.pack(fill="x", padx=6, pady=(2, 0))
+        self._master_bar = self.master_meter.create_rectangle(0, 0, 0, 0, outline="", fill=BRASS)
         self.master_text = ctk.CTkLabel(bar, text="100%", text_color=INK_MUTED, width=110,
                                         anchor="w")
         self.master_text.grid(row=0, column=12, sticky="w", padx=(4, 0))
@@ -519,6 +640,40 @@ class StemRemixerApp(ctk.CTk):
             elapsed = time.monotonic() - self._split_started
             left = f", {time_left(elapsed * (1 - fraction) / fraction)}" if fraction > 0.05 else ""
             self._set_status(f"Splitting the song: {round(fraction * 100)}%{left}")
+        elif kind == "eq":
+            lane, error = event[1], event[2]
+            lane.eq_busy = False
+            if error:
+                self._set_status(f"Couldn't apply the EQ: {error}", WARN)
+            elif lane.stem.eq != lane.stem.eq_applied:
+                self.apply_eq(lane)   # it was moved again meanwhile
+            elif lane in self.lanes:
+                self._set_status(f"EQ applied to {lane.stem.name}.")
+        elif kind == "update-found":
+            found, quiet = event[1], event[2]
+            self._update = found
+            if found:
+                self.update_btn.configure(text=f"Update to {found[0]}", width=120, fg_color=BRASS,
+                                          hover_color=BRASS_HOVER, text_color=ON_BRASS)
+                if not quiet:
+                    self._on_update()
+            elif not quiet:
+                self._set_status(f"You have the newest version ({updater.local_version()}).")
+        elif kind == "update-failed":
+            self._updating = False
+            self.update_btn.configure(state="normal", text="Update")
+            if not event[2]:
+                self._set_status("The update didn't happen.", WARN)
+                messagebox.showerror("Stem Remixer", event[1])
+        elif kind == "updated":
+            messagebox.showinfo("Stem Remixer", f"Updated to version {event[1]}. "
+                                "The app will now restart.")
+            try:
+                updater.restart()
+            except OSError as err:
+                messagebox.showerror("Stem Remixer", f"Updated, but the app couldn't restart "
+                                     f"itself. Start it again from its shortcut.\n\n({err})")
+            self._on_close()
         elif kind == "done":
             self._split_finished()
             self._load(event[1], event[2])
@@ -565,18 +720,34 @@ class StemRemixerApp(ctk.CTk):
         self._labels()
         self._enable()
         self._set_status("Space plays and pauses. Click a waveform to jump. "
-                         "M mutes a part, S plays it alone. Shift+drag marks a "
-                         "section to loop. Double-click a slider to reset it.")
+                         "M mutes a part, S plays it alone, EQ shapes its tone. "
+                         "Shift+drag marks a section to loop.")
         self.sections_row.grid(row=2, column=0, sticky="w", padx=16, pady=(0, 8))
         self._refresh_sections()
-        if self.mixer.loop_start is not None:
+        self._show_chain_text()
+        if self.mixer.loop_start is not None or self.mixer.chaining:
             self._show_loop()
         else:
             self._show_loop_button_off()
+        for lane in self.lanes:
+            self.apply_eq(lane)
 
     # ----------------------------------------------------------- transport
 
+    def _typing(self) -> bool:
+        """True while the keyboard is in the chain box, so its keys aren't shortcuts."""
+        try:
+            return isinstance(self.focus_get(), tk.Entry)
+        except KeyError:
+            return False
+
+    def _on_any_click(self, event):
+        if self._typing() and not isinstance(event.widget, tk.Entry):
+            self.focus_set()
+
     def _on_space(self, _event):
+        if self._typing():
+            return None
         if self.mixer is not None and not self._splitting:
             self._on_play()
         return "break"
@@ -631,6 +802,7 @@ class StemRemixerApp(ctk.CTk):
             return
         if self.mixer.set_loop(one * self.mixer.length, other * self.mixer.length):
             self.mixer.loop_on = True
+            self.mixer.chain_on = False
             self._show_loop()
 
     def _mark_at_playhead(self, start: bool):
@@ -678,7 +850,12 @@ class StemRemixerApp(ctk.CTk):
             lane.place_saved()
 
     def _colour_chips(self):
-        active = self.mixer.active_section() if self.mixer is not None else None
+        active = None
+        if self.mixer is not None:
+            if self.mixer.chaining:
+                active = self.mixer.chain[self.mixer.chain_step % len(self.mixer.chain)]
+            else:
+                active = self.mixer.active_section()
         for index, chip in enumerate(self.chips):
             on = index == active
             chip.configure(fg_color=BRASS if on else SURFACE_200,
@@ -702,9 +879,41 @@ class StemRemixerApp(ctk.CTk):
         self._set_status(f"Saved as section {index + 1}. Press {index + 1} to come back to it; "
                          "double-click it to name it, right-click to delete it.")
 
+    def _on_chain(self, start=None):
+        """Play chain button (toggles), or Enter in the chain box (starts)."""
+        mixer = self.mixer
+        if mixer is None or self._splitting:
+            return
+        self.focus_set()
+        if start is None and mixer.chaining:
+            mixer.chain_on = False
+            self._show_loop()
+            self._set_status("Chain off.")
+            return
+        steps = [int(digit) - 1 for digit in re.findall(r"[1-9]", self.chain_entry.get())]
+        chain = mixer.set_chain(steps)
+        self._show_chain_text()
+        if not chain:
+            self._set_status(
+                "Type the order to play saved sections in, by number, for example 1 2 2 3. "
+                "Then press Play chain." if mixer.sections else
+                "A chain plays saved sections one after another. Save some sections first.")
+            self._show_loop()
+            return
+        mixer.start_chain()
+        self._save_mix()
+        self._show_loop()
+        self.place_playheads()
+
+    def _show_chain_text(self):
+        self.chain_entry.delete(0, "end")
+        if self.mixer is not None and self.mixer.chain:
+            self.chain_entry.insert(0, " ".join(str(i + 1) for i in self.mixer.chain))
+
     def _on_section(self, index: int):
         if self.mixer is None or self._splitting:
             return
+        self.mixer.chain_on = False
         if self.mixer.select_section(index):
             self._show_loop()
             self.place_playheads()
@@ -733,6 +942,8 @@ class StemRemixerApp(ctk.CTk):
         if self.mixer is None:
             return
         self.mixer.delete_section(index)
+        self._show_chain_text()
+        self._show_loop()
         self._refresh_sections()
         self._save_mix()
 
@@ -748,24 +959,101 @@ class StemRemixerApp(ctk.CTk):
                              "(or drag with the right mouse button). Or press [ and ] "
                              "while it plays to mark the start and end.")
             return
-        mixer.loop_on = not mixer.loop_on
+        if mixer.chaining:
+            mixer.chain_on = False   # the Loop button takes over from the chain
+            mixer.loop_on = True
+        else:
+            mixer.loop_on = not mixer.loop_on
         self._show_loop()
 
     def _show_loop(self):
         mixer = self.mixer
-        on = mixer is not None and mixer.loop_on
+        chaining = mixer is not None and mixer.chaining
+        on = mixer is not None and mixer.loop_on and not chaining
+        self._shown_step = mixer.chain_step if chaining else None
+        self.chain_btn.configure(
+            text="Stop chain" if chaining else "Play chain",
+            fg_color=BRASS if chaining else SURFACE_200,
+            text_color=ON_BRASS if chaining else INK,
+            hover_color=BRASS_HOVER if chaining else SURFACE_300)
         self.loop_btn.configure(
             fg_color=BRASS if on else SURFACE_200, text_color=ON_BRASS if on else INK,
             hover_color=BRASS_HOVER if on else SURFACE_300)
         for lane in self.lanes:
             lane.place_section()
         self._colour_chips()
-        if mixer is not None and mixer.loop_start is not None:
+        if chaining:
+            order = "  ".join(str(i + 1) for i in mixer.chain)
+            self._set_status(f"Playing the chain {order}, round and round. "
+                             "Export mix can save it once through.")
+        elif mixer is not None and mixer.loop_start is not None:
             start, end = mixer.loop_start / mixer.samplerate, mixer.loop_end / mixer.samplerate
             self._set_status(
                 f"{'Looping' if on else 'Loop is off. Marked:'} {clock(start)} to {clock(end)} "
                 f"({end - start:.1f} seconds). L turns the loop on and off; "
                 "[ and ] move its start and end to the playhead.")
+
+    # ------------------------------------------------------------------ EQ
+
+    def apply_eq(self, lane):
+        """Work a lane's EQ into its audio, off the UI thread (it takes a
+        second or two for a whole song)."""
+        stem = lane.stem
+        if lane.eq_busy or stem.eq == stem.eq_applied:
+            return
+        lane.eq_busy = True
+        if any(stem.eq):
+            self._set_status(f"Applying EQ to {stem.name}…")
+
+        def work():
+            try:
+                while stem.eq != stem.eq_applied:
+                    stem.apply_eq()
+                self._events.put(("eq", lane, None))
+            except Exception as err:  # most likely out of memory
+                self._events.put(("eq", lane, str(err)))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    # -------------------------------------------------------------- update
+
+    def _check_for_update(self, quiet: bool):
+        """Ask GitHub whether there is a newer version, off the UI thread."""
+        def work():
+            try:
+                self._events.put(("update-found", updater.check(), quiet))
+            except Exception as err:
+                self._events.put(("update-failed", str(err), quiet))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_update(self):
+        if self._updating or self._splitting:
+            return
+        if self._update is None:
+            self._set_status("Looking for a newer version…")
+            self._check_for_update(quiet=False)
+            return
+        version, branch = self._update
+        if not messagebox.askyesno(
+                "Stem Remixer", f"Update from version {updater.local_version()} to {version}?\n\n"
+                "The app downloads the new version and restarts. Your stems and mixes are kept."):
+            return
+        self._updating = True
+        self._save_mix()
+        self.player.stop()
+        self._play_label()
+        self.update_btn.configure(state="disabled", text="Updating…")
+        self._set_status("Downloading the update…")
+
+        def work():
+            try:
+                if updater.apply(branch):
+                    self._events.put(("status", "Fetching new parts the update needs…", None))
+                    updater.install_requirements()
+                self._events.put(("updated", version))
+            except Exception as err:
+                self._events.put(("update-failed", str(err), False))
+        threading.Thread(target=work, daemon=True).start()
 
     def _on_tempo(self, value):
         value = float(value)
@@ -836,8 +1124,16 @@ class StemRemixerApp(ctk.CTk):
     def _on_export(self):
         if self.mixer is None:
             return
-        section = None
-        if self.mixer.loop_start is not None:
+        section = chain = None
+        if self.mixer.chaining:
+            order = ", ".join(str(i + 1) for i in self.mixer.chain)
+            answer = messagebox.askyesnocancel(
+                "Stem Remixer", f"Export the chain (sections {order}, once through)?\n\n"
+                "No saves the whole song instead.")
+            if answer is None:
+                return
+            chain = answer
+        elif self.mixer.loop_start is not None:
             answer = messagebox.askyesnocancel(
                 "Stem Remixer", "Export just the marked section?\n\n"
                 "Yes saves the section once through. No saves the whole song.")
@@ -847,14 +1143,17 @@ class StemRemixerApp(ctk.CTk):
                 section = (self.mixer.loop_start, self.mixer.loop_end)
         path = filedialog.asksaveasfilename(
             title="Export mix", defaultextension=".wav",
-            initialfile=f"{self.song_name} ({'loop' if section else 'remix'})",
+            initialfile=f"{self.song_name} ({'chain' if chain else 'loop' if section else 'remix'})",
             filetypes=[("WAV, full quality", "*.wav"), ("MP3, 320 kbps", "*.mp3")])
         if not path:
             return
         self._set_status("Exporting…")
         self.update_idletasks()
         try:
-            audio, factor = self.mixer.render_all(section)
+            if chain:
+                audio, factor = self.mixer.render_chain()
+            else:
+                audio, factor = self.mixer.render_all(section)
             write_audio(path, audio, self.mixer.samplerate)
         except Exception as err:
             self._set_status("The export failed.", WARN)
@@ -902,4 +1201,22 @@ class StemRemixerApp(ctk.CTk):
                     self._clip_until = 0.0
             if self.player.playing:
                 self.place_playheads()
+                if self.mixer.chaining and self.mixer.chain_step != self._shown_step:
+                    self._shown_step = self.mixer.chain_step
+                    for lane in self.lanes:
+                        lane.place_section()
+                    self._colour_chips()
+            self._meters()
         self.after(TICK_MS, self._tick)
+
+    def _meters(self):
+        """Show each part's level and the mix's, then let them fall back."""
+        mixer = self.mixer
+        for index, lane in enumerate(self.lanes):
+            lane.show_level(float(mixer.levels[index]))
+            mixer.levels[index] *= 0.8
+        level = mixer.master_level
+        mixer.master_level = level * 0.8
+        width = self.master_meter.winfo_width()
+        self.master_meter.coords(self._master_bar, 0, 0, width * meter_fraction(level), 3)
+        self.master_meter.itemconfigure(self._master_bar, fill=WARN if level > 1.0 else BRASS)
