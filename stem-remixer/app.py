@@ -362,8 +362,9 @@ class StemLane:
 
 
 class StemRemixerApp(ctk.CTk):
-    def __init__(self):
+    def __init__(self, store_python: bool = False):
         super().__init__()
+        self._store_python = store_python
         ctk.set_appearance_mode("dark")
         self.title(f"Stem Remixer {updater.local_version()}")
         self.geometry("1180x760")
@@ -533,7 +534,13 @@ class StemRemixerApp(ctk.CTk):
         self.export_btn = self._button(bar, "Export mix…", self._on_export, primary=True, width=110)
         self.export_btn.grid(row=0, column=13, padx=(0, 16))
 
-        self._set_status("Ready. The first split downloads the model (about 80 MB), once.")
+        if self._store_python:
+            self._set_status(
+                "This is running on Python from the Microsoft Store, which puts the Python logo "
+                "on the taskbar. To get the app's own icon, close this and run Install.cmd again.",
+                WARN)
+        else:
+            self._set_status("Ready. The first split downloads the model (about 80 MB), once.")
         self._enable()
 
     def _slider(self, parent, low, high, command, steps=None, start=1.0):

@@ -115,6 +115,10 @@ command from [pytorch.org/get-started](https://pytorch.org/get-started/locally/)
 
 ## Changes
 
+- **2026-11-22** (1.8.1): The taskbar icon could still be Python's logo. Python from the
+  Microsoft Store forces its own logo onto anything it runs, so the installer now uses the
+  standard Python (installing it if needed) and rebuilds a `.venv` that was made with the
+  Store one. The app says so on its status line if it is running on Store Python.
 - **2026-11-22** (1.8.0): Chains of sections, EQ per stem, level meters, and an Update button.
   A pinned taskbar icon showed Python's logo: the installer now ties the shortcuts to the
   app's window. Run Install.cmd once more to get that, unpin the old icon and pin again.

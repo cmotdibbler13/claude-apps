@@ -39,8 +39,10 @@ if ($Remove) {
     exit 0
 }
 
-function Find-Python {
-    # Returns the path of a python.exe between 3.10 and 3.14, or nothing.
+function Find-Python([switch]$AllowStore) {
+    # Returns the path of a python.exe between 3.10 and 3.14, or nothing. Python from the
+    # Microsoft Store is passed over unless -AllowStore: Windows shows the Python logo on the
+    # taskbar for anything it runs, whatever icon the app asks for.
     $probe = "import sys; print('%d.%d|%s' % (sys.version_info[0], sys.version_info[1], sys.executable))"
     $tries = New-Object System.Collections.ArrayList
     if (Get-Command py -ErrorAction SilentlyContinue) {
@@ -57,7 +59,10 @@ function Find-Python {
         if ($try.Count -gt 1) { $found = & $exe $try[1] -c $probe 2>$null }
         else { $found = & $exe -c $probe 2>$null }
         if ($LASTEXITCODE -eq 0 -and "$found" -match '^3\.(\d+)\|(.+)$') {
-            if ([int]$Matches[1] -ge 10 -and [int]$Matches[1] -le 14) { return $Matches[2].Trim() }
+            $minor = [int]$Matches[1]
+            $path = $Matches[2].Trim()
+            $store = $path -like '*WindowsApps*'
+            if ($minor -ge 10 -and $minor -le 14 -and ($AllowStore -or -not $store)) { return $path }
         }
     }
     return $null
@@ -71,9 +76,20 @@ Write-Step '1 of 4  Looking for Python'
 $python = Find-Python
 if (-not $python) {
     if (Get-Command winget -ErrorAction SilentlyContinue) {
-        Write-Host 'Python is not installed. Installing Python 3.12 (Windows may ask for permission)...'
+        if (Find-Python -AllowStore) {
+            Write-Host 'Only the Microsoft Store version of Python was found. It forces the Python logo onto the taskbar,'
+            Write-Host 'so the standard Python 3.12 is being installed alongside it (Windows may ask for permission)...'
+        } else {
+            Write-Host 'Python is not installed. Installing Python 3.12 (Windows may ask for permission)...'
+        }
         winget install -e --id Python.Python.3.12 --accept-source-agreements --accept-package-agreements
         $python = Find-Python
+    }
+    if (-not $python) {
+        $python = Find-Python -AllowStore
+        if ($python) {
+            Write-Host 'Carrying on with the Microsoft Store Python. The app will work, but its taskbar icon will be the Python logo.' -ForegroundColor Yellow
+        }
     }
     if (-not $python) {
         Stop-Install ('Python is needed and could not be installed automatically. Install Python 3.12 from ' +
@@ -84,6 +100,13 @@ Write-Host "Using $python"
 
 # --- 2. A private copy of Python for the app --------------------------------
 Write-Step '2 of 4  Making the app''s own Python folder (.venv)'
+$venvConfig = Join-Path $venv 'pyvenv.cfg'
+if ((Test-Path $venvConfig) -and ($python -notlike '*WindowsApps*') -and
+    ((Get-Content $venvConfig -Raw) -like '*WindowsApps*')) {
+    Write-Host 'The existing .venv was made with the Microsoft Store Python (the cause of the Python logo on the taskbar).'
+    Write-Host 'Rebuilding it with the standard Python. Most of the parts come from the download cache, so this is quicker than the first install.'
+    Remove-Item $venv -Recurse -Force
+}
 if (-not (Test-Path $venvPython)) {
     & $python -m venv $venv
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $venvPython)) {
