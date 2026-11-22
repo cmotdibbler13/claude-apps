@@ -90,14 +90,7 @@ class AudioRecorder:
         self._writer_thread.start()
 
         try:
-            self._stream = sd.InputStream(
-                samplerate=SAMPLE_RATE,
-                channels=CHANNELS,
-                dtype=DTYPE,
-                device=device_index,
-                callback=self._audio_callback,
-            )
-            self._stream.start()
+            self._stream = self._open_stream(device_index)
         except Exception:
             # Unwind the half-started session so a retry starts clean.
             self._frames_queue.put(None)
@@ -111,10 +104,82 @@ class AudioRecorder:
         self.is_recording = True
         return self.current_path
 
+    @staticmethod
+    def _candidate_devices(device_index: int | None) -> list[int | None]:
+        """The chosen device first, then the same mic through other host APIs.
+
+        Windows lists one physical mic under MME, DirectSound and WASAPI.
+        When one driver path refuses to open, another often still works.
+        """
+        if device_index is None:
+            return [None]
+        candidates: list[int | None] = [device_index]
+        try:
+            devices = sd.query_devices()
+            name = devices[device_index]["name"]
+        except Exception:
+            return candidates
+        for index, dev in enumerate(devices):
+            if index == device_index or dev["max_input_channels"] <= 0:
+                continue
+            # Some host APIs truncate long names (MME caps at 31 chars).
+            if dev["name"].startswith(name) or name.startswith(dev["name"]):
+                candidates.append(index)
+        return candidates
+
+    def _open_stream(self, device_index: int | None) -> sd.InputStream:
+        """Open and start an input stream, trying fallbacks before giving up.
+
+        Always records mono 44.1 kHz to the WAV file. If the device refuses
+        mono, it is opened in stereo and downmixed in the callback.
+        """
+        errors: list[str] = []
+        for candidate in self._candidate_devices(device_index):
+            try:
+                max_ch = int(sd.query_devices(candidate, "input")["max_input_channels"])
+            except Exception:
+                max_ch = CHANNELS
+            for channels in dict.fromkeys((CHANNELS, min(max(max_ch, 1), 2))):
+                stream = None
+                try:
+                    stream = sd.InputStream(
+                        samplerate=SAMPLE_RATE,
+                        channels=channels,
+                        dtype=DTYPE,
+                        device=candidate,
+                        callback=self._audio_callback,
+                    )
+                    stream.start()
+                    return stream
+                except Exception as exc:
+                    if stream is not None:
+                        try:
+                            stream.close()
+                        except Exception:
+                            pass
+                    errors.append(str(exc))
+
+        try:
+            mic = sd.query_devices(device_index, "input")["name"]
+        except Exception:
+            mic = "the selected microphone"
+        raise RuntimeError(
+            f"Windows would not open {mic}.\n\n"
+            "Try this:\n"
+            "  • Unplug the mic/webcam, wait 5 seconds, plug it back in, "
+            "then pick it again in the Microphone list.\n"
+            "  • Close any other app that might be using it.\n"
+            "  • Or choose a different microphone.\n\n"
+            f"Details: {errors[0] if errors else 'unknown error'}"
+        )
+
     def _audio_callback(self, indata, frames, time_info, status) -> None:
         if self.is_paused:
             self.level = 0.0
             return
+        if indata.shape[1] > 1:
+            # Stereo fallback: average the channels down to mono.
+            indata = indata.astype(np.int32).mean(axis=1).astype(np.int16).reshape(-1, 1)
         self._frames_queue.put(bytes(indata))
         self._frames_captured += frames
         self.level = float(np.max(np.abs(indata.astype(np.int32)))) / 32768.0

@@ -78,3 +78,8 @@ python main.py
   high-DPI displays (e.g. a Mac running Windows). The wrap width was in screen
   pixels but CustomTkinter scales it again, so on 200% scaling the text ran off
   the right-hand side.
+- **2026-11-22** — Recording: if a mic refuses to open (e.g. "PaErrorCode
+  -9999 … MME error 32" from a webcam mic), the recorder now tries the same mic
+  through Windows' other audio drivers and in stereo (downmixed to mono). If
+  all of those fail it shows a plain message naming the mic and what to try
+  instead of the raw PortAudio error.
