@@ -28,31 +28,44 @@ open-source model from Meta. Nothing is uploaded.
 
 ## Install
 
-Needs [Python](https://www.python.org/downloads/) 3.10 or newer. In this folder:
+1. [Download the zip](https://github.com/cmotdibbler13/claude-apps/archive/refs/heads/claude/peaceful-davinci-h3btsz.zip),
+   right-click it and choose **Extract All**. Move the `stem-remixer` folder somewhere
+   permanent, for example `Documents\stem-remixer`.
+2. In that folder, double-click **Install.cmd**. If Windows shows a "protected your PC" or
+   security warning, choose **More info**, then **Run anyway** (or **Run**).
+3. Wait for "Done". It downloads about 1 GB and takes 5 to 15 minutes.
+4. Double-click **Stem Remixer** on the Desktop or in the Start menu.
+
+The installer needs no admin rights. It:
+
+- finds Python, or installs Python 3.12 with `winget` if you have none;
+- puts the app's parts in a `.venv` folder inside this folder, so nothing else on your PC changes;
+- fetches the graphics card version of PyTorch if you have an NVIDIA card (a bigger download,
+  about 2.5 GB; `Install.cmd -Cpu` skips it);
+- adds the two shortcuts.
+
+If it stops part-way (for example the internet drops), run it again. To uninstall, run
+`Install.cmd -Remove` in a terminal in this folder, then delete the folder.
+
+The first split downloads the model (about 80 MB per model), once.
+
+### By hand instead
+
+With [Python](https://www.python.org/downloads/) 3.10 or newer, in this folder:
 
 ```
 pip install -r requirements.txt
-```
-
-This is a big install (about 1 GB), because Demucs runs on PyTorch.
-
-## Run
-
-```
 python main.py
 ```
-
-The first split downloads the model (about 80 MB per model), once.
 
 ## How long a split takes
 
 On a normal PC without a suitable graphics card, expect a split to take about as long as half
 the song (a 4-minute song in about 2 minutes). The best-quality model takes four times longer.
 
-With an NVIDIA graphics card it takes seconds, but `pip` installs the processor-only PyTorch on
-Windows by default. To use the card, install the CUDA build of PyTorch using the command from
-[pytorch.org/get-started](https://pytorch.org/get-started/locally/). The app uses the card
-when PyTorch can see it.
+With an NVIDIA graphics card it should take seconds. The installer sets that up. If you
+installed by hand, `pip` gives you the processor-only PyTorch; get the CUDA build with the
+command from [pytorch.org/get-started](https://pytorch.org/get-started/locally/).
 
 ## Notes
 
@@ -69,6 +82,8 @@ when PyTorch can see it.
 
 ```
 stem-remixer/
+├── Install.cmd        # double-click to install (runs Install.ps1)
+├── Install.ps1        # the installer: Python, .venv, shortcuts
 ├── main.py            # entry point
 ├── app.py             # the window (CustomTkinter)
 ├── mixer.py           # mixing engine, export, playback (sounddevice)
@@ -95,6 +110,8 @@ Built and tested in a Linux cloud session. It has not been run on Windows yet.
   Cancel and an unreadable file.
 - The window was opened on a virtual display and driven through opening stems, changing a mix,
   a full split with its progress bar, and saving and restoring a mix.
+- **Not checked:** the installer. It is PowerShell for Windows and could not be run in the
+  cloud session, so its first real run will be yours.
 - **Not checked:** sound output. The cloud machine has no sound card, so Play has not been
   heard. With no sound device the app shows a message instead of crashing.
 

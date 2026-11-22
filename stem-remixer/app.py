@@ -219,6 +219,12 @@ class StemRemixerApp(ctk.CTk):
         self.geometry("1120x760")
         self.minsize(940, 640)
         self.configure(fg_color=SURFACE_000)
+        icon_path = os.path.join(APP_DIR, "assets", "icon.ico")
+        if os.path.exists(icon_path):
+            try:
+                self.iconbitmap(icon_path)
+            except tk.TclError:
+                pass  # not Windows; cosmetic only
 
         self.mixer = None
         self.folder = None          # the open project's folder
