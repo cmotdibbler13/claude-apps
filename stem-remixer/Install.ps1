@@ -2,7 +2,7 @@
 .SYNOPSIS
   Installs Stem Remixer: finds (or installs) Python, puts everything the app needs in a
   .venv folder next to this file, and adds "Stem Remixer" to the Desktop and Start menu.
-  Run it by double-clicking Install.cmd.
+  Run it by double-clicking Install.cmd (Uninstall.cmd runs it with -Remove).
 
   -Remove  takes the shortcuts and the .venv folder away again (your Stems are kept).
   -Cpu     skips the NVIDIA graphics card build of PyTorch (a much smaller download).

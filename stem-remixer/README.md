@@ -41,11 +41,11 @@ The installer needs no admin rights. It:
 - finds Python, or installs Python 3.12 with `winget` if you have none;
 - puts the app's parts in a `.venv` folder inside this folder, so nothing else on your PC changes;
 - fetches the graphics card version of PyTorch if you have an NVIDIA card (a bigger download,
-  about 2.5 GB; `Install.cmd -Cpu` skips it);
+  about 2.5 GB; `.\Install.cmd -Cpu` in a terminal skips it);
 - adds the two shortcuts.
 
-If it stops part-way (for example the internet drops), run it again. To uninstall, run
-`Install.cmd -Remove` in a terminal in this folder, then delete the folder.
+If it stops part-way (for example the internet drops), run it again. To uninstall,
+double-click **Uninstall.cmd**, then delete the folder.
 
 The first split downloads the model (about 80 MB per model), once.
 
@@ -90,6 +90,7 @@ command from [pytorch.org/get-started](https://pytorch.org/get-started/locally/)
 ```
 stem-remixer/
 ├── Install.cmd        # double-click to install (runs Install.ps1)
+├── Uninstall.cmd      # double-click to uninstall
 ├── Install.ps1        # the installer: Python, .venv, shortcuts
 ├── main.py            # entry point
 ├── app.py             # the window (CustomTkinter)
