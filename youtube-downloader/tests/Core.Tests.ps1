@@ -182,7 +182,48 @@ Describe 'Get-YtdLauncher' {
     }
 }
 
+Describe 'YouTube sign-in' {
+    It 'adds nothing when not signed in' {
+        $a = New-YtDlpArguments -Url 'https://youtu.be/x' -Folder 'D:\V'
+        ($a -join ' ') | Should Not Match 'cookies'
+    }
+    It 'borrows the sign-in from Firefox' {
+        $a = New-YtDlpArguments -Url 'https://youtu.be/x' -Folder 'D:\V' -SignIn firefox
+        $i = [array]::IndexOf($a, '--cookies-from-browser')
+        $a[$i + 1] | Should Be 'firefox'
+        $a[-1] | Should Be 'https://youtu.be/x'
+    }
+    It 'reads a cookies file' {
+        $a = New-YtDlpArguments -Url 'https://youtu.be/x' -Folder 'D:\V' -SignIn file -CookiesFile 'D:\My Files\cookies.txt'
+        $i = [array]::IndexOf($a, '--cookies')
+        $a[$i + 1] | Should Be 'D:\My Files\cookies.txt'
+    }
+    It 'ignores the cookies file choice when no file is set' {
+        $a = New-YtDlpArguments -Url 'https://youtu.be/x' -Folder 'D:\V' -SignIn file
+        ($a -join ' ') | Should Not Match 'cookies'
+    }
+    It 'maps the names shown in the window' {
+        Get-SignInCode 'Firefox' | Should Be 'firefox'
+        Get-SignInCode 'Cookies file' | Should Be 'file'
+        Get-SignInCode 'Something else' | Should Be 'none'
+    }
+    It 'explains the sign-in errors' {
+        Get-FriendlyError 'Sign in to confirm you''re not a bot. Use --cookies-from-browser' | Should Match 'YouTube sign-in'
+        Get-FriendlyError 'could not find firefox cookies database in C:\Users' | Should Match 'Firefox'
+        Get-FriendlyError 'The provided YouTube account cookies are no longer valid' | Should Match 'out of date'
+        Get-FriendlyError 'This content isn''t available, try again later' | Should Match 'hour'
+    }
+}
+
 Describe 'Settings' {
+    It 'keeps the sign-in choice, and drops a cookies file choice with no file' {
+        $f = Join-Path $TestDrive 'signin.json'
+        (Read-YtdSettings $f).SignIn | Should Be 'Not signed in'
+        Save-YtdSettings ([pscustomobject]@{ Folder = 'E:\C'; Quality = '720p (MP4)'; SignIn = 'Firefox'; CookiesFile = '' }) $f
+        (Read-YtdSettings $f).SignIn | Should Be 'Firefox'
+        Save-YtdSettings ([pscustomobject]@{ Folder = 'E:\C'; Quality = '720p (MP4)'; SignIn = 'Cookies file'; CookiesFile = '' }) $f
+        (Read-YtdSettings $f).SignIn | Should Be 'Not signed in'
+    }
     $file = Join-Path $TestDrive 'settings.json'
     It 'has defaults when nothing is saved' {
         $s = Read-YtdSettings $file

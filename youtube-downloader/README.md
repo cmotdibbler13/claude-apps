@@ -57,10 +57,11 @@ same folder: `Get-ChildItem -Recurse | Unblock-File`.
   so a second or so of a sponsor read can remain.
 - **Also cut self-promotion and "like and subscribe" reminders**: off by default. This also removes
   the creator's own merch plugs and reminders, as marked on SponsorBlock.
+- **YouTube sign-in**: leave on *Not signed in* unless YouTube asks for one (see below).
 - **Whole playlist**: off by default, so a link copied from inside a playlist saves just that
   video. Turn it on to save every video, numbered in order, in a folder named after the playlist.
 - **Save to**: defaults to `Videos\YouTube`. **Change** picks another folder. The app remembers
-  your folder, quality and SponsorBlock choices.
+  your folder, quality, SponsorBlock and sign-in choices.
 - **Cancel** stops straight away. A half-finished `.part` file may be left; downloading the same
   video again carries on from where it stopped.
 - **Play last download** opens the file in your default player. **Open folder** shows it in Explorer.
@@ -73,8 +74,23 @@ YouTube changes its site often, and older yt-dlp versions stop working. The app 
 yt-dlp once a week on its own. If a download fails with "HTTP 403" or similar, press
 **Update tools** to fetch the newest yt-dlp, FFmpeg and Deno, then try again.
 
-Some videos can't be downloaded at all: private, members-only, age-restricted (YouTube wants a
-sign-in) or not yet premiered. The app says which in plain words.
+### "YouTube is asking for a sign-in"
+
+YouTube sometimes refuses to serve a video until it sees a signed-in person. It happens on
+age-restricted videos, and on any video once it decides a connection looks automated, often
+after a download or two. Under **YouTube sign-in**, pick one:
+
+- **Firefox**: install [Firefox](https://www.mozilla.org/firefox/), sign in to YouTube in it once,
+  and the app borrows that sign-in. This is the easy one. Chrome and Edge aren't offered because on
+  Windows they lock and encrypt their cookies, so yt-dlp can't read them.
+- **Cookies file**: export a `cookies.txt` for youtube.com from any browser with a cookies-export
+  extension, then choose the file. Keep it private: anyone holding it is signed in as you.
+
+The sign-in stays on your PC and goes only to YouTube. Downloading a lot through a signed-in
+account can get the account flagged, so a spare account is the safer choice. If it still fails,
+YouTube may have paused your connection for a while: wait an hour and try again.
+
+Some videos can't be downloaded at all: private, members-only, or not yet premiered. The app says which in plain words.
 
 ## Files
 
@@ -112,7 +128,7 @@ What was run there:
 
 - The theme controls compiled against the .NET Framework 4.8 that comes with Windows, at the
   older C# version Windows PowerShell uses.
-- The unit tests (32 passing) and PSScriptAnalyzer, including its check for Windows PowerShell 5.1 syntax.
+- The unit tests (41 passing) and PSScriptAnalyzer, including its check for Windows PowerShell 5.1 syntax.
 - The window's own logic (job queue, progress, cancel, weekly update check, errors) driven with
   stand-in controls, running the real yt-dlp and FFmpeg against a test video with separate
   picture and sound streams, as YouTube serves them. The results were a playable H.264/AAC MP4,

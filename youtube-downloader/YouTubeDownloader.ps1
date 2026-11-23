@@ -27,8 +27,8 @@ $form.Text = 'YouTube Downloader'
 $form.Font = $P::Regular(10)
 $form.BackColor = $P::Surface000
 $form.ForeColor = $P::Ink
-$form.ClientSize = New-Object Drawing.Size(680, 640)
-$form.MinimumSize = New-Object Drawing.Size(600, 620)
+$form.ClientSize = New-Object Drawing.Size(680, 716)
+$form.MinimumSize = New-Object Drawing.Size(600, 696)
 $form.StartPosition = 'CenterScreen'
 $iconPath = Join-Path $here 'downloader.ico'
 if (Test-Path $iconPath) { $form.Icon = New-Object Drawing.Icon($iconPath) }
@@ -106,18 +106,27 @@ $promoBox = Add-Control (New-Check 'Also cut self-promotion and "like and subscr
 $promoBox.Checked = $settings.SkipPromos
 $promoBox.Enabled = $sponsorBox.Checked
 
-$downloadBtn = Add-Control (New-Button 'Download' -Primary) 24 396 170 42
-$cancelBtn = Add-Control (New-Button 'Cancel') 206 396 120 42
-$cancelBtn.Enabled = $false
-$updateBtn = Add-Control (New-Button 'Update tools') 506 396 150 42 'Top,Right'
+[void](Add-Control (New-Eyebrow 'YouTube sign-in') 24 388 300 20)
+$signInBox = Add-Control (New-Object SixMinutesOn.Picker) 24 412 210 36
+$signInBox.Font = $P::Regular(10)
+foreach ($n in Get-SignInNames) { $signInBox.Items.Add($n) }
+$signInBox.SelectedItem = $settings.SignIn
+$signInBox.AccessibleName = 'YouTube sign-in'
+$signInNote = Add-Control (New-Object Windows.Forms.Label) 250 412 406 36 'Top,Left,Right'
+$signInNote.ForeColor = $P::InkFaint; $signInNote.TextAlign = 'MiddleLeft'; $signInNote.AutoEllipsis = $true
 
-$bar = Add-Control (New-Object SixMinutesOn.SlimBar) 24 458 632 4 'Top,Left,Right'
-$status = Add-Control (New-Object Windows.Forms.Label) 24 470 632 26 'Top,Left,Right'
+$downloadBtn = Add-Control (New-Button 'Download' -Primary) 24 472 170 42
+$cancelBtn = Add-Control (New-Button 'Cancel') 206 472 120 42
+$cancelBtn.Enabled = $false
+$updateBtn = Add-Control (New-Button 'Update tools') 506 472 150 42 'Top,Right'
+
+$bar = Add-Control (New-Object SixMinutesOn.SlimBar) 24 534 632 4 'Top,Left,Right'
+$status = Add-Control (New-Object Windows.Forms.Label) 24 546 632 26 'Top,Left,Right'
 $status.Text = 'Paste a YouTube link and press Download.'
 $status.ForeColor = $P::InkMuted; $status.TextAlign = 'MiddleLeft'; $status.AutoEllipsis = $true
 
 # log: a surface-100 plate with a hairline border
-$logFrame = Add-Control (New-Object Windows.Forms.Panel) 24 504 632 78 'Top,Bottom,Left,Right'
+$logFrame = Add-Control (New-Object Windows.Forms.Panel) 24 580 632 78 'Top,Bottom,Left,Right'
 $logFrame.BackColor = $P::Rule
 $logFrame.Padding = New-Object Windows.Forms.Padding(1)
 $logInner = New-Object Windows.Forms.Panel
@@ -131,9 +140,9 @@ $log.Font = $P::Mono(9); $log.TabStop = $false
 $logInner.Controls.Add($log)
 $log.Add_HandleCreated({ [SixMinutesOn.Native]::DarkScrollBars($log) })
 
-$playBtn = Add-Control (New-Button 'Play last download') 24 594 200 34 'Bottom,Left'
+$playBtn = Add-Control (New-Button 'Play last download') 24 670 200 34 'Bottom,Left'
 $playBtn.Enabled = $false
-$openBtn = Add-Control (New-Button 'Open folder') 236 594 140 34 'Bottom,Left'
+$openBtn = Add-Control (New-Button 'Open folder') 236 670 140 34 'Bottom,Left'
 
 $form.AcceptButton = $downloadBtn
 $tip = New-Object Windows.Forms.ToolTip
@@ -141,12 +150,24 @@ $tip.SetToolTip($updateBtn, 'Fetch the newest yt-dlp, FFmpeg and Deno. Try this 
 $tip.SetToolTip($playlistBox, 'Off: only the one video in the link. On: every video in its playlist.')
 $tip.SetToolTip($sponsorBox, 'Uses SponsorBlock, where viewers mark the paid sponsor sections of videos. Those parts are cut out of the saved file.')
 $tip.SetToolTip($promoBox, 'Also cuts the creator''s own merch plugs and "like and subscribe" reminders, as marked on SponsorBlock.')
+$tip.SetToolTip($signInBox, 'Only needed when YouTube asks for a sign-in. Firefox: uses the YouTube sign-in from Firefox on this PC. Cookies file: a cookies.txt exported from any browser.')
+
+$cookies = @{ File = [string]$settings.CookiesFile; Quiet = $false }
+function Update-SignInNote {
+    switch (Get-SignInCode $signInBox.SelectedItem) {
+        'firefox' { $signInNote.Text = 'Uses your YouTube sign-in from Firefox on this PC.' }
+        'file'    { $signInNote.Text = 'Using ' + [IO.Path]::GetFileName($cookies.File) }
+        default   { $signInNote.Text = 'Only needed if YouTube asks you to sign in.' }
+    }
+}
+Update-SignInNote
 
 function Show-Notice([string]$heading, [string]$text) { [SixMinutesOn.Notice]::Show($form, $heading, $text) }
 function Save-CurrentSettings {
     Save-YtdSettings ([pscustomobject]@{
         Folder = $folderBox.Text; Quality = [string]$qualityBox.SelectedItem
-        SkipSponsors = $sponsorBox.Checked; SkipPromos = $promoBox.Checked })
+        SkipSponsors = $sponsorBox.Checked; SkipPromos = $promoBox.Checked
+        SignIn = [string]$signInBox.SelectedItem; CookiesFile = $cookies.File })
 }
 
 # ---------- state ----------
@@ -168,6 +189,7 @@ function Set-Busy([bool]$busy) {
     $browseBtn.Enabled = -not $busy
     $urlBox.ReadOnly = $busy
     $qualityBox.Enabled = -not $busy
+    $signInBox.Enabled = -not $busy
     $playlistBox.Enabled = -not $busy
     $sponsorBox.Enabled = -not $busy
     $promoBox.Enabled = (-not $busy) -and $sponsorBox.Checked
@@ -308,7 +330,8 @@ function Start-Work([bool]$download, [bool]$forceUpdate) {
         $folder = $folderBox.Text
         if (-not (Test-Path -LiteralPath $folder)) { New-Item -ItemType Directory -Path $folder -Force | Out-Null }
         $dlArgs = New-YtDlpArguments -Url $urlBox.Text -Folder $folder -Quality (Get-QualityCode $qualityBox.SelectedItem) -Playlist:$playlistBox.Checked -BinFolder $bin `
-            -SkipSponsors:$sponsorBox.Checked -SkipPromos:($sponsorBox.Checked -and $promoBox.Checked)
+            -SkipSponsors:$sponsorBox.Checked -SkipPromos:($sponsorBox.Checked -and $promoBox.Checked) `
+            -SignIn (Get-SignInCode $signInBox.SelectedItem) -CookiesFile $cookies.File
         $state.Jobs.Enqueue(@{ Kind = 'download'; Title = 'Starting the download...'; Exe = (Join-Path $bin 'yt-dlp.exe'); Args = $dlArgs })
     }
     Set-Busy $true
@@ -366,6 +389,23 @@ $playBtn.Add_Click({
 $sponsorBox.Add_CheckedChanged({ $promoBox.Enabled = $sponsorBox.Checked -and $sponsorBox.Enabled; Save-CurrentSettings })
 $promoBox.Add_CheckedChanged({ Save-CurrentSettings })
 $qualityBox.Add_SelectedChanged({ Save-CurrentSettings })
+$signInBox.Add_SelectedChanged({
+    if ($cookies.Quiet) { return }
+    if ((Get-SignInCode $signInBox.SelectedItem) -eq 'file') {
+        # ask which cookies.txt; backing out returns to not signed in
+        $dlg = New-Object Windows.Forms.OpenFileDialog
+        $dlg.Title = 'Choose the cookies.txt exported from your browser'
+        $dlg.Filter = 'Cookies file (*.txt)|*.txt|All files (*.*)|*.*'
+        if ($cookies.File -and (Test-Path -LiteralPath $cookies.File)) { $dlg.FileName = $cookies.File }
+        if ($dlg.ShowDialog($form) -eq 'OK') {
+            $cookies.File = $dlg.FileName
+        } elseif (-not $cookies.File) {
+            $cookies.Quiet = $true; $signInBox.SelectedItem = 'Not signed in'; $cookies.Quiet = $false
+        }
+    }
+    Update-SignInNote
+    Save-CurrentSettings
+})
 $form.Add_FormClosing({
     if ($state.Run) { $state.Cancelled = $true; Stop-ToolProcess $state.Run }
 })

@@ -67,6 +67,19 @@ function Get-YtdLauncher([string]$Folder) {
 
 function Get-QualityNames { @($script:Qualities.Keys) }
 
+# Where the YouTube sign-in comes from when YouTube asks for one. Chrome and Edge are left out on
+# purpose: on Windows they lock and encrypt their cookies, so yt-dlp cannot read them.
+$script:SignIns = [ordered]@{
+    'Not signed in' = 'none'
+    'Firefox'       = 'firefox'
+    'Cookies file'  = 'file'
+}
+function Get-SignInNames { @($script:SignIns.Keys) }
+function Get-SignInCode([string]$Name) {
+    if ($Name -and $script:SignIns.Contains($Name)) { return $script:SignIns[$Name] }
+    'none'
+}
+
 function Get-QualityCode([string]$Name) {
     if ($script:Qualities.Contains($Name)) { return $script:Qualities[$Name] }
     'best'
@@ -90,7 +103,9 @@ function New-YtDlpArguments {
         [string]$BinFolder,
         [string]$JsRuntime = 'deno',
         [switch]$SkipSponsors,
-        [switch]$SkipPromos
+        [switch]$SkipPromos,
+        [string]$SignIn = 'none',
+        [string]$CookiesFile
     )
     $a = New-Object System.Collections.Generic.List[string]
     $a.AddRange([string[]]@(
@@ -129,6 +144,13 @@ function New-YtDlpArguments {
         if ($SkipSponsors) { $cats += 'sponsor' }
         if ($SkipPromos) { $cats += 'selfpromo', 'interaction' }
         $a.AddRange([string[]]@('--sponsorblock-remove', ($cats -join ',')))
+    }
+    # YouTube sometimes wants proof of a signed-in person. yt-dlp can borrow the sign-in from Firefox,
+    # or read a cookies.txt exported from any browser.
+    if ($SignIn -eq 'firefox') {
+        $a.AddRange([string[]]@('--cookies-from-browser', 'firefox'))
+    } elseif ($SignIn -eq 'file' -and $CookiesFile) {
+        $a.AddRange([string[]]@('--cookies', $CookiesFile))
     }
     $a.Add('--')
     $a.Add($Url.Trim())
@@ -194,7 +216,10 @@ function ConvertFrom-ToolLine([string]$Line) {
 function Get-FriendlyError([string]$Text) {
     # Plain-English versions of the yt-dlp errors people actually meet.
     switch -Regex ($Text) {
-        'Sign in to confirm (you.re not a bot|your age)' { return 'YouTube wants you signed in for this video (age-restricted, or it thinks this is a bot). Try another video, or try again later.' }
+        'Sign in to confirm (you.re not a bot|your age)' { return 'YouTube is asking for a sign-in before it will hand over this video. Under YouTube sign-in, choose Firefox (signed in to YouTube there) or a cookies file, then press Download again. If you are already using one, sign in to YouTube again in the browser, or wait an hour.' }
+        'could not find firefox cookies database'        { return 'No Firefox sign-in was found. Install Firefox, sign in to YouTube in it once, then try again.' }
+        'cookies are no longer valid|does not look like a Netscape format' { return 'The YouTube sign-in is out of date or the cookies file is not valid. Sign in to YouTube again in the browser (and export the cookies file again), then try again.' }
+        'rate-limited by YouTube|content isn.t available, try again later' { return 'YouTube has paused downloads from your connection for a while. Wait about an hour, then try again.' }
         'Private video'                                   { return 'This video is private.' }
         'Video unavailable|This video has been removed'   { return 'This video is not available (removed, or blocked in your country).' }
         'members-only|Join this channel'                  { return 'This video is for channel members only.' }
@@ -270,6 +295,8 @@ function Read-YtdSettings([string]$Path = (Join-Path (Get-YtdDataFolder) 'settin
         Quality = 'Best available (MP4)'
         SkipSponsors = $true
         SkipPromos = $false
+        SignIn = 'Not signed in'
+        CookiesFile = ''
     }
     if (-not (Test-Path $Path)) { return $defaults }
     try {
@@ -278,6 +305,9 @@ function Read-YtdSettings([string]$Path = (Join-Path (Get-YtdDataFolder) 'settin
         if ($s.Quality -and (Get-QualityNames) -contains $s.Quality) { $defaults.Quality = [string]$s.Quality }
         if ($null -ne $s.SkipSponsors) { $defaults.SkipSponsors = [bool]$s.SkipSponsors }
         if ($null -ne $s.SkipPromos) { $defaults.SkipPromos = [bool]$s.SkipPromos }
+        if ($s.CookiesFile) { $defaults.CookiesFile = [string]$s.CookiesFile }
+        if ($s.SignIn -and (Get-SignInNames) -contains $s.SignIn) { $defaults.SignIn = [string]$s.SignIn }
+        if ((Get-SignInCode $defaults.SignIn) -eq 'file' -and -not $defaults.CookiesFile) { $defaults.SignIn = 'Not signed in' }
     } catch { }
     $defaults
 }
