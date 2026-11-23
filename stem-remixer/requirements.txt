@@ -1,0 +1,6 @@
+customtkinter>=5.2.2
+sounddevice>=0.5.1
+soundfile>=0.12.1
+numpy>=1.26
+lameenc>=1.7
+demucs>=4.1.0
