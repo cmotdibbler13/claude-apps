@@ -65,6 +65,43 @@ function Get-YtdLauncher([string]$Folder) {
     [pscustomobject]@{ Target = $target; Arguments = $arguments; Command = "`"$target`" $arguments" }
 }
 
+# ---------- app version and updates ----------
+function Get-YtdUpdateSource {
+    $repo = 'cmotdibbler13/claude-apps'; $folder = 'youtube-downloader'; $branch = 'main'
+    [pscustomobject]@{
+        Folder = $folder
+        VersionUrls = @(
+            "https://api.github.com/repos/$repo/contents/$folder/VERSION?ref=$branch",
+            "https://raw.githubusercontent.com/$repo/$branch/$folder/VERSION")
+        ZipUrl = "https://github.com/$repo/archive/refs/heads/$branch.zip"
+    }
+}
+
+function ConvertTo-YtdVersion([string]$Text) {
+    # '1.5.0' as a version to compare, or nothing when the text is not a version number.
+    $v = $null
+    if ($Text -and $Text.Trim() -match '^\d+(\.\d+){1,3}$' -and [version]::TryParse($Text.Trim(), [ref]$v)) { return $v }
+    $null
+}
+
+function Get-YtdVersion([string]$Folder) {
+    # The installed version. Installs from before the VERSION file count as 0.0.
+    $file = [IO.Path]::Combine($Folder, 'VERSION')
+    if (Test-Path -LiteralPath $file) {
+        $text = ([string](Get-Content -LiteralPath $file -TotalCount 1)).Trim()
+        if (ConvertTo-YtdVersion $text) { return $text }
+    }
+    '0.0'
+}
+
+function Test-YtdNewer([string]$Remote, [string]$Local) {
+    $r = ConvertTo-YtdVersion $Remote
+    $l = ConvertTo-YtdVersion $Local
+    if (-not $r) { return $false }
+    if (-not $l) { return $true }
+    $r -gt $l
+}
+
 function Get-QualityNames { @($script:Qualities.Keys) }
 
 # Where the YouTube sign-in comes from when YouTube asks for one. Chrome and Edge are left out on
@@ -182,7 +219,7 @@ function ConvertTo-CommandLine([string[]]$Arguments) {
 function ConvertFrom-ToolLine([string]$Line) {
     # Turns one line of yt-dlp (or Setup-Tools.ps1) output into something the window can show.
     $t = if ($null -eq $Line) { '' } else { $Line.TrimEnd() }
-    $o = [ordered]@{ Kind = 'Info'; Text = $t; Percent = $null; Speed = ''; Eta = ''; Path = ''; Item = 0; Of = 0; Segments = -1 }
+    $o = [ordered]@{ Kind = 'Info'; Text = $t; Percent = $null; Speed = ''; Eta = ''; Path = ''; Item = 0; Of = 0; Segments = -1; Result = ''; Version = '' }
     if ($t -match '^DL\|\s*([\d.]+)%\|([^|]*)\|(.*)$') {
         $o.Kind = 'Progress'
         $o.Percent = [double]::Parse($Matches[1], [Globalization.CultureInfo]::InvariantCulture)
@@ -193,6 +230,8 @@ function ConvertFrom-ToolLine([string]$Line) {
         $o.Kind = 'Progress'                          # size unknown (live or streamed): no percent
     } elseif ($t -match '^FILE\|(.+)$') {
         $o.Kind = 'File'; $o.Path = $Matches[1].Trim()
+    } elseif ($t -match '^APPUPDATE\|(current|updated)\|(.+)$') {
+        $o.Kind = 'AppUpdate'; $o.Result = $Matches[1]; $o.Version = $Matches[2].Trim()
     } elseif ($t -match '^ERROR:\s*(.*)$') {
         $o.Kind = 'Error'; $o.Text = $Matches[1]
     } elseif ($t -match '^WARNING:\s*(.*)$') {
@@ -228,6 +267,7 @@ function Get-FriendlyError([string]$Text) {
         'HTTP Error 404'                                  { return 'Nothing was found at that link. Check it and try again.' }
         'HTTP Error 403'                                  { return 'YouTube refused the download (HTTP 403). Press Update tools, then try again.' }
         'No space left'                                   { return 'The disk is full.' }
+        '^The update failed'                              { return $Text }
         'getaddrinfo failed|Failed to resolve|timed out'  { return 'Could not reach YouTube. Check your internet connection.' }
     }
     $Text

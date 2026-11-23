@@ -144,9 +144,13 @@ $playBtn = Add-Control (New-Button 'Play last download') 24 670 200 34 'Bottom,L
 $playBtn.Enabled = $false
 $openBtn = Add-Control (New-Button 'Open folder') 236 670 140 34 'Bottom,Left'
 
+$appBtn = Add-Control (New-Button 'Update app') 506 670 150 34 'Bottom,Right'
+$version = Get-YtdVersion $here
+
 $form.AcceptButton = $downloadBtn
 $tip = New-Object Windows.Forms.ToolTip
 $tip.SetToolTip($updateBtn, 'Fetch the newest yt-dlp, FFmpeg and Deno. Try this if downloads stop working.')
+$tip.SetToolTip($appBtn, "Fetch the newest version of this app from GitHub. This is version $version.")
 $tip.SetToolTip($playlistBox, 'Off: only the one video in the link. On: every video in its playlist.')
 $tip.SetToolTip($sponsorBox, 'Uses SponsorBlock, where viewers mark the paid sponsor sections of videos. Those parts are cut out of the saved file.')
 $tip.SetToolTip($promoBox, 'Also cuts the creator''s own merch plugs and "like and subscribe" reminders, as marked on SponsorBlock.')
@@ -176,7 +180,7 @@ $state = @{
     Run = $null; Job = $null
     Files = New-Object System.Collections.Generic.List[string]
     LastFile = $null; Errors = New-Object System.Collections.Generic.List[string]
-    LastPct = 0.0; Part = 1; Item = ''; Cancelled = $false; Cut = 0
+    LastPct = 0.0; Part = 1; Item = ''; Cancelled = $false; Cut = 0; App = $null
 }
 
 function Add-LogLine([string]$text) {
@@ -186,6 +190,7 @@ function Add-LogLine([string]$text) {
 function Set-Busy([bool]$busy) {
     $downloadBtn.Enabled = -not $busy
     $updateBtn.Enabled = -not $busy
+    $appBtn.Enabled = -not $busy
     $browseBtn.Enabled = -not $busy
     $urlBox.ReadOnly = $busy
     $qualityBox.Enabled = -not $busy
@@ -238,9 +243,11 @@ function Show-Line([string]$line) {
         'Cutting'    { $bar.Busy = $true; $status.Text = "$($state.Item)Cutting out sponsor sections..."; Add-LogLine $l.Text }
         'File'       { $state.Files.Add($l.Path); $state.LastFile = $l.Path; Add-LogLine "Saved: $($l.Path)" }
         'Already'    { Add-LogLine $l.Text }
+        'AppUpdate'  { $state.App = $l }
         'Error'      { $state.Errors.Add($l.Text); Add-LogLine "ERROR: $($l.Text)" }
         'Warning'    { if ($l.Text -notmatch 'JavaScript runtime|Falling back') { Add-LogLine "Note: $($l.Text)" } }
         default      {
+            if ($l.Text -match '^\[update\] Downloading') { $bar.Busy = $true; $status.Text = 'Downloading the new version...' }
             if ($l.Text -match '^\[setup\] Downloading (.+)\.\.\.$') { $state.Job.Title = "First run: downloading $($Matches[1])..." }
             if ($l.Text) { Add-LogLine $l.Text }
         }
@@ -276,6 +283,7 @@ function Step-Run {
     }
     if ($code -ne 0) {
         if ($job.Kind -eq 'setup' -and $state.Errors.Count -eq 0) { $state.Errors.Add('Setting up the tools failed.') }
+        if ($job.Kind -eq 'appupdate' -and $state.Errors.Count -eq 0) { $state.Errors.Add('The update failed.') }
         if ($job.Kind -eq 'download' -and $state.Errors.Count -eq 0) { $state.Errors.Add("yt-dlp stopped with code $code.") }
         # a playlist with one bad video still saves the rest, so carry on to report them
         if ($job.Kind -eq 'setup') { $state.Jobs.Clear() }
@@ -299,6 +307,20 @@ function Complete-All {
         if ($state.Files.Count -gt 0) { $msg = "Saved $($state.Files.Count) file(s), but some failed. $msg" }
         $status.Text = $msg
         Show-Notice 'Download problem' $msg
+    } elseif ($state.Job -and $state.Job.Kind -eq 'appupdate') {
+        $bar.Value = 1000
+        if ($state.App -and $state.App.Result -eq 'updated') {
+            $status.Text = "Updated to version $($state.App.Version). Restarting..."
+            Add-LogLine $status.Text
+            Show-Notice 'Updated' "YouTube Downloader is now version $($state.App.Version). It will restart when you press OK."
+            $launch = Get-YtdLauncher $here
+            Start-Process -FilePath $launch.Target -ArgumentList $launch.Arguments -WorkingDirectory $here
+            $state.Job = $null
+            $form.Close()
+            return
+        }
+        $status.Text = "You have the newest version ($version)."
+        Add-LogLine $status.Text
     } elseif ($state.Job -and $state.Job.Kind -eq 'download') {
         $bar.Value = 1000
         if ($state.Files.Count -gt 1) { $done = "Done: saved $($state.Files.Count) files" }
@@ -352,6 +374,16 @@ $downloadBtn.Add_Click({
     } catch { Stop-WithError $_ }
 })
 $updateBtn.Add_Click({ try { Start-Work $false $true } catch { Stop-WithError $_ } })
+$appBtn.Add_Click({
+    try {
+        $state.Jobs.Clear(); $state.Files.Clear(); $state.Errors.Clear(); $state.Cancelled = $false; $state.Item = ''; $state.Cut = 0; $state.App = $null
+        $status.ForeColor = $P::InkMuted
+        $state.Jobs.Enqueue(@{ Kind = 'appupdate'; Title = 'Checking for a new version...'; Exe = $psExe
+            Args = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $here 'Update-App.ps1'), '-AppFolder', $here) })
+        Set-Busy $true
+        Start-NextJob
+    } catch { Stop-WithError $_ }
+})
 $cancelBtn.Add_Click({
     $state.Cancelled = $true
     $state.Jobs.Clear()

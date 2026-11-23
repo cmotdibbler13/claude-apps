@@ -90,6 +90,12 @@ The sign-in stays on your PC and goes only to YouTube. Downloading a lot through
 account can get the account flagged, so a spare account is the safer choice. If it still fails,
 YouTube may have paused your connection for a while: wait an hour and try again.
 
+## Updating the app
+
+Press **Update app** (bottom right). It compares the `VERSION` file here with the one on GitHub. If
+there is a newer version it downloads it, copies the new files over the old ones, and restarts the
+app. Your settings, the tools and the shortcuts are left alone.
+
 Some videos can't be downloaded at all: private, members-only, or not yet premiered. The app says which in plain words.
 
 ## Files
@@ -100,6 +106,8 @@ Some videos can't be downloaded at all: private, members-only, or not yet premie
 | `Theme.cs` | The window's controls drawn in the brand colours (buttons, fields, picker, progress rule, notices). The app compiles it when it starts |
 | `YouTubeDownloader.Core.psm1` | Helpers: yt-dlp command line, reading its output, running a tool without freezing the window, settings |
 | `Setup-Tools.ps1` | Fetches the three tools (the app runs it; `-Update` fetches them all again) |
+| `Update-App.ps1` | Fetches a newer version of the app from GitHub (the **Update app** button runs it) |
+| `VERSION` | This version's number, which the updater compares with GitHub's |
 | `Install-Shortcuts.ps1` | Adds/removes the Desktop and Start menu shortcuts, draws `downloader.ico` |
 | `tests\Core.Tests.ps1` | Pester tests for the helpers |
 
@@ -128,7 +136,7 @@ What was run there:
 
 - The theme controls compiled against the .NET Framework 4.8 that comes with Windows, at the
   older C# version Windows PowerShell uses.
-- The unit tests (41 passing) and PSScriptAnalyzer, including its check for Windows PowerShell 5.1 syntax.
+- The unit tests (46 passing) and PSScriptAnalyzer, including its check for Windows PowerShell 5.1 syntax.
 - The window's own logic (job queue, progress, cancel, weekly update check, errors) driven with
   stand-in controls, running the real yt-dlp and FFmpeg against a test video with separate
   picture and sound streams, as YouTube serves them. The results were a playable H.264/AAC MP4,
@@ -137,6 +145,8 @@ What was run there:
   marked 4-second section out of a 20-second test video, keeping picture and sound.
 - `Setup-Tools.ps1` against the real GitHub downloads, which gave genuine Windows `yt-dlp.exe`,
   `ffmpeg.exe`, `ffprobe.exe` and `deno.exe`.
+- `Update-App.ps1` against the real GitHub repository: an older copy was brought up to date, and an
+  up-to-date copy was left alone.
 - A real YouTube link got through YouTube's checks. The video data itself wasn't downloaded
   there, because YouTube blocks that from cloud servers. Home connections aren't blocked.
 

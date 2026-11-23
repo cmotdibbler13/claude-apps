@@ -182,6 +182,36 @@ Describe 'Get-YtdLauncher' {
     }
 }
 
+Describe 'App updates' {
+    It 'reads the installed version, and counts a missing VERSION file as 0.0' {
+        $d = Join-Path $TestDrive 'app'; New-Item -ItemType Directory $d | Out-Null
+        Get-YtdVersion $d | Should Be '0.0'
+        '1.5.0' | Set-Content (Join-Path $d 'VERSION')
+        Get-YtdVersion $d | Should Be '1.5.0'
+        'rubbish' | Set-Content (Join-Path $d 'VERSION')
+        Get-YtdVersion $d | Should Be '0.0'
+    }
+    It 'compares versions as numbers, not text' {
+        Test-YtdNewer '1.10.0' '1.9.0' | Should Be $true
+        Test-YtdNewer '1.5.0' '1.5.0' | Should Be $false
+        Test-YtdNewer '1.4.0' '1.5.0' | Should Be $false
+        Test-YtdNewer '1.5.0' '0.0' | Should Be $true
+        Test-YtdNewer '<html>' '1.5.0' | Should Be $false
+    }
+    It 'reads the updater result lines' {
+        $l = ConvertFrom-ToolLine 'APPUPDATE|updated|1.6.0'
+        $l.Kind | Should Be 'AppUpdate'; $l.Result | Should Be 'updated'; $l.Version | Should Be '1.6.0'
+        (ConvertFrom-ToolLine 'APPUPDATE|current|1.5.0').Result | Should Be 'current'
+    }
+    It 'ships a VERSION file the updater can read' {
+        ConvertTo-YtdVersion (Get-YtdVersion (Split-Path -Parent $PSScriptRoot)) | Should Not Be $null
+        Get-YtdVersion (Split-Path -Parent $PSScriptRoot) | Should Not Be '0.0'
+    }
+    It 'keeps an update failure message as it is' {
+        Get-FriendlyError 'The update failed: Could not reach GitHub' | Should Match '^The update failed'
+    }
+}
+
 Describe 'YouTube sign-in' {
     It 'adds nothing when not signed in' {
         $a = New-YtDlpArguments -Url 'https://youtu.be/x' -Folder 'D:\V'
