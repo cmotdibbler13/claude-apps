@@ -109,3 +109,25 @@ test("going back to the open film while another opens keeps the open one watched
   assert.equal(await pb, null);
   assert.deepEqual([...watching].map((s) => s.dir), [A]);
 });
+
+test("A then B then A during a redo keeps one store per film and the new take survives", async () => {
+  const { startTake } = await import("../js/redo.js");
+  const host = new FakeHost();
+  await host.fs.mkdir(A); await host.fs.mkdir(B);
+  let release; const gate = new Promise((r) => { release = r; });
+  host.claudeScript(async () => { await gate; return { prompt: "new prompt" }; });
+  const jobs = makeJobs(host, { runners: { higgsfield: { lane: "connector", start: () => new Promise(() => {}) } } });
+  const session = makeFilmSession({ host, jobs });
+  const sA = await session.open(A);
+  await sA.update((d) => { d.assets = [{ id: "HF-01", kind: "broll", tool: "higgsfield", line: "l", lineIndex: 0, desc: "d", draftPrompt: "p", takes: [{ n: 1, prompt: "p", status: "done", file: "x.mp4", at: 0 }], chosen: 1, approved: false }]; });
+  const p = startTake({ host, store: sA, jobs }, "HF-01", { note: "darker" });
+  await session.open(B);
+  const sA2 = await session.open(A.toUpperCase());
+  assert.equal(sA2, sA, "reopening a film reuses its store");
+  release();
+  assert.equal((await p).n, 2);
+  await new Promise((r) => setTimeout(r, 20));
+  const disk = JSON.parse(await host.fs.read(A + "\\studio\\state.json", "utf8"));
+  assert.deepEqual(disk.assets[0].takes.map((t) => t.n), [1, 2]);
+  assert.deepEqual(sA2.state.assets[0].takes.map((t) => t.n), [1, 2]);
+});

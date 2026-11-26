@@ -1,34 +1,52 @@
-// The one open film: a single store and a single job watcher at a time, safe against quick repeat clicks.
+// The one open film: one store per film folder for the app's lifetime (two stores on one state.json would
+// overwrite each other), and a single job watcher at a time, safe against quick repeat clicks.
 // Also reads the saved job list at boot without ever discarding a file it could not read.
 import { openFilm } from "./store.js";
 import { watchJobs } from "./redo.js";
 
-export function makeFilmSession({ host, jobs, open = openFilm, watch = watchJobs, onSaved = () => {} }) {
+const keyOf = (dir) => String(dir).replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
+
+export function makeFilmSession({ host, jobs, open = openFilm, watch = watchJobs, onSaved = () => {}, onSaveError = () => {} }) {
   let seq = 0;
-  let inflight = null; // { dir, promise }
-  let current = null; // { dir, store, unwatch }
+  let inflight = null; // { key, promise }
+  let current = null; // { key, dir, store, unwatch }
+  const stores = new Map(); // key -> Promise<store>
+
+  const storeFor = (dir) => {
+    const key = keyOf(dir);
+    if (!stores.has(key)) {
+      const p = (async () => {
+        const store = await open(host, dir);
+        // The store has no change events; report every saved update (approvals, job syncs).
+        const update = store.update;
+        store.update = (fn) => { const q = update(fn); q.then(() => onSaved(), () => onSaved()); return q; };
+        return store;
+      })();
+      stores.set(key, p);
+      p.catch(() => { if (stores.get(key) === p) stores.delete(key); }); // a failed open can be tried again
+    }
+    return stores.get(key);
+  };
 
   const session = {
     get current() { return current ? { dir: current.dir, store: current.store } : null; },
     open(dir) {
-      if (current?.dir === dir) {
+      const key = keyOf(dir);
+      if (current?.key === key) {
         // Back to the film already open: drop any other open still in flight.
         if (inflight) { seq++; inflight = null; }
         return Promise.resolve(current.store);
       }
-      if (inflight?.dir === dir) return inflight.promise;
+      if (inflight?.key === key) return inflight.promise;
       const my = ++seq;
       const promise = (async () => {
-        const store = await open(host, dir);
+        const store = await storeFor(dir);
         if (my !== seq) return null; // a later open (or close) won: never subscribe this store
-        // The store has no change events; report every saved update (approvals, job syncs).
-        const update = store.update;
-        store.update = (fn) => { const p = update(fn); p.then(() => onSaved(), () => onSaved()); return p; };
         current?.unwatch();
-        current = { dir, store, unwatch: watch({ host, store, jobs }) };
+        current = { key, dir: store.dir, store, unwatch: watch({ host, store, jobs, onError: onSaveError }) };
         return store;
       })().finally(() => { if (inflight?.promise === promise) inflight = null; });
-      inflight = { dir, promise };
+      inflight = { key, promise };
       return promise;
     },
     close() {
