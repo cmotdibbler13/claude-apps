@@ -14,7 +14,7 @@
   <div class="brand">Six Minutes <b>Studio</b></div>
   <nav class="nav" id="nav" aria-label="Views">
     <button type="button" data-view="films" aria-selected="true">Films</button>
-    <button type="button" data-view="jobs" aria-selected="false">Live jobs</button>
+    <button type="button" data-view="jobs" aria-selected="false">Live jobs<span class="cnt" id="jobcount" hidden></span></button>
     <button type="button" data-view="review" aria-selected="false">Review</button>
     <button type="button" data-view="probe" aria-selected="false">Probe</button>
   </nav>
@@ -25,9 +25,11 @@
     <p class="lede" id="gate-msg"></p>
     <button type="button" class="btn" id="install" hidden>Install as app</button>
   </section>
-  <section id="view-films" data-view="films"><h1>Films</h1><p class="lede">Your films will appear here.</p></section>
-  <section id="view-jobs" data-view="jobs" hidden><h1>Live jobs</h1><p class="lede">No jobs yet.</p></section>
-  <section id="view-review" data-view="review" hidden><h1>Review</h1><p class="lede">Nothing to review yet.</p></section>
+  <p class="banner" id="persist-banner" role="alert" hidden></p>
+  <p class="keep" id="keep-open" hidden><span class="dot live"></span>Keep this window open while jobs run.</p>
+  <section id="view-films" data-view="films"><h1>Your films</h1><p class="lede">Looking for your films…</p></section>
+  <section id="view-jobs" data-view="jobs" hidden><h1>What's happening now</h1><p class="lede">No jobs yet.</p></section>
+  <section id="view-review" data-view="review" hidden><h1>Review</h1><p class="lede">Open a film's review from Films.</p></section>
   <section id="view-probe" data-view="probe" hidden>
     <h1>Probe</h1>
     <p class="lede">Checks that this PC has what the studio needs. It makes no paid generation calls.</p>
