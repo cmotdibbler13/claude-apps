@@ -284,6 +284,7 @@ class Mixer:
         self._last_gains = None
         self._stretch = None
         self._chain = None    # the chain being played (a _ChainStream)
+        self._chain_old = None   # [stream, frames faded] when a change rebuilt the chain
         self._lock = threading.Lock()   # the sound card and the window both move the playhead
 
     # ------------------------------------------------------------- settings
@@ -317,6 +318,7 @@ class Mixer:
             self.ended = False
             self._stretch = None
             self._chain = None
+            self._chain_old = None
             if self.chaining:
                 # Carry on from the chain entry that was clicked into, else
                 # from the start of the chain.
@@ -433,9 +435,9 @@ class Mixer:
     def set_section(self, index: int, tempo=None, xfade=None) -> bool:
         """Change a saved section's own tempo (times the song's tempo) or its
         crossfade, in seconds, into whatever follows it in a chain."""
-        if not 0 <= index < len(self.sections):
-            return False
         with self._lock:
+            if not 0 <= index < len(self.sections):
+                return False
             section = self.sections[index]
             if tempo is not None:
                 section["tempo"] = self._section_tempo(tempo)
@@ -672,7 +674,12 @@ class Mixer:
         going round to the start again at the end. Returns (audio, position)."""
         key = self._chain_key()
         stream = self._chain
-        if stream is None or stream.key != key:
+        if stream is not None and stream.key != key:
+            # A tempo, pitch or section change while it plays: carry on from
+            # here with the new settings, crossfading out of the old sound.
+            self._chain_old = [stream, 0]
+            stream = None
+        if stream is None:
             stream = self._chain = self._chain_here(key)
         out = np.zeros((frames, 2), dtype=np.float32)
         done = 0
@@ -686,8 +693,23 @@ class Mixer:
                 stream.key = key
                 if stream.total <= 0:
                     break
+        if self._chain_old is not None:
+            self._fade_from_old(out)
         self.chain_step, position = stream.where()
         return out, position
+
+    def _fade_from_old(self, out: np.ndarray) -> None:
+        """Blend the start of a rebuilt chain in from the old one over
+        _LOOP_FADE frames (equal power), so a change doesn't click."""
+        old, faded = self._chain_old
+        count = min(len(out), _LOOP_FADE - faded)
+        audio, made = old.pull(count, self._last_gains if self._last_gains is not None
+                               else self.gains(), self.gains())
+        t = (np.arange(faded, faded + count) + 0.5) / _LOOP_FADE * (np.pi / 2)
+        out[:count] = (out[:count] * np.sin(t)[:, None].astype(np.float32)
+                       + audio[:count] * np.cos(t)[:, None].astype(np.float32))
+        faded += count
+        self._chain_old = None if faded >= _LOOP_FADE else [old, faded]
 
     def _chain_key(self) -> tuple:
         """Everything a chain's sound is made from, apart from the gains."""
@@ -733,6 +755,7 @@ class Mixer:
         self._last_gains = None
         self._stretch = None
         self._chain = None
+        self._chain_old = None
 
     def render_chain(self) -> tuple:
         """The chain, once through, for an export: each section at its own

@@ -575,7 +575,8 @@ def score_mixer():
 
 def test_render_chain_uses_section_tempo_and_crossfades():
     mixer = score_mixer()
-    audio, _ = mixer.render_chain()
+    audio, factor = mixer.render_chain()
+    assert factor == 1.0   # nothing went over full scale, so nothing was turned down
     assert np.abs(audio).max() <= 1.0
     assert len(audio) == pytest.approx(mixer.chain_length_s() * RATE, abs=1)
     part = int(np.ceil(RATE / 1.0)), int(np.ceil(RATE / 1.05))
@@ -636,3 +637,34 @@ def test_live_chain_follows_a_section_tempo_change():
     played, total = play_chain_once(mixer)
     assert len(whole) == total
     assert np.abs(played[:total] - whole).max() < 1e-4
+
+
+def biggest_step(audio):
+    return float(np.abs(np.diff(audio[:, 0])).max())
+
+
+def test_changing_tempo_during_a_chain_does_not_click():
+    def mixer_220():
+        mixer = Mixer([Stem("a", tone(220, 4.0, level=0.5))], RATE)
+        for start in (0.5, 2.0):
+            mixer.set_loop(start * RATE, (start + 1.0) * RATE)
+            mixer.save_section()
+        mixer.clear_loop()
+        mixer.set_section(0, xfade=0.03)
+        mixer.set_chain([0, 1])
+        mixer.start_chain()
+        return mixer
+
+    steady = mixer_220()
+    played = np.concatenate([steady.render_block(441) for _ in range(300)])
+    calm = biggest_step(played[1000:])
+    nudged = mixer_220()
+    blocks = []
+    for i in range(300):
+        nudged.tempo = 1.0 + 0.001 * (i % 40)   # nudged every block, going up and back
+        blocks.append(nudged.render_block(441))
+    assert biggest_step(np.concatenate(blocks)[1000:]) < max(0.05, 2 * calm)
+    for i in range(20):   # also while the section's own tempo and crossfade change
+        nudged.set_section(i % 2, tempo=1.0 + 0.002 * i, xfade=0.01 * i)
+        blocks.append(nudged.render_block(441))
+    assert biggest_step(np.concatenate(blocks)[1000:]) < max(0.05, 2 * calm)
