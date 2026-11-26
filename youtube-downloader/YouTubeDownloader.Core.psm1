@@ -252,6 +252,11 @@ function ConvertFrom-ToolLine([string]$Line) {
     [pscustomobject]$o
 }
 
+function Test-NoFormatError([string]$Text) {
+    # yt-dlp found the video but nothing in it that it could download.
+    [bool]($Text -match 'Requested format is not available|No video formats found|Only images are available')
+}
+
 function Get-FriendlyError([string]$Text) {
     # Plain-English versions of the yt-dlp errors people actually meet.
     switch -Regex ($Text) {
@@ -259,6 +264,7 @@ function Get-FriendlyError([string]$Text) {
         'could not find firefox cookies database'        { return 'No Firefox sign-in was found. Install Firefox, sign in to YouTube in it once, then try again.' }
         'cookies are no longer valid|does not look like a Netscape format' { return 'The YouTube sign-in is out of date or the cookies file is not valid. Sign in to YouTube again in the browser (and export the cookies file again), then try again.' }
         'rate-limited by YouTube|content isn.t available, try again later' { return 'YouTube has paused downloads from your connection for a while. Wait about an hour, then try again.' }
+        'Requested format is not available|No video formats found|Only images are available' { return 'YouTube did not offer this video in a form that can be saved. Press Update tools and try again. If it still fails, change YouTube sign-in (Firefox or Not signed in, whichever you are not using) and try once more.' }
         'Private video'                                   { return 'This video is private.' }
         'Video unavailable|This video has been removed'   { return 'This video is not available (removed, or blocked in your country).' }
         'members-only|Join this channel'                  { return 'This video is for channel members only.' }

@@ -182,6 +182,17 @@ Describe 'Get-YtdLauncher' {
     }
 }
 
+Describe 'No formats offered' {
+    It 'spots the error' {
+        Test-NoFormatError '[youtube] Z7eUUns2v9k: Requested format is not available. Use --list-formats for a list of available formats' | Should Be $true
+        Test-NoFormatError '[youtube] x: Private video' | Should Be $false
+        Test-NoFormatError '' | Should Be $false
+    }
+    It 'explains it in plain words' {
+        Get-FriendlyError '[youtube] Z7eUUns2v9k: Requested format is not available. Use --list-formats' | Should Match 'Update tools'
+    }
+}
+
 Describe 'App updates' {
     It 'reads the installed version, and counts a missing VERSION file as 0.0' {
         $d = Join-Path $TestDrive 'app'; New-Item -ItemType Directory $d | Out-Null

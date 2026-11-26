@@ -183,8 +183,11 @@ $state = @{
     LastPct = 0.0; Part = 1; Item = ''; Cancelled = $false; Cut = 0; App = $null
 }
 
+$logFile = Join-Path (Get-YtdDataFolder) 'last-run.log'
 function Add-LogLine([string]$text) {
     $log.AppendText($text + [Environment]::NewLine)
+    # the same lines go to a file, so a problem can be looked into afterwards
+    try { [IO.File]::AppendAllText($logFile, $text + [Environment]::NewLine) } catch { }
 }
 
 function Set-Busy([bool]$busy) {
@@ -285,6 +288,14 @@ function Step-Run {
         if ($job.Kind -eq 'setup' -and $state.Errors.Count -eq 0) { $state.Errors.Add('Setting up the tools failed.') }
         if ($job.Kind -eq 'appupdate' -and $state.Errors.Count -eq 0) { $state.Errors.Add('The update failed.') }
         if ($job.Kind -eq 'download' -and $state.Errors.Count -eq 0) { $state.Errors.Add("yt-dlp stopped with code $code.") }
+        # Signed in, YouTube sometimes offers no usable formats at all. The same video is often
+        # available signed out, so try that once before giving up.
+        if ($job.Kind -eq 'download' -and $job.Fallback -and $state.Files.Count -eq 0 -and
+            (Test-NoFormatError $state.Errors[$state.Errors.Count - 1])) {
+            $state.Errors.Clear()
+            Add-LogLine 'YouTube offered nothing to download while signed in. Trying again without the sign-in.'
+            $state.Jobs.Enqueue(@{ Kind = 'download'; Title = 'Trying again without the sign-in...'; Exe = $job.Exe; Args = $job.Fallback; Retried = $true })
+        }
         # a playlist with one bad video still saves the rest, so carry on to report them
         if ($job.Kind -eq 'setup') { $state.Jobs.Clear() }
     }
@@ -336,6 +347,7 @@ function Complete-All {
 }
 
 function Start-Work([bool]$download, [bool]$forceUpdate) {
+    try { [IO.File]::WriteAllText($logFile, "YouTube Downloader $version  $(Get-Date -Format s)" + [Environment]::NewLine) } catch { }
     $state.Jobs.Clear(); $state.Files.Clear(); $state.Errors.Clear(); $state.Cancelled = $false; $state.Item = ''; $state.Cut = 0
     $status.ForeColor = $P::InkMuted
     if (-not (Test-Path -LiteralPath $bin)) { New-Item -ItemType Directory -Path $bin -Force | Out-Null }   # first run
@@ -354,7 +366,12 @@ function Start-Work([bool]$download, [bool]$forceUpdate) {
         $dlArgs = New-YtDlpArguments -Url $urlBox.Text -Folder $folder -Quality (Get-QualityCode $qualityBox.SelectedItem) -Playlist:$playlistBox.Checked -BinFolder $bin `
             -SkipSponsors:$sponsorBox.Checked -SkipPromos:($sponsorBox.Checked -and $promoBox.Checked) `
             -SignIn (Get-SignInCode $signInBox.SelectedItem) -CookiesFile $cookies.File
-        $state.Jobs.Enqueue(@{ Kind = 'download'; Title = 'Starting the download...'; Exe = (Join-Path $bin 'yt-dlp.exe'); Args = $dlArgs })
+        $fallback = $null
+        if (($dlArgs -contains '--cookies-from-browser') -or ($dlArgs -contains '--cookies')) {
+            $fallback = New-YtDlpArguments -Url $urlBox.Text -Folder $folder -Quality (Get-QualityCode $qualityBox.SelectedItem) -Playlist:$playlistBox.Checked -BinFolder $bin `
+                -SkipSponsors:$sponsorBox.Checked -SkipPromos:($sponsorBox.Checked -and $promoBox.Checked)
+        }
+        $state.Jobs.Enqueue(@{ Kind = 'download'; Title = 'Starting the download...'; Exe = (Join-Path $bin 'yt-dlp.exe'); Args = $dlArgs; Fallback = $fallback })
     }
     Set-Busy $true
     Start-NextJob

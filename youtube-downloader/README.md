@@ -96,6 +96,14 @@ Press **Update app** (bottom right). It compares the `VERSION` file here with th
 there is a newer version it downloads it, copies the new files over the old ones, and restarts the
 app. Your settings, the tools and the shortcuts are left alone.
 
+### "YouTube did not offer this video in a form that can be saved"
+
+YouTube sometimes hands a signed-in downloader no usable video at all. The app tries the same
+video again without the sign-in by itself. If that fails too, press **Update tools**, then try again.
+
+Everything the app shows in its log box is also written to
+`%LOCALAPPDATA%\YouTubeDownloader\last-run.log`, which is the file to look at when something fails.
+
 Some videos can't be downloaded at all: private, members-only, or not yet premiered. The app says which in plain words.
 
 ## Files
@@ -136,7 +144,7 @@ What was run there:
 
 - The theme controls compiled against the .NET Framework 4.8 that comes with Windows, at the
   older C# version Windows PowerShell uses.
-- The unit tests (46 passing) and PSScriptAnalyzer, including its check for Windows PowerShell 5.1 syntax.
+- The unit tests (48 passing) and PSScriptAnalyzer, including its check for Windows PowerShell 5.1 syntax.
 - The window's own logic (job queue, progress, cancel, weekly update check, errors) driven with
   stand-in controls, running the real yt-dlp and FFmpeg against a test video with separate
   picture and sound streams, as YouTube serves them. The results were a playable H.264/AAC MP4,
