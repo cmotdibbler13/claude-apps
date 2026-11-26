@@ -43,6 +43,9 @@ ONSET_FLOOR = 1e-12    # band power floor: -120 dB below full scale
 ONSET_RANGE_DB = 60.0  # and no lower than this below the file's own level
 MIN_PEAK = 0.6         # onsets must stand this far (dB per band) above the typical flux
 MIN_PERIODICITY = 0.2  # normalised autocorrelation at the beat period
+MIN_CONTRAST = 2.0     # beats must stand this far above the onsets between them
+CONTRAST_BEATS = 4     # judged over this many beats either side
+SHORT_RUN = 3          # fewer beats than this on their own is chance, not a beat
 TIGHTNESS = 100.0      # how strictly beats keep to the period
 
 
@@ -262,12 +265,53 @@ def _track(env: np.ndarray, period: float) -> np.ndarray:
         beats.append(t)
         t = back[t]
     beats = np.array(beats[::-1])
-    # Drop weak beats at the ends (silence before the first onset or after the last).
-    strong = norm[beats] > 0.5 * np.median(norm[beats]) if len(beats) else beats
-    if len(beats) and strong.any():
-        keep = np.nonzero(strong)[0]
-        beats = beats[keep[0]:keep[-1] + 1]
-    return beats
+    return _keep_supported(beats, norm)
+
+
+def _keep_supported(beats: np.ndarray, norm: np.ndarray) -> np.ndarray:
+    """Drop beats with no onsets of their own: the tracker carries its grid
+    through quiet or beatless stretches (an ambient intro, say).
+
+    Each beat's strength is the strongest onset within two frames of it; its
+    background is the 75th percentile of the same measure away from beats,
+    within two periods. Around each beat (CONTRAST_BEATS either side) the
+    mean strength must stand MIN_CONTRAST times above the median background,
+    which an accented or soft beat still does and a grid laid over noise or a
+    pad doesn't. Weak beats at the very ends go too (silence before the first
+    onset or after the last), as does any stretch of fewer than SHORT_RUN
+    beats left between dropped ones."""
+    if len(beats) < 2:
+        return beats[:0]
+    near = np.lib.stride_tricks.sliding_window_view(np.pad(norm, 2), 5).max(axis=1)
+    strength = near[beats]
+    reference = np.percentile(strength, 80)
+    if reference <= 0:
+        return beats[:0]
+    period = max(1, int(np.median(np.diff(beats))))
+    away = np.ones(len(norm), bool)
+    for b in beats:
+        away[max(0, b - 3):b + 4] = False
+    background = np.empty(len(beats))
+    for k, b in enumerate(beats):
+        lo, hi = max(0, b - 2 * period), b + 2 * period + 1
+        values = near[lo:hi][away[lo:hi]]
+        background[k] = np.percentile(values, 75) if len(values) else 0.0
+    background = np.maximum(background, 0.05 * reference)
+    side = CONTRAST_BEATS
+    contrast = np.array([strength[max(0, k - side):k + side + 1].mean()
+                         / np.median(background[max(0, k - side):k + side + 1])
+                         for k in range(len(beats))])
+    keep = contrast >= MIN_CONTRAST
+    strong = np.nonzero(keep & (strength >= 0.5 * reference))[0]
+    if len(strong) == 0:
+        return beats[:0]
+    keep[:strong[0]] = False
+    keep[strong[-1] + 1:] = False
+    edges = np.flatnonzero(np.diff(np.concatenate([[0], keep.astype(int), [0]])))
+    for first, last in zip(edges[::2], edges[1::2]):
+        if last - first < SHORT_RUN:
+            keep[first:last] = False
+    return beats[keep]
 
 
 def _refine(mono: np.ndarray, rate: int, times: np.ndarray, reach_s: float,

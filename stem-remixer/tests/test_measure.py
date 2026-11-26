@@ -42,7 +42,7 @@ def pad(levels_db, seconds, fade_s=0.0):
     return (gain * tone).astype(np.float32)
 
 
-def soft_piano(bpm=72.0, seconds=40.0, attack=0.015, jitter=0.0, seed=2):
+def soft_piano(bpm=72.0, seconds=40.0, attack=0.015, jitter=0.0, seed=2, accents=(1.0,)):
     """Felted-piano-like notes on every beat (soft attack, 0.6 s decay) over a
     3-voice pad and a -60 dBFS noise floor, like a quiet generated score."""
     rng = np.random.default_rng(seed)
@@ -56,12 +56,12 @@ def soft_piano(bpm=72.0, seconds=40.0, attack=0.015, jitter=0.0, seed=2):
     length = int(2.0 * RATE)
     tt = np.arange(length) / RATE
     shape = np.minimum(1.0, tt / attack) * np.exp(-np.maximum(0.0, tt - attack) / 0.6)
-    for b in beats:
+    for k, b in enumerate(beats):
         f = rng.choice([261.6, 293.7, 329.6, 392.0, 440.0, 523.3])
         note = sum(np.sin(2 * np.pi * f * k * tt) / k ** 1.5 for k in (1, 2, 3, 4))
         i = int(round(b * RATE))
         m = min(length, n - i)
-        x[i:i + m] += 0.05 * shape[:m] * note[:m]
+        x[i:i + m] += 0.05 * accents[k % len(accents)] * shape[:m] * note[:m]
     return x.astype(np.float32), beats
 
 
@@ -79,6 +79,38 @@ def test_loose_soft_piano_still_gives_a_tempo():
     result = measure.analyse(x, RATE)
     assert result["bpm"] == pytest.approx(72.0, rel=0.03)
     assert len(result["beats"]) > 30
+
+
+def test_accented_soft_beats_are_all_kept():
+    x, truth = soft_piano(accents=(1.0, 0.15, 0.15, 0.15))
+    result = measure.analyse(x, RATE)
+    assert result["bpm"] == pytest.approx(72.0, rel=0.02)
+    beats = np.array(result["beats"])
+    assert np.mean([np.abs(beats - b).min() < 0.030 for b in truth[1:-1]]) >= 0.9
+
+
+def test_no_beats_in_an_ambient_intro():
+    """Two minutes of pad and noise, then soft piano, which swells 10 dB over 8 s
+    at 180 s: the beat grid isn't carried back through the intro."""
+    rng = np.random.default_rng(5)
+    t = np.arange(RATE * 120) / RATE
+    intro = 0.01 * sum(np.sin(2 * np.pi * f * t + rng.uniform(0, 6)) for f in (130.8, 196.0, 261.6)) \
+        + 1e-3 * rng.standard_normal(len(t))
+    piano, truth = soft_piano(seconds=120.0, seed=7)
+    x = np.concatenate([intro, piano])
+    gain = np.ones(len(x))
+    s0, s1 = int(RATE * 180), int(RATE * 188)
+    gain[s0:s1] = 10 ** (np.linspace(0, 10, s1 - s0) / 20)
+    gain[s1:] = 10 ** (10 / 20)
+    result = measure.analyse((x * gain).astype(np.float32), RATE)
+    beats = np.array(result["beats"])
+    assert (beats < 118).sum() <= 3
+    assert result["bpm"] == pytest.approx(72.0, rel=0.02)
+    truth = truth + 120
+    assert np.mean([np.abs(beats - b).min() < 0.030 for b in truth[1:-1]]) >= 0.9
+    rises = [m for m in result["moves"] if m["kind"] == "rise"]
+    assert len(rises) == 2
+    assert abs(rises[0]["t"] - 120) <= 2 and abs(rises[1]["t"] - 180) <= 2
 
 
 def test_click_track_gives_its_tempo_and_beats():
