@@ -2,7 +2,9 @@
 
 A desktop app for the Six Minutes On... pipeline: a Claude artifact page (plain HTML and ES modules, no build step) that runs as an installed app in the Claude desktop app on Windows.
 
-Artifact URL: (added on publish)
+Artifact URL: https://claude.ai/artifact/GjdgGKYjbtqZir2h37qYBY (private to its owner)
+
+Acceptance checklist for the first run on the PC: [docs/acceptance-slice1.md](docs/acceptance-slice1.md)
 
 ## Install
 
