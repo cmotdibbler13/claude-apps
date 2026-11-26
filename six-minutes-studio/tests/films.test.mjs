@@ -61,7 +61,7 @@ test("number is parsed from an Episode line, else null", async () => {
   await film(h, "A", { "handover\\part1_handover.md": "# Title\nEpisode: 014\nmore" });
   await film(h, "B", { "handover\\part1_handover.md": "no number here" });
   const films = await scanFilms(h, ROOT);
-  assert.equal(films.find((f) => f.title === "A").number, 14);
+  assert.equal(films.find((f) => f.title === "A").number, "014");
   assert.equal(films.find((f) => f.title === "B").number, null);
 });
 
@@ -79,4 +79,14 @@ test("waiting is read from studio state.json", async () => {
 
 test("missing root yields no films", async () => {
   assert.deepEqual(await scanFilms(new FakeHost(), ROOT), []);
+});
+
+test("one folder that throws does not hide the others", async () => {
+  const h = new FakeHost();
+  await film(h, "Bad", { "handover\\part1_handover.md": "x" });
+  await film(h, "Good", { "handover\\part1_handover.md": "x" });
+  const real = h.fs.exists;
+  h.fs.exists = async (p) => { if (/\\Bad\\/i.test(p)) throw new Error("EACCES"); return real(p); };
+  const films = await scanFilms(h, ROOT);
+  assert.deepEqual(films.map((f) => f.title), ["Good"]);
 });

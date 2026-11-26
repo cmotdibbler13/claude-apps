@@ -25,10 +25,22 @@ export async function scanFilms(host, root) {
   const films = [];
   for (const e of entries) {
     if (!e.isDirectory) continue;
+    try {
+      const film = await scanOne(host, root, e);
+      if (film) films.push(film);
+    } catch { /* one unreadable folder must not hide the others */ }
+  }
+  films.sort((a, b) => a.title.localeCompare(b.title));
+  return films;
+}
+
+// Film = {dir, title, number: string|null (digits as written), parts, waiting, hasStudio}
+async function scanOne(host, root, e) {
+  {
     const dir = join(root, e.name);
     const hasHandover = await host.fs.exists(join(dir, "handover"));
     const hasStudio = await host.fs.exists(join(dir, "studio"));
-    if (!hasHandover && !hasStudio) continue;
+    if (!hasHandover && !hasStudio) return null;
 
     const done = [];
     let number = null;
@@ -37,7 +49,7 @@ export async function scanFilms(host, root) {
       done.push(text !== null);
       if (number === null && text !== null) {
         const m = /^\s*Episode:\s*(\d+)/mi.exec(text);
-        if (m) number = Number(m[1]);
+        if (m) number = m[1];
       }
     }
 
@@ -50,8 +62,6 @@ export async function scanFilms(host, root) {
       } catch { /* unreadable state: treat as nothing waiting */ }
     }
 
-    films.push({ dir, title: e.name, number, parts: partStatus(done), waiting, hasStudio });
+    return { dir, title: e.name, number, parts: partStatus(done), waiting, hasStudio };
   }
-  films.sort((a, b) => a.title.localeCompare(b.title));
-  return films;
 }
