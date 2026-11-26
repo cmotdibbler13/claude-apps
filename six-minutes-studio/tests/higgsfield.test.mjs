@@ -249,3 +249,43 @@ test("ambiguous failures are flagged: unreachable, 30 min cap, server_unavailabl
   const d = setup({ mcp: () => { throw Object.assign(new Error("Insufficient credits"), { code: "tool_error" }); } });
   await assert.rejects(d.runner.start(job(), d.ctx), (e) => !e.ambiguous);
 });
+
+const finished = (entry) => ({ jobs: [{ job_id: UUID, status: "completed", ...entry }], all_terminal: true });
+const curlUrl = (t) => t.spawns[0]?.args.at(-1);
+
+test("known result keys win over other URLs in the reply", async () => {
+  const cases = [
+    [{ thumbnail: "https://cdn.example.com/x/thumb.jpg", result_url: "https://cdn.example.com/x/out.mp4" }, "https://cdn.example.com/x/out.mp4"],
+    [{ preview: "https://cdn.example.com/p.webp", results: [{ url: "https://cdn.example.com/r.mov" }] }, "https://cdn.example.com/r.mov"],
+    [{ poster: "https://cdn.example.com/p.png", outputs: [{ url: "https://cdn.example.com/o.webm" }] }, "https://cdn.example.com/o.webm"],
+    [{ cover: "https://cdn.example.com/c.jpg", video_url: "https://cdn.example.com/v.mp4" }, "https://cdn.example.com/v.mp4"],
+  ];
+  for (const [entry, want] of cases) {
+    const t = setup({ mcp: (tool) => (tool === "generate_video" ? { job_id: UUID } : finished(entry)) });
+    await t.runner.start(job("broll"), t.ctx);
+    assert.equal(curlUrl(t), want);
+  }
+  const t = setup({ mcp: (tool) => (tool === "generate_image" ? { job_id: UUID } : finished({ logo: "https://cdn.example.com/l.svg", image_url: "https://cdn.example.com/i.jpeg" })) });
+  const r = await t.runner.start(job("lineart"), t.ctx);
+  assert.equal(curlUrl(t), "https://cdn.example.com/i.jpeg");
+  assert.equal(r.file, OUT + ".jpeg");
+});
+
+test("b-roll takes only video files and line art only image files", async () => {
+  const a = setup({ mcp: (tool) => (tool === "generate_video" ? { job_id: UUID } : finished({ note: "see https://cdn.example.com/still.png" })) });
+  await assert.rejects(a.runner.start(job("broll"), a.ctx), /no video result URL/);
+  assert.equal(a.spawns.length, 0);
+  const b = setup({ mcp: (tool) => (tool === "generate_image" ? { job_id: UUID } : finished({ url: "https://cdn.example.com/x.mp4" })) });
+  await assert.rejects(b.runner.start(job("lineart"), b.ctx), /no image result URL/);
+  const c = setup({ mcp: (tool) => (tool === "generate_video" ? { job_id: UUID } : finished({ url: "https://cdn.example.com/page.html" })) });
+  await assert.rejects(c.runner.start(job("broll"), c.ctx), /no video result URL/);
+  const d = setup({ mcp: (tool) => (tool === "generate_video" ? { job_id: UUID } : finished({ page: "https://higgsfield.example.com/job/1", other: "https://cdn.example.com/y.mov" })) });
+  await d.runner.start(job("broll"), d.ctx);
+  assert.equal(curlUrl(d), "https://cdn.example.com/y.mov", "scraped URLs need a whitelisted extension");
+});
+
+test("a known result key without an extension is saved with the kind's default", async () => {
+  const t = setup({ mcp: (tool) => (tool === "generate_image" ? { job_id: UUID } : finished({ url: "https://cdn.example.com/download?id=7" })) });
+  const r = await t.runner.start(job("lineart"), t.ctx);
+  assert.equal(r.file, OUT + ".png");
+});

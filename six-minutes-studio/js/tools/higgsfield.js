@@ -34,20 +34,35 @@ function parseJobId(p) {
   return s.match(UUID_RE)?.[0] ?? null;
 }
 
-function parseEntry(p) {
+const VIDEO_EXT = ["mp4", "mov", "webm"];
+const IMAGE_EXT = ["png", "jpg", "jpeg", "webp"];
+const allowedExt = (kind) => (kind === "lineart" ? IMAGE_EXT : VIDEO_EXT);
+const urlExt = (url) => url.split(/[?#]/)[0].match(/\/[^/]*\.([a-z0-9]{2,5})$/i)?.[1].toLowerCase() ?? null;
+const isUrl = (v) => typeof v === "string" && /^https?:\/\//i.test(v);
+
+// Result URL: the known keys first (url, result_url, results[].url, outputs[].url, video_url, image_url),
+// then any other URL in the reply. A URL must end in a video extension for b-roll and an image extension
+// for line art; a known key without an extension is accepted and saved with the kind's default.
+function parseEntry(p, kind) {
   const e = p?.jobs?.[0] ?? p?.results?.[0] ?? p ?? {};
   const status = String(e.status ?? e.state ?? "").toLowerCase();
+  const known = [e.url, e.result_url, ...(Array.isArray(e.results) ? e.results.map((r) => r?.url) : []),
+    ...(Array.isArray(e.outputs) ? e.outputs.map((r) => r?.url) : []), e.video_url, e.image_url].filter(isUrl);
   let s = ""; try { s = JSON.stringify(e) ?? ""; } catch { /* ignore */ }
-  const url = s.match(/https:\/\/[^\s"\\<>]+/)?.[0] ?? null;
-  const httpUrl = url ? null : s.match(/http:\/\/[^\s"\\<>]+/)?.[0] ?? null;
-  return { status, error: typeof e.error === "string" ? e.error : e.error?.message, url, httpUrl };
+  const scraped = s.match(/https?:\/\/[^\s"\\<>]+/gi) ?? [];
+  const ok = allowedExt(kind);
+  const url = known.find((u) => ok.includes(urlExt(u)))
+    ?? known.find((u) => urlExt(u) === null)
+    ?? scraped.find((u) => ok.includes(urlExt(u)))
+    ?? null;
+  return { status, error: typeof e.error === "string" ? e.error : e.error?.message, url, anyUrl: known.length > 0 || scraped.length > 0 };
 }
 
 const parentOf = (p) => String(p).replace(/[\\/][^\\/]*$/, "");
 
 const extOf = (url, kind) => {
-  const m = url.split(/[?#]/)[0].match(/\.([a-z0-9]{2,5})$/i);
-  return m ? m[1].toLowerCase() : kind === "lineart" ? "png" : "mp4";
+  const ext = urlExt(url);
+  return allowedExt(kind).includes(ext) ? ext : kind === "lineart" ? "png" : "mp4";
 };
 
 export function makeHiggsfieldRunner({ settings = DEFAULT_SETTINGS, sleep = realSleep } = {}) {
@@ -88,10 +103,13 @@ export function makeHiggsfieldRunner({ settings = DEFAULT_SETTINGS, sleep = real
         continue;
       }
       errors = 0;
-      const { status, error, url, httpUrl } = parseEntry(p);
+      const { status, error, url, anyUrl } = parseEntry(p, job.input?.kind);
       if (BAD.has(status)) throw new Error(`Higgsfield job ${status}${error ? `: ${error}` : ""}`);
-      if (OK.has(status) || (!status && (url || httpUrl))) {
-        if (!url) throw new Error(httpUrl ? "Higgsfield returned a non-https result URL; refusing to download it." : "Higgsfield finished but returned no result URL.");
+      if (OK.has(status) || (!status && anyUrl)) {
+        if (!url) {
+          const what = job.input?.kind === "lineart" ? "image" : "video";
+          throw new Error(anyUrl ? `Higgsfield finished but returned no ${what} result URL.` : "Higgsfield finished but returned no result URL.");
+        }
         return download(host, url, job.input);
       }
       // Every job has ended but none succeeded: say so now instead of polling to the 30 min cap.
