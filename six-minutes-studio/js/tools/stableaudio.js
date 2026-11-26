@@ -22,21 +22,38 @@ async function curlGet(host, url) {
   return runProcess(host, "curl", ["-sS", "--max-time", "5", url], { timeout: CURL_TIMEOUT });
 }
 
-// "ready" (SFX model with /generate), "music" (Music model on the port), "off" (nothing listening), "other".
-export async function stableAudioState(host, sa) {
-  let r;
-  try { r = await curlGet(host, base(sa) + "/"); } catch { return "off"; }
-  if (r.code === 7 || r.code === 6) return "off";
-  if (r.code !== 0) return "other";
-  const title = (/<title[^>]*>([\s\S]*?)<\/title>/i.exec(r.stdout)?.[1] ?? "");
-  if (/small sfx/i.test(title)) {
-    try {
-      const i = await curlGet(host, base(sa) + "/gradio_api/info");
-      return i.code === 0 && i.stdout.includes('"/generate"') ? "ready" : "other";
-    } catch { return "other"; }
+// "ready" (Gradio is up with /generate, and it isn't the Music model), "music" (the Music model is on the
+// port), "off" (nothing listening), "other" (something else answers there).
+// Gradio fills the page's <title> in with scripts, so the served HTML may only say "Gradio": the app's own
+// title comes from its JSON config (GET /config). When neither names a model, /generate is enough.
+const SFX_RE = /small[\s_-]*sfx/i;
+const MUSIC_RE = /small[\s_-]*music|audio[\s_-]*3[\s_-]*music/i;
+export function modelFromTitles(titles) {
+  for (const t of titles) {
+    if (SFX_RE.test(t)) return "sfx";
+    if (MUSIC_RE.test(t)) return "music";
   }
-  if (/music/i.test(title)) return "music";
-  return "other";
+  return null;
+}
+
+export async function stableAudioState(host, sa) {
+  let i;
+  try { i = await curlGet(host, base(sa) + "/gradio_api/info"); } catch { return "off"; }
+  if (i.code === 7 || i.code === 6) return "off";
+  if (i.code !== 0 || !String(i.stdout).includes('"/generate"')) return "other";
+  const titles = [];
+  try {
+    const c = await curlGet(host, base(sa) + "/config");
+    if (c.code === 0) {
+      try { const t = JSON.parse(c.stdout)?.title; if (typeof t === "string") titles.push(t); } catch { /* not JSON */ }
+    }
+  } catch { /* no config: fall back to the page */ }
+  try {
+    const r = await curlGet(host, base(sa) + "/");
+    const t = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(r.stdout ?? "")?.[1];
+    if (r.code === 0 && t) titles.push(t);
+  } catch { /* page unreadable: /generate is enough */ }
+  return modelFromTitles(titles) === "music" ? "music" : "ready";
 }
 
 export function makeStableAudioStarter({ sleep, settings }) {

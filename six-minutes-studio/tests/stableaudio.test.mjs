@@ -13,7 +13,7 @@ const PINOKIO_MSG = "Open Pinokio first, then press Start Stable Audio.";
 const DIDNT_MSG = "Stable Audio didn't start. Look at its Terminal in Pinokio, or switch this cue to ElevenLabs.";
 
 // pages: function(callIndex) -> { page, info, code } for curl; pterm: (p, args, opts) => void
-function setup({ page = () => sfxPage, infoBody = info, curlCode = () => 0, pterm } = {}) {
+function setup({ page = () => sfxPage, infoBody = info, curlCode = () => 0, pterm, config = null } = {}) {
   const host = new FakeHost();
   const spawns = [], ptermProcs = [];
   let n = 0;
@@ -23,6 +23,7 @@ function setup({ page = () => sfxPage, infoBody = info, curlCode = () => 0, pter
       const code = curlCode(n);
       if (code) { p.err("fail"); return p.exit(code); }
       if (args.at(-1).endsWith("/gradio_api/info")) { p.out(infoBody); return p.exit(0); }
+      if (args.at(-1).endsWith("/config")) { if (config === null) { p.err("404"); return p.exit(22); } p.out(config); return p.exit(0); }
       p.out(page(n++)); return p.exit(0);
     }
     ptermProcs.push(p);
@@ -36,7 +37,7 @@ function setup({ page = () => sfxPage, infoBody = info, curlCode = () => 0, pter
 test("state: SFX title plus /generate is ready, Music title is music, curl exit 7 is off", async () => {
   let s = setup();
   assert.equal(await stableAudioState(s.host, SA), "ready");
-  assert.deepEqual(s.spawns[0].args, ["-sS", "--max-time", "5", "http://127.0.0.1:7860/"]);
+  assert.deepEqual(s.spawns[0].args, ["-sS", "--max-time", "5", "http://127.0.0.1:7860/gradio_api/info"]);
   s = setup({ page: () => musicPage });
   assert.equal(await stableAudioState(s.host, SA), "music");
   s = setup({ curlCode: () => 7 });
@@ -45,10 +46,18 @@ test("state: SFX title plus /generate is ready, Music title is music, curl exit 
   assert.equal(await stableAudioState(s.host, SA), "off");
 });
 
-test("state: SFX title without /generate, or an unknown page, is other", async () => {
+test("state: no /generate is other; an error from the server is other", async () => {
   assert.equal(await stableAudioState(setup({ infoBody: "{}" }).host, SA), "other");
-  assert.equal(await stableAudioState(setup({ page: () => "<title>Something</title>" }).host, SA), "other");
   assert.equal(await stableAudioState(setup({ curlCode: () => 22 }).host, SA), "other");
+});
+
+// Seen on Jon's PC (27 Nov): Pinokio showed Small SFX running, but the served page's <title> was only
+// filled in by Gradio's scripts, so the old title check never saw "Small SFX" and gave up.
+test("state: Gradio's generic page title with /generate is ready; the config title names the model", async () => {
+  assert.equal(await stableAudioState(setup({ page: () => "<html><title>Gradio</title></html>" }).host, SA), "ready");
+  assert.equal(await stableAudioState(setup({ page: () => "<html></html>" }).host, SA), "ready");
+  assert.equal(await stableAudioState(setup({ page: () => "<title>Gradio</title>", config: JSON.stringify({ title: "Stable Audio 3 Small SFX" }) }).host, SA), "ready");
+  assert.equal(await stableAudioState(setup({ page: () => "<title>Gradio</title>", config: JSON.stringify({ title: "Stable Audio 3 Small Music" }) }).host, SA), "music");
 });
 
 test("ensure while already ready spawns no pterm", async () => {
@@ -65,10 +74,10 @@ test("ensure from off spawns pterm once with shell and the four args, polls unti
   s.host.spawnScript((cmd, args, opts, p) => {
     s.spawns.push({ cmd, args, opts });
     if (cmd === "curl") {
-      if (args.at(-1).endsWith("/gradio_api/info")) { p.out(info); return p.exit(0); }
+      if (!args.at(-1).endsWith("/gradio_api/info")) { p.out(sfxPage); return p.exit(0); }
       calls++;
       if (calls <= 3) { p.err("refused"); return p.exit(7); }
-      p.out(sfxPage); return p.exit(0);
+      p.out(info); return p.exit(0);
     }
     s.ptermProcs.push(p);
   });
@@ -91,10 +100,10 @@ test("two parallel ensure calls make one spawn", async () => {
   s.host.spawnScript((cmd, args, opts, p) => {
     s.spawns.push({ cmd, args, opts });
     if (cmd === "curl") {
-      if (args.at(-1).endsWith("/gradio_api/info")) { p.out(info); return p.exit(0); }
+      if (!args.at(-1).endsWith("/gradio_api/info")) { p.out(sfxPage); return p.exit(0); }
       calls++;
       if (calls <= 2) { p.err("refused"); return p.exit(7); }
-      p.out(sfxPage); return p.exit(0);
+      p.out(info); return p.exit(0);
     }
   });
   await Promise.all([s.starter.ensure(s.host), s.starter.ensure(s.host)]);
@@ -138,9 +147,9 @@ test("stop kills the kept pterm process; a later exit does not break state", asy
   s.host.spawnScript((cmd, args, opts, p) => {
     s.spawns.push({ cmd, args, opts });
     if (cmd === "curl") {
-      if (args.at(-1).endsWith("/gradio_api/info")) { p.out(info); return p.exit(0); }
+      if (!args.at(-1).endsWith("/gradio_api/info")) { p.out(sfxPage); return p.exit(0); }
       if (++calls <= 2) { p.err("refused"); return p.exit(7); }
-      p.out(sfxPage); return p.exit(0);
+      p.out(info); return p.exit(0);
     }
     s.ptermProcs.push(p);
   });
@@ -174,9 +183,10 @@ test("music appearing mid-poll sets music, kills pterm and rejects", async () =>
   s.host.spawnScript((cmd, args, opts, p) => {
     s.spawns.push({ cmd, args, opts });
     if (cmd === "curl") {
+      if (!args.at(-1).endsWith("/gradio_api/info")) { p.out(musicPage); return p.exit(0); }
       calls++;
       if (calls === 1) { p.err("refused"); return p.exit(7); }
-      p.out(musicPage); return p.exit(0);
+      p.out(info); return p.exit(0);
     }
     const orig = p.exit; p.exit = (c) => { killed = true; orig(c); };
     s.ptermProcs.push(p);
@@ -201,9 +211,9 @@ test("pterm exiting after ready sets state off", async () => {
   const s = setup();
   s.host.spawnScript((cmd, args, opts, p) => {
     if (cmd === "curl") {
-      if (args.at(-1).endsWith("/gradio_api/info")) { p.out(info); return p.exit(0); }
+      if (!args.at(-1).endsWith("/gradio_api/info")) { p.out(sfxPage); return p.exit(0); }
       if (++calls <= 2) { p.err("refused"); return p.exit(7); }
-      p.out(sfxPage); return p.exit(0);
+      p.out(info); return p.exit(0);
     }
     s.ptermProcs.push(p);
   });
@@ -355,7 +365,7 @@ test("refresh sets ready, off or music from a live check without spawning, and l
   assert.equal(off.starter.state(), "off");
   assert.equal(s.pterms().length + off.pterms().length, 0);
   // never while starting
-  const h = setup({ page: () => "<html></html>" });
+  const h = setup({ infoBody: "{}" });
   const starter = makeStableAudioStarter({ sleep: () => new Promise(() => {}), settings: { stableAudio: SA } });
   starter.ensure(h.host).catch(() => {});
   await new Promise((r) => setImmediate(r));

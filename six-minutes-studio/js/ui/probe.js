@@ -32,7 +32,7 @@ const comfyCheck = (comfy) => async (host) => {
 // Stable Audio: the page title says Small SFX and /gradio_api/info lists /generate. Never starts it.
 const stableAudioCheck = (sa) => async (host) => {
   const s = await stableAudioState(host, sa);
-  if (s === "ready") return "Ready (Small SFX)";
+  if (s === "ready") return "Ready";
   if (s === "off") throw new Error("Off: press Start Stable Audio on a film's Review");
   if (s === "music") throw new Error(MSG_MUSIC);
   throw new Error(`Not ready: look at Stable Audio in Pinokio (${sa.url})`);

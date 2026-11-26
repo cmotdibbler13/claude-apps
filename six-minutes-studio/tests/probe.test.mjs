@@ -109,7 +109,7 @@ test("Stable Audio check passes on the Small SFX page with /generate", async () 
   host.fs.list = async () => [];
   const r = saCheck(await runChecks(host, () => {}, saSettings));
   assert.equal(r.ok, true);
-  assert.equal(r.detail, "Ready (Small SFX)");
+  assert.equal(r.detail, "Ready");
 });
 
 test("Stable Audio check: connection refused says how to start it; the Music model says so", async () => {
@@ -126,6 +126,7 @@ test("Stable Audio check: connection refused says how to start it; the Music mod
   const h2 = new FakeHost();
   h2.spawnScript((cmd, args, o, p) => {
     if (args.at(-1) === "http://127.0.0.1:7860/") { p.out("<title>Stable Audio 3 Music</title>"); return p.exit(0); }
+    if (args.at(-1) === "http://127.0.0.1:7860/gradio_api/info") { p.out('{"named_endpoints":{"/generate":{}}}'); return p.exit(0); }
     p.out("ok"); p.exit(0);
   });
   h2.fs.list = async () => [];
