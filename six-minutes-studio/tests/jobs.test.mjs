@@ -221,3 +221,42 @@ test("progress-only changes notify listeners but are not written to the jobs fil
   assert.equal(writes, 1);
   assert.equal(JSON.parse(await host.fs.read(FILE, "utf8"))[0].status, "done");
 });
+
+test("check re-polls a failed connector job by its jobRef on the same record, spending nothing", async () => {
+  let starts = 0, resumes = 0, fail = true;
+  const higgsfield = {
+    lane: "connector",
+    start: async (j, c) => { starts++; c.setRef("R1"); const e = new Error("Couldn't reach Higgsfield"); e.ambiguous = true; throw e; },
+    resume: async (j) => { resumes++; if (fail) throw new Error("still unreachable"); return { file: "f.mp4" }; },
+  };
+  const blender = { lane: "gpu", start: async () => { throw new Error("x"); } };
+  const { jobs } = await setup({ higgsfield, blender });
+  const id = jobs.add(spec("higgsfield"));
+  await tick(); await tick(); await tick();
+  assert.equal(jobs.list()[0].status, "failed");
+  assert.equal(jobs.list()[0].ambiguous, true);
+  fail = false;
+  jobs.check(id);
+  await tick(); await tick(); await tick();
+  assert.equal(jobs.list().length, 1, "same job record");
+  const j = jobs.list()[0];
+  assert.equal(j.status, "done");
+  assert.equal(j.file, "f.mp4");
+  assert.equal(j.error, undefined);
+  assert.equal(j.ambiguous, undefined);
+  assert.equal(starts, 1);
+  assert.equal(resumes, 1);
+  assert.throws(() => jobs.check(id), /not failed or interrupted/);
+  const b = jobs.add(spec("blender"));
+  await tick(); await tick(); await tick();
+  assert.throws(() => jobs.check(b), /job id/);
+});
+
+test("check refuses a connector job with no jobRef", async () => {
+  const higgsfield = { lane: "connector", start: async () => { throw new Error("no credits"); }, resume: async () => ({}) };
+  const { jobs } = await setup({ higgsfield });
+  const id = jobs.add(spec("higgsfield"));
+  await tick(); await tick(); await tick();
+  assert.throws(() => jobs.check(id), /job id/);
+  assert.equal(jobs.list()[0].ambiguous, undefined);
+});

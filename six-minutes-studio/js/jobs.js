@@ -1,6 +1,7 @@
 // Job queue: gpu lane runs one at a time, connector lane up to three. Persisted after every status,
 // jobRef or structural change; progress-only changes notify listeners but are not written.
 // A failed or interrupted job is never retried automatically; retry(id) adds a fresh job on request.
+// check(id) re-polls a connector job by its jobRef (spends nothing) on the same job record.
 const CAPS = { gpu: 1, connector: 3 };
 
 export function makeJobs(host, { runners = {}, file } = {}) {
@@ -66,9 +67,12 @@ export function makeJobs(host, { runners = {}, file } = {}) {
       job.status = "done";
       job.progress = 1;
       job.eta = null;
+      delete job.ambiguous;
     } catch (e) {
       job.status = "failed";
       job.error = String(e?.message ?? e);
+      // The runner flags failures where the job may still be running upstream.
+      if (e?.ambiguous) job.ambiguous = true; else delete job.ambiguous;
     }
     job.endedAt = host.now();
     changed();
@@ -105,6 +109,16 @@ export function makeJobs(host, { runners = {}, file } = {}) {
       if (old.status !== "failed" && old.status !== "interrupted") throw new Error(`Job ${id} is ${old.status}, not failed or interrupted`);
       const { film, assetId, take, tool, what, why, lane, input } = old;
       return api.add({ film, assetId, take, tool, what, why, lane, input });
+    },
+    check(id) {
+      const job = jobs.find((j) => j.id === id);
+      if (!job) throw new Error(`Unknown job ${id}`);
+      if (laneOf(job) !== "connector" || !job.jobRef || !runners[job.tool]?.resume) {
+        throw new Error("Only a Higgsfield job with a job id can be checked again.");
+      }
+      if (job.status !== "failed" && job.status !== "interrupted") throw new Error(`Job ${id} is ${job.status}, not failed or interrupted`);
+      delete job.error; delete job.ambiguous; delete job.endedAt;
+      run(job, "resume");
     },
     list: snap,
     toJSON: snap,

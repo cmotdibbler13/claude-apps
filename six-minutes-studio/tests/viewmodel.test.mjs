@@ -214,3 +214,23 @@ test("state save error banner", async () => {
   const { stateErrorBanner } = await import("../js/ui/jobs.js");
   assert.equal(stateErrorBanner("S:\\Youtube video ideas\\Skara Brae", "EACCES"), "Couldn't save Skara Brae's state: EACCES");
 });
+
+test("connector jobs: check again, run again warns about credits and ambiguous failures", () => {
+  const m = jobsModel({ jobs: [
+    job({ id: "a", status: "failed", error: "Couldn't reach", jobRef: "R1", ambiguous: true }),
+    job({ id: "b", assetId: "HF-02", status: "interrupted" }),
+    job({ id: "c", assetId: "HF-03", status: "failed", error: "nsfw", jobRef: "R3" }),
+    job({ id: "d", assetId: "HF-04", status: "failed", error: "exit 1", tool: "blender", lane: "gpu" }),
+  ], log: null, retried: new Set() });
+  const by = Object.fromEntries(m.rows.map((r) => [r.id, r]));
+  assert.equal(by.a.canCheck, true);
+  assert.equal(by.a.retryLabel, "Run again (new generation, uses credits)");
+  assert.equal(by.a.warning, "Check Higgsfield first: this job may still be running.");
+  assert.equal(by.b.canCheck, false);
+  assert.equal(by.b.warning, "Check Higgsfield first: this job may still be running.", "interrupted before a job id came back");
+  assert.equal(by.c.canCheck, true);
+  assert.equal(by.c.warning, null);
+  assert.equal(by.d.canCheck, false);
+  assert.equal(by.d.retryLabel, "Run again");
+  assert.equal(by.d.warning, null);
+});

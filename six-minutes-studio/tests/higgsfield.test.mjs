@@ -217,3 +217,25 @@ test("unsafe output path characters are rejected without running curl", async ()
     assert.equal(execs, 0);
   }
 });
+
+test("all_terminal with no result rejects at once with the entry's status", async () => {
+  let waits = 0;
+  const t = setup({ mcp: (tool) => (tool === "generate_video" ? { job_id: UUID } : (waits++, { jobs: [{ job_id: UUID, status: "expired", error: "Took too long" }], all_terminal: true })) });
+  await assert.rejects(t.runner.start(job(), t.ctx), /expired.*Took too long/);
+  assert.equal(waits, 1);
+  const u = setup({ mcp: (tool) => (tool === "generate_video" ? { job_id: UUID } : { jobs: [{ job_id: UUID }], all_terminal: true }) });
+  await assert.rejects(u.runner.start(job(), u.ctx), /ended without a result/);
+});
+
+test("ambiguous failures are flagged: unreachable, 30 min cap, server_unavailable or upstream_error on generate", async () => {
+  const a = setup({ mcp: (tool) => { if (tool === "generate_video") return { job_id: UUID }; throw new Error("offline"); } });
+  await assert.rejects(a.runner.start(job(), a.ctx), (e) => e.ambiguous === true);
+  const b = setup({ mcp: (tool) => (tool === "generate_video" ? { job_id: UUID } : running()) });
+  await assert.rejects(b.runner.start(job(), b.ctx), (e) => e.ambiguous === true);
+  for (const code of ["server_unavailable", "upstream_error"]) {
+    const c = setup({ mcp: () => { throw Object.assign(new Error("timed out"), { code }); } });
+    await assert.rejects(c.runner.start(job(), c.ctx), (e) => e.ambiguous === true && /timed out/.test(e.message));
+  }
+  const d = setup({ mcp: () => { throw Object.assign(new Error("Insufficient credits"), { code: "tool_error" }); } });
+  await assert.rejects(d.runner.start(job(), d.ctx), (e) => !e.ambiguous);
+});

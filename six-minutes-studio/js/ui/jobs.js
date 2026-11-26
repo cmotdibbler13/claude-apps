@@ -19,6 +19,7 @@ export function jobRow(job, index, jobs, retried) {
   // Not when a later job covers this take, or another take of the same shot is still queued or running.
   const superseded = jobs.slice(index + 1).some((k) => same(k, job))
     || jobs.some((k) => k !== job && active(k) && sameFilm(k, job) && k.assetId !== undefined && k.assetId === job.assetId);
+  const connector = (job.lane ?? (job.tool === "blender" ? "gpu" : "connector")) === "connector";
   return {
     id: job.id,
     what: job.what ?? job.tool,
@@ -32,6 +33,11 @@ export function jobRow(job, index, jobs, retried) {
     eta,
     error: ended ? job.error ?? (job.status === "interrupted" ? "Interrupted when the app closed" : "Failed") : null,
     canRetry: ended && !retried.has(job.id) && !superseded,
+    // Checking by job id is free; running again is a new paid generation.
+    canCheck: ended && connector && !!job.jobRef && !superseded,
+    retryLabel: connector ? "Run again (new generation, uses credits)" : "Run again",
+    warning: ended && connector && (job.ambiguous || (job.status === "interrupted" && !job.jobRef))
+      ? "Check Higgsfield first: this job may still be running." : null,
   };
 }
 
@@ -69,7 +75,10 @@ function jobCard(r, actions) {
     bar,
     h("div", { class: "sub" }, [r.filmTitle, r.why].filter(Boolean).join(" · ")),
     r.error ? h("div", { class: "err", text: r.error }) : null,
-    r.error ? h("div", { class: "row" }, btn("Run again", (e) => { e.currentTarget.disabled = true; actions.retry(r.id); }, { ghost: true, disabled: !r.canRetry })) : null,
+    r.warning ? h("div", { class: "warn", text: r.warning }) : null,
+    r.error ? h("div", { class: "row" },
+      r.canCheck ? btn("Check again", (e) => { e.currentTarget.disabled = true; actions.check(r.id); }) : null,
+      btn(r.retryLabel, (e) => { e.currentTarget.disabled = true; actions.retry(r.id); }, { ghost: true, disabled: !r.canRetry })) : null,
   );
 }
 

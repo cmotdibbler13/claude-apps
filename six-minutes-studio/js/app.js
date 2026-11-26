@@ -208,6 +208,12 @@ const jobsActions = {
     try { app.jobs.retry(id); } catch (e) { console.error(e); }
     render();
   },
+  // Free: polls the existing Higgsfield job by its id, never generates.
+  check(id) {
+    userStarted();
+    try { app.jobs.check(id); } catch (e) { console.error(e); }
+    render();
+  },
 };
 
 // ---- review ----
