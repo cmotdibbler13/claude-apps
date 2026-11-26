@@ -23,8 +23,9 @@ export class FakeHost {
         if (enc) return typeof v === "string" ? v : new TextDecoder().decode(v);
         return typeof v === "string" ? new TextEncoder().encode(v) : v;
       },
-      write: async (p, data) => { this.files.set(this._key(p), data); },
+      write: async (p, data) => { this._needParent(p); this.files.set(this._key(p), data); },
       append: async (p, s) => {
+        this._needParent(p);
         const k = this._key(p);
         const cur = this.files.get(k) ?? "";
         this.files.set(k, (typeof cur === "string" ? cur : new TextDecoder().decode(cur)) + s);
@@ -49,14 +50,21 @@ export class FakeHost {
         if (this._isDir(p)) return { size: 0, isFile: false, isDirectory: true, mtimeMs: this.t };
         throw err("ENOENT", p);
       },
-      mkdir: async (p) => { this.dirs.add(p); },
+      mkdir: async (p) => {
+        const parts = String(p).replace(/\\/g, "/").replace(/\/+$/, "").split("/");
+        for (let i = 1; i <= parts.length; i++) this.dirs.add(parts.slice(0, i).join("/"));
+      },
       rename: async (a, b) => {
+        this._needParent(b);
         const ka = this._key(a);
         if (this.files.has(ka)) { const v = this.files.get(ka); this.files.delete(ka); this.files.set(this._key(b), v); return; }
         if (!this._isDir(a)) throw err("ENOENT", a);
         const base = norm(a);
         for (const k of [...this.files.keys()]) {
           if (norm(k).startsWith(base + "/")) { const v = this.files.get(k); this.files.delete(k); this.files.set(b + k.slice(a.length), v); }
+        }
+        for (const d of [...this.dirs]) {
+          if (norm(d) === base || norm(d).startsWith(base + "/")) { this.dirs.delete(d); this.dirs.add(b + d.slice(a.length)); }
         }
       },
       trash: async (p) => {
@@ -79,6 +87,14 @@ export class FakeHost {
     const n = norm(p);
     for (const k of this.files.keys()) if (norm(k) === n) return k;
     return p;
+  }
+  // Real fs rejects ENOENT when the parent folder does not exist. A drive or UNC root counts as existing.
+  _needParent(p) {
+    const parts = String(p).replace(/\\/g, "/").replace(/\/+$/, "").split("/");
+    parts.pop();
+    const parent = parts.join("/");
+    if (!parent || /^[a-z]:$/i.test(parent) || parent === "~") return;
+    if (!this._isDir(parent)) throw err("ENOENT", p);
   }
   _isFile(p) { return this.files.has(this._key(p)); }
   _isDir(p) {

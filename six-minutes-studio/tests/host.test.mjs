@@ -5,6 +5,7 @@ import { makeHost } from "../js/host.js";
 
 test("FakeHost fs round-trips text and bytes", async () => {
   const h = new FakeHost();
+  await h.fs.mkdir("S:\\a");
   await h.fs.write("S:\\a\\note.txt", "hello");
   assert.equal(await h.fs.read("S:\\a\\note.txt", "utf8"), "hello");
   const bytes = new Uint8Array([1, 2, 3]);
@@ -15,6 +16,8 @@ test("FakeHost fs round-trips text and bytes", async () => {
 
 test("exists/list reflect writes, case-insensitive with mixed slashes", async () => {
   const h = new FakeHost();
+  await h.fs.mkdir("S:\\Films\\One");
+  await h.fs.mkdir("S:/Films/Two");
   await h.fs.write("S:\\Films\\One\\script.md", "x");
   await h.fs.write("S:/Films/Two/script.md", "y");
   assert.equal(await h.fs.exists("s:/films/one/SCRIPT.md"), true);
@@ -29,6 +32,7 @@ test("exists/list reflect writes, case-insensitive with mixed slashes", async ()
 
 test("rename moves the entry", async () => {
   const h = new FakeHost();
+  await h.fs.mkdir("S:\\a");
   await h.fs.write("S:\\a\\tmp.json", "{}");
   await h.fs.rename("S:\\a\\tmp.json", "s:/a/state.json");
   assert.equal(await h.fs.exists("S:\\a\\tmp.json"), false);
@@ -42,8 +46,30 @@ test("exec returns scripted result", async () => {
   assert.equal((await h.exec("other")).code, 1);
 });
 
+test("write, append and rename into a missing parent reject ENOENT; mkdir is recursive", async () => {
+  const h = new FakeHost();
+  await assert.rejects(h.fs.write("S:\\nope\\a.txt", "x"), /^Error: ENOENT/);
+  await assert.rejects(h.fs.append("S:\\nope\\a.txt", "x"), /^Error: ENOENT/);
+  await h.fs.mkdir("S:\\ok");
+  await h.fs.write("S:\\ok\\a.txt", "x");
+  await assert.rejects(h.fs.rename("S:\\ok\\a.txt", "S:\\nope\\b.txt"), /^Error: ENOENT/);
+  assert.equal(await h.fs.exists("S:\\ok\\a.txt"), true);
+  await h.fs.mkdir("S:\\deep\\er\\still");
+  await h.fs.write("S:\\deep\\er\\still\\f.txt", "y");
+  assert.equal(await h.fs.read("S:\\deep\\er\\still\\f.txt", "utf8"), "y");
+});
+
+test("renaming a directory moves its empty subdirectories", async () => {
+  const h = new FakeHost();
+  await h.fs.mkdir("S:\\old\\empty\\inner");
+  await h.fs.rename("S:\\old", "S:\\new");
+  assert.equal(await h.fs.exists("S:\\old"), false);
+  assert.equal(await h.fs.exists("S:\\new\\empty\\inner"), true);
+});
+
 test("trash removes the entry; spawn script drives output and exit", async () => {
   const h = new FakeHost();
+  await h.fs.mkdir("S:\\a");
   await h.fs.write("S:\\a\\x.txt", "1");
   await h.fs.trash("S:\\a\\x.txt");
   assert.equal(await h.fs.exists("S:\\a\\x.txt"), false);
