@@ -771,5 +771,43 @@ class QuietLastWord(TakeTestCase):
         self.assertEqual(r["flags"], [])
 
 
+class NativeRateAnalysis(TakeTestCase):
+    """The energy/ZCR/noise analysis runs on the take's own samples (s16le
+    / 32768 at the file's rate); only Whisper gets the 16 kHz decode."""
+
+    def test_decode_with_peak_gives_native_samples(self):
+        take = Take().quiet(0.2).say("road").quiet(0.3)
+        path = take.write(self.path())
+        d = take_checks.decode_with_peak(path)
+        self.assertEqual(d.rate, 16000)
+        self.assertEqual(d.native_rate, RATE)
+        self.assertEqual(d.native.dtype, np.float32)
+        x = np.concatenate(take.parts)
+        pcm = np.clip(np.round(x * 32767), -32768, 32767)
+        np.testing.assert_allclose(d.native, pcm / 32768.0, atol=1e-6)
+        self.assertAlmostEqual(len(d.samples) / d.rate, take.t, delta=0.01)
+
+    def test_check_take_analyses_at_the_native_rate(self):
+        take = Take().quiet(0.3).say("road").quiet(0.4)
+        path = take.write(self.path())
+        seen = {}
+        real = take_checks.analyse
+
+        def spy(samples, rate, **kw):
+            seen["rate"], seen["n"] = rate, len(samples)
+            return real(samples, rate, **kw)
+
+        class Heard(StubTranscriber):
+            def transcribe(self, samples, rate):
+                seen["whisper_rate"] = rate
+                return super().transcribe(samples, rate)
+
+        with mock.patch.object(take_checks, "analyse", side_effect=spy):
+            take_checks.check_take(path, "Road.", Heard(take.words))
+        self.assertEqual(seen["rate"], RATE)
+        self.assertEqual(seen["n"], int(round(take.t * RATE)))
+        self.assertEqual(seen["whisper_rate"], 16000)
+
+
 if __name__ == "__main__":
     unittest.main()

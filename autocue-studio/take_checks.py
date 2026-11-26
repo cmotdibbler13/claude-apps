@@ -29,12 +29,14 @@ voice end count, and the last-word cut-off test asks whether the voice (not
 just the loud speech) ran to the end.
 """
 
+import collections
 import difflib
 import json
 import math
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 
@@ -119,19 +121,50 @@ def decode(path):
     return np.frombuffer(raw, dtype="<f4").astype(np.float32), RATE
 
 
+Decoded = collections.namedtuple(
+    "Decoded", "samples rate peak_dbfs clipped native native_rate")
+
+
+def _parse_wav(data):
+    """(int16 samples as a (frames, channels) array, rate) from ffmpeg's
+    piped 16-bit WAV. The sizes in a piped header can't be trusted, so the
+    data chunk runs to the end of the bytes."""
+    if len(data) < 12 or data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+        raise CheckError("ffmpeg gave no WAV data")
+    pos, channels, rate = 12, None, None
+    while pos + 8 <= len(data):
+        cid, size = data[pos:pos + 4], struct.unpack("<I", data[pos + 4:pos + 8])[0]
+        body = pos + 8
+        if cid == b"fmt ":
+            channels, rate = struct.unpack("<HI", data[body + 2:body + 8])
+        elif cid == b"data":
+            if not channels or not rate:
+                break
+            pcm = data[body:]
+            pcm = pcm[:len(pcm) - len(pcm) % (2 * channels)]
+            return np.frombuffer(pcm, dtype="<i2").reshape(-1, channels), int(rate)
+        pos = body + size + (size & 1)
+    raise CheckError("ffmpeg gave no WAV data")
+
+
 def decode_with_peak(path):
-    """(samples, 16000, peak_dbfs, clipped). The peak is read from the original
-    16-bit samples at their own rate, since resampling moves peaks."""
+    """Decoded(samples, 16000, peak_dbfs, clipped, native, native_rate).
+    samples is the 16 kHz float decode for the transcriber; native is the
+    take itself as mono float32 (s16le / 32768) at its own rate, for the
+    audio checks. The peak is read from the original 16-bit samples, since
+    resampling moves peaks."""
     samples, rate = decode(path)
-    raw = np.frombuffer(_run_ffmpeg(["-f", "s16le"], path), dtype="<i2")
+    raw, native_rate = _parse_wav(_run_ffmpeg(["-c:a", "pcm_s16le", "-f", "wav"], path))
     if raw.size:
         hi, lo = int(raw.max()), int(raw.min())
         peak = max(abs(hi), abs(lo))
         full_scale = hi >= 32767 or lo <= -32768
     else:
         peak, full_scale = 0, False
+    native = (raw.astype(np.float32).mean(axis=1) / np.float32(32768.0)).astype(np.float32)
     peak_dbfs = _db_amp(peak / 32768.0)
-    return samples, rate, peak_dbfs, bool(full_scale or peak_dbfs > CLIP_PEAK_DBFS)
+    return Decoded(samples, rate, peak_dbfs, bool(full_scale or peak_dbfs > CLIP_PEAK_DBFS),
+                   native, native_rate)
 
 
 # ---------------------------------------------------------------- analysis ----
@@ -823,10 +856,11 @@ def check_take(path, line_text, transcriber):
     """Check one take. Returns the result body (without id, file, checked_at
     and take_mtime): ok, flags, transcript, duration_s, peak_dbfs, noise_dbfs,
     version."""
-    samples, rate, peak_dbfs, clipped = decode_with_peak(path)
-    text, words = transcriber.transcribe(samples, rate)
+    d = decode_with_peak(path)
+    text, words = transcriber.transcribe(d.samples, d.rate)
     words = [(str(w), float(s), float(e)) for w, s, e in (words or [])]
-    audio = analyse(samples, rate, peak_dbfs=peak_dbfs, clipped=clipped, words=words)
+    audio = analyse(d.native, d.native_rate, peak_dbfs=d.peak_dbfs, clipped=d.clipped,
+                    words=words)
     flags = order_flags(audio["flags"] + word_flags(line_text, words, audio["duration_s"],
                                                       voice_end_s=audio["voice_end_s"]))
     return {
