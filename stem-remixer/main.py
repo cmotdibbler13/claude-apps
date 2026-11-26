@@ -1,8 +1,12 @@
 """Stem Remixer: entry point.
 
 Run with:  python main.py
+Or, to open one file as it is (no split), optionally with a fit plan whose
+sections and chain replace the saved ones:
+    python main.py --open <file> [--plan <plan.json>]
 """
 
+import argparse
 import ctypes
 
 # Give the process its own taskbar identity, so Windows doesn't group the
@@ -27,11 +31,32 @@ def on_store_python() -> bool:
         return False
 
 
-from app import StemRemixerApp
+class _Parser(argparse.ArgumentParser):
+    def error(self, message):
+        """A broken command line still starts the app (pythonw has no console)."""
+        raise ValueError(message)
 
 
-def main() -> None:
-    StemRemixerApp(store_python=on_store_python()).mainloop()
+def parse_args(argv):
+    """--open and --plan; anything else on the command line is ignored."""
+    parser = _Parser(add_help=False)
+    parser.add_argument("--open", default=None)
+    parser.add_argument("--plan", default=None)
+    try:
+        args, _unknown = parser.parse_known_args(argv)
+    except ValueError:
+        args = argparse.Namespace(open=None, plan=None)
+    return args
+
+
+def main(argv=None) -> None:
+    import sys
+    from app import StemRemixerApp
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    app = StemRemixerApp(store_python=on_store_python())
+    if args.open:
+        app.after(0, lambda: app.open_file(args.open, args.plan))
+    app.mainloop()
 
 
 if __name__ == "__main__":

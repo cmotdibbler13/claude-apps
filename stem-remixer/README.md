@@ -22,15 +22,31 @@ open-source model from Meta. Nothing is uploaded.
   button) to mark a section; it plays round and round while you work on the mix. **Loop** (or
   the L key) turns it on and off. `[` and `]` move the section's start and end to the
   playhead, which is handy for trimming it by ear.
-- **Save sections.** **+ Save section** keeps the marked section in the Sections row, up to
-  nine per song. Click one (or press its number, 1 to 9) to jump to it and loop it.
-  Double-click to name it ("Chorus"), right-click to rename or delete. Saved sections show as
+- **Save sections.** **+ Save section** keeps the marked section in the Sections row. A song
+  can keep as many as you like; when they don't all fit, the row scrolls sideways (drag its
+  scroll bar, or Shift and the mouse wheel over it). Click one to jump to it and loop it; the
+  first nine also have their number keys, 1 to 9. Double-click to name it ("Chorus"),
+  right-click to rename or delete it, or to set its tempo or crossfade. Saved sections show as
   thin bars along the top of the waveforms and are kept with the song. To change one, select
   it, adjust with `[` and `]` or a new drag, save that, and delete the old one.
+- **Tempo per section.** Right-click a section and choose **Tempo…** to play it a little
+  faster or slower than the rest, from 90% to 110% (100% plays it as it is). It works on top
+  of the Tempo slider, and the pitch stays where it is. The section's button shows it, for
+  example "Intro · 97 %".
+- **Crossfades.** Right-click a section and choose **Crossfade…**: None, 30 ms or 2.5 s. In a
+  chain, the section then fades into the one after it over that time, instead of the usual
+  few-millisecond join. 30 ms suits a cut on a beat; 2.5 s suits a slow, ambient stretch. The
+  button shows it, for example "Intro · 97 % · xf 30 ms".
 - **Chain sections.** Type an order into the **Chain** box by section number, for example
   `1 2 2 3`, and press **Play chain** (or Enter). The sections play one after another, round
-  and round, so you can rearrange the song. **Stop chain** goes back to normal play. With a
-  chain playing, Export offers to save it once through.
+  and round, each at its own tempo and with its own crossfade, so you can rearrange the song.
+  With ten or more sections, put spaces between the numbers (`1 12 3`). **Stop chain** goes
+  back to normal play. With a chain playing, Export offers to save it once through, exactly
+  as it plays.
+- **Open a single file without splitting it.** Started with `--open` (below), the app opens
+  the file as it is, as one lane called "score", with no split and no model download. It is
+  kept in `Stems/<file> [single]/` like a split, so your sections and mix come back next
+  time. If the file changes, the app notices and reads it again.
 - **EQ per stem.** The **EQ** button on a lane opens Low, Mid and High controls (up to 12 dB
   up or down); **Flat** clears them. A change is heard a second or two after you let go of the
   slider, because the whole stem is reworked. The button lights up when a stem has EQ on it.
@@ -45,6 +61,31 @@ open-source model from Meta. Nothing is uploaded.
   the folder if you want the files for another program (an instrumental is just the vocals
   muted and exported). **Open stems folder** loads a folder split earlier, or any folder of
   equal-length WAVs.
+
+## Opening a file from another program
+
+Another program (Six Minutes Studio does this to let you adjust a score it has fitted) can
+start the app with a file to open:
+
+```
+pythonw.exe main.py --open <file> [--plan <plan.json>]
+```
+
+`--open` opens the file as a single lane, without splitting it. `--plan` also gives it a fit
+plan, a JSON file of the form
+
+```
+{"steps": [{"from_s": 0.0, "to_s": 8.0, "tempo": 1.0, "xfade_s": 0.03}, ...]}
+```
+
+Each step is a stretch of the file in seconds, its tempo (0.9 to 1.1 makes sense) and its
+crossfade into the next step. The plan's steps become saved sections, "Step 1", "Step 2" and
+so on (a step used twice is one section, used twice in the chain), and the chain plays them
+in order. They replace the sections and chain saved for that file, and the song's tempo,
+pitch, master and loop go back to plain, so the chain sounds just as the plan renders it.
+The chain is on when the window opens: press Play to hear it, adjust sections by ear, then
+**Export mix** saves the chain once through. If the file or the plan can't be read, the app
+says why and starts as normal. Anything else on the command line is ignored.
 
 ## Updating
 
@@ -115,6 +156,12 @@ command from [pytorch.org/get-started](https://pytorch.org/get-started/locally/)
 
 ## Changes
 
+- **2026-11-27** (1.9.0): Each saved section can have its own tempo (90% to 110%) and a
+  crossfade into the next section in a chain (none, 30 ms or 2.5 s), from its right-click
+  menu. Its button shows them. A song can keep more than nine sections: the row scrolls, and
+  keys 1 to 9 pick the first nine. `--open <file>` opens one file without splitting it, and
+  `--plan <plan.json>` opens it with a fit plan as its sections and chain.
+
 - **2026-11-22** (1.8.3): Update could say "you have the newest version" for up to five
   minutes after a new one came out, because GitHub served an old copy of the version number.
   The check now asks GitHub's API, which is always current. (Versions before 1.8.3 still
@@ -147,7 +194,7 @@ stem-remixer/
 ├── Install.cmd        # double-click to install (runs Install.ps1)
 ├── Uninstall.cmd      # double-click to uninstall
 ├── Install.ps1        # the installer: Python, .venv, shortcuts
-├── main.py            # entry point
+├── main.py            # entry point (and --open, --plan)
 ├── app.py             # the window (CustomTkinter)
 ├── mixer.py           # mixing engine, export, playback (sounddevice)
 ├── updater.py         # the Update button: fetches the newest version from GitHub
