@@ -78,6 +78,21 @@ def test_resample_keeps_length_and_tone():
     assert np.abs(y[2000:-2000, 0] - ref[2000:-2000]).max() < 1e-3
 
 
+@pytest.mark.parametrize("rate", [44100, 22050, 96000])
+def test_resample_joins_its_chunks_seamlessly(rate):
+    seconds = 25.0   # three chunks
+    t = np.arange(int(rate * seconds)) / rate
+    x = np.stack([np.sin(2 * np.pi * 440 * t), 0.5 * np.sin(2 * np.pi * 3000 * t)], axis=1)
+    calls = []
+    y = fit.resample(x.astype(np.float32), rate, 48000, calls.append)
+    assert len(y) == int(round(len(x) * 48000 / rate))
+    assert len(calls) >= 3 and calls[-1] == 1.0 and calls == sorted(calls)
+    u = np.arange(len(y)) / 48000
+    inner = slice(4800, -4800)
+    assert np.abs(y[inner, 0] - np.sin(2 * np.pi * 440 * u)[inner]).max() < 1e-3
+    assert np.abs(y[inner, 1] - 0.5 * np.sin(2 * np.pi * 3000 * u)[inner]).max() < 1e-3
+
+
 def test_loud_plans_are_turned_down_and_reported():
     x = score() * 4.0   # over full scale
     out, factor = fit.render_plan(x, RATE, PLAN)
@@ -118,3 +133,13 @@ def test_command_reports_a_bad_plan(tmp_path):
     assert done.returncode != 0
     assert "error" in json.loads(done.stdout.splitlines()[-1])
     assert not (tmp_path / "fit.wav").exists()
+
+
+def test_command_names_a_score_it_cannot_read(tmp_path):
+    src, plan = tmp_path / "score.wav", tmp_path / "plan.json"
+    src.write_text("not audio")
+    plan.write_text(json.dumps(PLAN))
+    done = run(src, plan, tmp_path / "fit.wav")
+    assert done.returncode != 0
+    error = json.loads(done.stdout.splitlines()[-1])["error"]
+    assert error.startswith("Couldn't read score.wav as audio. ") and len(error) > 40

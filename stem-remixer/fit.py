@@ -24,6 +24,8 @@ import numpy as np
 from mixer import MAX_TEMPO, MIN_LOOP_SECONDS, MIN_TEMPO, Mixer, Stem
 
 OUT_RATE = 48000
+RESAMPLE_BLOCK_S = 10.0     # chunk length
+RESAMPLE_CONTEXT_S = 0.5    # extra on each side, faded out, so chunks join seamlessly
 
 
 def _number(step: dict, key: str, number: int, default=None) -> float:
@@ -83,28 +85,69 @@ def build_mixer(x, rate: int, plan) -> Mixer:
     return mixer
 
 
-def resample(audio: np.ndarray, rate: int, out_rate: int) -> np.ndarray:
-    """Band-limited resample (FFT), (n, channels) float32. The result has
-    round(n * out_rate / rate) frames."""
+def _fft_resample(segment: np.ndarray, up: int, down: int) -> np.ndarray:
+    """Band-limited resample of one channel whose length is a multiple of down."""
+    count = len(segment)
+    size = count * up // down
+    spectrum = np.fft.rfft(segment)
+    resized = np.zeros(size // 2 + 1, dtype=np.complex128)
+    keep = min(count, size) // 2 + 1
+    resized[:keep] = spectrum[:keep]
+    if size > count and count % 2 == 0:
+        resized[count // 2] *= 0.5     # the old Nyquist bin, shared between +/-
+    elif size < count and size % 2 == 0:
+        resized[-1] = resized[-1].real   # the new Nyquist bin
+    return np.fft.irfft(resized, size) * (size / count)
+
+
+def _smooth(least: int) -> int:
+    """The smallest 2^a * 3^b * 5^c that is at least `least`, for a fast FFT."""
+    best = 1 << int(np.ceil(np.log2(max(1, least))))
+    five = 1
+    while five < best:
+        three = five
+        while three < best:
+            two = three
+            while two < least:
+                two *= 2
+            best = min(best, two)
+            three *= 3
+        five *= 5
+    return best
+
+
+def resample(audio: np.ndarray, rate: int, out_rate: int, progress=None) -> np.ndarray:
+    """Band-limited resample, (n, channels) float32 in and out; the result has
+    round(n * out_rate / rate) frames. Worked in overlapping chunks of about
+    10 s (FFT sizes kept 2/3/5-smooth where the rates allow), tapered at the
+    edges of their context, so memory stays small and progress can be shown."""
     audio = np.asarray(audio, dtype=np.float32)
     if rate == out_rate or len(audio) == 0:
         return audio
-    wanted = int(round(len(audio) * out_rate / rate))
+    say = progress or (lambda fraction: None)
     g = math.gcd(int(rate), int(out_rate))
     up, down = out_rate // g, rate // g
-    # Pad with silence so the ends don't wrap round into each other, to a
-    # length that maps to a whole number of output frames.
-    padded = int(np.ceil((len(audio) + rate // 10) / down)) * down
-    size = padded * up // down
+    wanted = int(round(len(audio) * out_rate / rate))
+    context = down * int(np.ceil(RESAMPLE_CONTEXT_S * rate / down))
+    whole = _smooth(int(np.ceil(RESAMPLE_BLOCK_S * rate / down)) + 2 * context // down)
+    block = down * whole - 2 * context   # so each FFT is down * whole long
+    taper = np.ones(block + 2 * context)
+    ramp = np.hanning(context + 1)[:context // 2]   # the outer half of each context fades
+    taper[:len(ramp)] = ramp
+    taper[len(taper) - len(ramp):] = ramp[::-1]
+    padded = np.zeros((context + len(audio) + block + context, audio.shape[1]))
+    padded[context:context + len(audio)] = audio
     out = np.empty((wanted, audio.shape[1]), dtype=np.float32)
-    keep = min(padded, size) // 2 + 1
-    for channel in range(audio.shape[1]):
-        spectrum = np.fft.rfft(audio[:, channel], padded)
-        resized = np.zeros(size // 2 + 1, dtype=np.complex128)
-        resized[:keep] = spectrum[:keep]
-        if size < padded and size % 2 == 0:
-            resized[-1] = resized[-1].real   # the new Nyquist bin
-        out[:, channel] = (np.fft.irfft(resized, size) * (size / padded))[:wanted]
+    first_out, last_out = context * up // down, (context + block) * up // down
+    starts = range(0, len(audio), block)
+    for number, start in enumerate(starts):
+        segment = padded[start:start + block + 2 * context]
+        at = start * up // down
+        count = min(last_out - first_out, wanted - at)
+        for channel in range(audio.shape[1]):
+            resized = _fft_resample(segment[:, channel] * taper, up, down)
+            out[at:at + count, channel] = resized[first_out:first_out + count]
+        say((number + 1) / len(starts))
     return out
 
 
@@ -112,6 +155,19 @@ def render_plan(x, rate: int, plan, out_rate: int = OUT_RATE) -> tuple:
     """(audio at out_rate, turned_down_by) for the plan over score x."""
     audio, factor = build_mixer(x, rate, plan).render_chain()
     return resample(audio, int(rate), int(out_rate)), factor
+
+
+class UnreadableAudio(ValueError):
+    pass
+
+
+def read_audio(path: str) -> tuple:
+    """(float32 (n, channels), rate), or UnreadableAudio: "Couldn't read <name> as audio." """
+    import soundfile as sf
+    try:
+        return sf.read(path, dtype="float32", always_2d=True)
+    except Exception as exc:
+        raise UnreadableAudio(f"Couldn't read {os.path.basename(path)} as audio. {exc}") from None
 
 
 def _emit(obj) -> None:
@@ -130,20 +186,21 @@ def main(argv) -> int:
         with open(plan_path, encoding="utf-8") as handle:
             plan = json.load(handle)
         _emit({"progress": 0.1, "text": "Loading the score"})
-        x, rate = sf.read(score, dtype="float32", always_2d=True)
+        x, rate = read_audio(score)
         _emit({"progress": 0.3, "text": "Rendering the fit"})
         mixer = build_mixer(x, rate, plan)
         audio, factor = mixer.render_chain()
         if rate != OUT_RATE:
-            _emit({"progress": 0.7, "text": "Resampling to 48 kHz"})
-            audio = resample(audio, rate, OUT_RATE)
+            audio = resample(audio, rate, OUT_RATE, lambda f: _emit(
+                {"progress": round(0.6 + 0.3 * f, 3), "text": "Resampling to 48 kHz"}))
         _emit({"progress": 0.9, "text": "Writing the fit"})
         sf.write(temp, audio, OUT_RATE, format="WAV", subtype="FLOAT")
         os.replace(temp, out)
     except Exception as exc:   # report anything as JSON, for the caller
         if os.path.exists(temp):
             os.remove(temp)
-        _emit({"error": f"Could not fit the score: {exc}"})
+        _emit({"error": str(exc) if isinstance(exc, UnreadableAudio)
+               else f"Could not fit the score: {exc}"})
         return 1
     done = {"done": True, "out": out, "length_s": round(len(audio) / OUT_RATE, 4)}
     if factor < 1.0:

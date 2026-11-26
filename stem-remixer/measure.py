@@ -18,6 +18,7 @@ Pure NumPy; analyse(x, rate) does the work and can be tested on its own.
 """
 
 import json
+import os
 import sys
 
 import numpy as np
@@ -27,11 +28,20 @@ SMOOTH_S = 1.5         # loudness moving average
 FLOOR_DB = -90.0
 MOVE_DB = 6.0          # a rise or drop is at least this
 HOLD_S = 2.0           # and holds this long
+HELD_DB = 4.5          # no point of the new level falls back nearer than this
+SETTLED_DB = 4.0       # a level has settled when 2 s of it span less than this
+LOOK_AHEAD_S = 15.0    # a slow swell can take this long
 FADE_MIN_S = 2.0       # a decline shorter than this is an ending, not a fade
 FADE_DEPTH_DB = 20.0   # a fade goes at least this far down
 MIN_BPM, MAX_BPM = 60.0, 180.0
 ONSET_HOP_S = 0.01
-MIN_ONSET_DB = 0.5     # the strongest onsets must lift the spectrum this much (dB, per bin)
+ONSET_WINDOW_S = 0.046 # onset STFT window (2048 at 44.1 or 48 kHz): long enough to keep steady chords steady
+REFINE_WINDOW_S = 0.023
+ONSET_BANDS = 40
+ONSET_BLOCK = 1024     # frames of the onset STFT worked out at once
+ONSET_FLOOR = 1e-12    # band power floor: -120 dB below full scale
+ONSET_RANGE_DB = 60.0  # and no lower than this below the file's own level
+MIN_PEAK = 0.6         # onsets must stand this far (dB per band) above the typical flux
 MIN_PERIODICITY = 0.2  # normalised autocorrelation at the beat period
 TIGHTNESS = 100.0      # how strictly beats keep to the period
 
@@ -90,37 +100,62 @@ def _fade(loud: np.ndarray):
 
 
 def moves(loud: np.ndarray) -> list:
-    """Rises, drops and the fade in a smoothed loudness curve."""
+    """Rises, drops and the fade in a smoothed loudness curve.
+
+    From each point, the median of the 2 s before is compared with each 2 s
+    window up to 15 s ahead. A rise (or drop) is the first window that has
+    settled (it spans under 4 dB) with its median at least 6 dB above (or
+    below) and no point less than 4.5 dB beyond. The move is placed where the
+    curve last left the earlier level. A change still going is followed until
+    it levels off (under 0.5 dB a second), and the search carries on from the
+    new level, so one change, quick or slow, is reported once."""
     found = []
     hold = int(round(HOLD_S / STEP_S))
     settle = int(round(SMOOTH_S / STEP_S))
+    ahead = int(round(LOOK_AHEAD_S / STEP_S))
     fade = _fade(loud)
-    candidates = []
-    for i in range(hold, len(loud) - settle - hold + 1):
-        before = loud[i - hold:i]
-        after = loud[i + settle:i + settle + hold]
-        base = np.median(before)
-        if after.min() - base >= MOVE_DB:
-            kind = "rise"
-        elif base - after.max() >= MOVE_DB:
-            kind = "drop"
-        else:
+    n = len(loud)
+    if n < 2 * hold + settle:
+        windows = np.zeros((0, hold))
+    else:
+        windows = np.lib.stride_tricks.sliding_window_view(loud, hold)   # windows[j] = loud[j:j+hold]
+    med = np.median(windows, axis=1) if len(windows) else np.zeros(0)
+    low = windows.min(axis=1) if len(windows) else np.zeros(0)
+    high = windows.max(axis=1) if len(windows) else np.zeros(0)
+    i = hold
+    while i + settle + hold <= n:
+        base, spread = med[i - hold], high[i - hold] - low[i - hold]
+        if spread > SETTLED_DB:
+            i += 1
             continue
-        candidates.append((i, kind, after.mean() - before.mean()))
-    # Each run of neighbouring candidates of one kind is one move, placed
-    # where the change across the gap is biggest.
-    runs = []
-    for i, kind, change in candidates:
-        if runs and runs[-1][-1][1] == kind and i - runs[-1][-1][0] <= 1:
-            runs[-1].append((i, kind, change))
-        else:
-            runs.append([(i, kind, change)])
-    for run in runs:
-        i, kind, change = max(run, key=lambda c: abs(c[2]))
-        t = (i + settle / 2) * STEP_S
-        if kind == "drop" and fade is not None and t >= fade * STEP_S - HOLD_S:
-            continue   # that's the fade
-        found.append({"t": round(t, 2), "kind": kind, "db": round(float(change), 1)})
+        last = min(n - hold, i + ahead)
+        js = np.arange(i + settle, last + 1)
+        settled = high[js] - low[js] <= SETTLED_DB
+        # Going the other way first means it's not this kind of change.
+        lowest = np.minimum.accumulate(loud[i:last + 1])[js - i]
+        highest = np.maximum.accumulate(loud[i:last + 1])[js - i]
+        rise = settled & (med[js] - base >= MOVE_DB) & (low[js] - base >= HELD_DB) \
+            & (lowest >= base - SETTLED_DB)
+        drop = settled & (base - med[js] >= MOVE_DB) & (base - high[js] >= HELD_DB) \
+            & (highest <= base + SETTLED_DB)
+        hit = np.nonzero(rise | drop)[0]
+        if len(hit) == 0:
+            i += 1
+            continue
+        j = int(js[hit[0]])
+        kind = "rise" if rise[hit[0]] else "drop"
+        sign = 1.0 if kind == "rise" else -1.0
+        # Follow a slow swell until it stops moving, for the full change.
+        second = int(round(1.0 / STEP_S))
+        while j + second <= n - hold and sign * (med[j + second] - med[j]) > 0.5:
+            j += second
+        span = loud[i:j + 1]
+        near = np.nonzero(span <= base + 1.0 if kind == "rise" else span >= base - 1.0)[0]
+        start = i + (int(near[-1]) + 1 if len(near) else 0)
+        t = start * STEP_S
+        if not (kind == "drop" and fade is not None and t >= fade * STEP_S - HOLD_S):
+            found.append({"t": round(t, 2), "kind": kind, "db": round(float(med[j] - base), 1)})
+        i = j + hold   # carry on from the new level
     if fade is not None:
         found.append({"t": round(fade * STEP_S, 2), "kind": "fade",
                       "db": round(float(loud[-1] - loud[fade]), 1)})
@@ -129,26 +164,51 @@ def moves(loud: np.ndarray) -> list:
 
 # ------------------------------------------------------------------ beats
 
+def _bands(n_fft: int, rate: int) -> np.ndarray:
+    """(bins, bands) matrix summing an rfft's power into ~40 log-spaced bands
+    from 30 Hz up to 16 kHz (or Nyquist); bands with no bins are left out."""
+    freqs = np.fft.rfftfreq(n_fft, 1.0 / rate)
+    top = min(16000.0, rate / 2)
+    edges = np.geomspace(30.0, top, ONSET_BANDS + 1)
+    which = np.digitize(freqs, edges) - 1
+    matrix = np.zeros((len(freqs), ONSET_BANDS))
+    inside = (which >= 0) & (which < ONSET_BANDS)
+    matrix[np.nonzero(inside)[0], which[inside]] = 1.0
+    return matrix[:, matrix.sum(axis=0) > 0]
+
+
+def _floor(mono: np.ndarray) -> float:
+    """Band power floor, set from the whole file's level (a cheap first
+    pass), so leakage far below the music doesn't count as onsets."""
+    return max(ONSET_FLOOR, 2.0 * float(np.mean(mono ** 2)) * 10 ** (-ONSET_RANGE_DB / 10))
+
+
 def onset_envelope(mono: np.ndarray, rate: int) -> tuple:
-    """Positive spectral flux in dB, averaged over the bins, every ~10 ms.
+    """Half-wave-rectified flux of the band levels (dB), averaged over the
+    bands, every ~10 ms. Worked out a block at a time, against a fixed
+    reference (full scale), so only the band levels are kept.
     Returns (envelope, hop in samples, window in samples)."""
     hop = max(1, int(round(rate * ONSET_HOP_S)))
-    n_fft = 1 << int(np.ceil(np.log2(max(2, rate * 0.023))))
+    n_fft = 1 << int(np.round(np.log2(max(2, rate * ONSET_WINDOW_S))))
     if len(mono) < n_fft + hop:
         return np.zeros(0), hop, n_fft
     frames = 1 + (len(mono) - n_fft) // hop
     window = np.hanning(n_fft)
-    mags = []
-    for first in range(0, frames, 2048):   # in blocks, to keep memory down
-        idx = (np.arange(first, min(frames, first + 2048)) * hop)[:, None] + np.arange(n_fft)
-        mags.append(np.abs(np.fft.rfft(mono[idx] * window, axis=1)))
-    mag = np.concatenate(mags)
-    top = mag.max()
-    if top <= 1e-9:
-        return np.zeros(frames), hop, n_fft
-    db = 20 * np.log10(np.maximum(mag, top * 1e-4))   # an 80 dB range
-    flux = np.maximum(0.0, np.diff(db, axis=0)).mean(axis=1)
-    return np.concatenate([[0.0], flux]), hop, n_fft
+    bands = _bands(n_fft, rate)
+    scale = 4.0 / (window.sum() ** 2)   # a full-scale sine in one band reads 0 dB
+    floor = _floor(mono)
+    flux = np.zeros(frames)
+    previous = None
+    for first in range(0, frames, ONSET_BLOCK):
+        idx = (np.arange(first, min(frames, first + ONSET_BLOCK)) * hop)[:, None] + np.arange(n_fft)
+        power = np.abs(np.fft.rfft(mono[idx] * window, axis=1)) ** 2 @ bands
+        level = 10 * np.log10(np.maximum(power * scale, floor))
+        if previous is not None:
+            level = np.vstack([previous, level])
+        rises = np.maximum(0.0, np.diff(level, axis=0)).mean(axis=1)
+        flux[first + (previous is None):first + (previous is None) + len(rises)] = rises
+        previous = level[-1:]
+    return flux, hop, n_fft
 
 
 def _period(env: np.ndarray, hop_s: float):
@@ -210,31 +270,40 @@ def _track(env: np.ndarray, period: float) -> np.ndarray:
     return beats
 
 
-def _refine(mono: np.ndarray, rate: int, times: np.ndarray, reach_s: float) -> np.ndarray:
-    """Move each beat to the sharpest rise in a 2 ms energy envelope nearby."""
-    step = max(1, int(round(rate * 0.002)))
-    count = len(mono) // step
-    if count < 4:
-        return times
-    energy = (mono[:count * step].reshape(count, step) ** 2).mean(axis=1)
-    db = 10 * np.log10(np.maximum(energy, 1e-10))
-    rise = np.concatenate([[0.0], np.diff(db)])
-    reach = int(round(reach_s * rate / step))
+def _refine(mono: np.ndarray, rate: int, times: np.ndarray, reach_s: float,
+            floor: float) -> np.ndarray:
+    """Move each beat to the sharpest band-level rise nearby, measured with a
+    window half the size of the tracking one, every millisecond. (The long
+    window finds the beat; the short one places it.)"""
+    n_fft = 1 << int(np.round(np.log2(max(2, rate * REFINE_WINDOW_S))))
+    lag, step = n_fft // 2, max(1, int(round(rate * 0.001)))
+    window = np.hanning(n_fft)
+    bands = _bands(n_fft, rate)
+    scale = 4.0 / (window.sum() ** 2)
+
+    def level(centres):
+        idx = (centres - n_fft // 2)[:, None] + np.arange(n_fft)
+        power = np.abs(np.fft.rfft(mono[idx] * window, axis=1)) ** 2 @ bands
+        return 10 * np.log10(np.maximum(power * scale, floor))
+
+    reach = int(round(reach_s * rate))
     out = []
     for t in times:
-        centre = int(round(t * rate / step))
-        lo, hi = max(1, centre - reach), min(count, centre + reach + 1)
-        if hi <= lo:
+        centre = int(round(t * rate))
+        centres = np.arange(centre - reach, centre + reach + 1, step)
+        centres = centres[(centres - lag - n_fft // 2 >= 0) & (centres + n_fft // 2 <= len(mono))]
+        if len(centres) == 0:
             out.append(t)
             continue
-        out.append((lo + int(np.argmax(rise[lo:hi]))) * step / rate)
+        rise = np.maximum(0.0, level(centres) - level(centres - lag)).mean(axis=1)
+        out.append(centres[int(np.argmax(rise))] / rate)
     return np.array(out)
 
 
 def beats(mono: np.ndarray, rate: int) -> tuple:
     """(beat times in seconds, bpm), or ([], None) with no clear beat."""
     env, hop, n_fft = onset_envelope(mono, rate)
-    if len(env) == 0 or np.percentile(env, 99) < MIN_ONSET_DB:
+    if len(env) == 0 or np.percentile(env, 99) - np.median(env) < MIN_PEAK:
         return [], None
     hop_s = hop / rate
     detrended = np.maximum(0.0, env - _moving_average(env, int(round(0.5 / hop_s))))
@@ -246,7 +315,7 @@ def beats(mono: np.ndarray, rate: int) -> tuple:
         return [], None
     # A frame's window is centred half a window after its first sample.
     times = (frames * hop + n_fft / 2) / rate
-    times = np.unique(np.round(_refine(mono, rate, times, n_fft / rate), 3))
+    times = np.unique(np.round(_refine(mono, rate, times, n_fft / rate, _floor(mono)), 3))
     gaps = np.diff(times)
     gaps = gaps[(gaps > 0.75 * period * hop_s) & (gaps < 1.25 * period * hop_s)]
     bpm = 60.0 / float(np.median(gaps)) if len(gaps) else 60.0 / (period * hop_s)
@@ -281,10 +350,14 @@ def main(argv) -> int:
     try:
         import soundfile as sf
         _emit({"progress": 0.0, "text": "Loading the score"})
-        x, rate = sf.read(argv[0], dtype="float32", always_2d=True)
+        try:
+            x, rate = sf.read(argv[0], dtype="float32", always_2d=True)
+        except Exception as exc:
+            _emit({"error": f"Couldn't read {os.path.basename(argv[0])} as audio. {exc}"})
+            return 1
         result = analyse(x, rate, lambda f, text: _emit({"progress": f, "text": text}))
     except Exception as exc:   # report anything as JSON, for the caller
-        _emit({"error": f"Could not measure {argv[0]}: {exc}"})
+        _emit({"error": f"Could not measure {os.path.basename(argv[0])}: {exc}"})
         return 1
     _emit({"done": True, **result})
     return 0

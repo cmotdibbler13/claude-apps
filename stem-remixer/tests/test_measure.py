@@ -42,6 +42,45 @@ def pad(levels_db, seconds, fade_s=0.0):
     return (gain * tone).astype(np.float32)
 
 
+def soft_piano(bpm=72.0, seconds=40.0, attack=0.015, jitter=0.0, seed=2):
+    """Felted-piano-like notes on every beat (soft attack, 0.6 s decay) over a
+    3-voice pad and a -60 dBFS noise floor, like a quiet generated score."""
+    rng = np.random.default_rng(seed)
+    n = int(RATE * seconds)
+    t = np.arange(n) / RATE
+    x = 0.01 * sum(np.sin(2 * np.pi * f * t + rng.uniform(0, 6)) for f in (130.8, 196.0, 261.6))
+    x += 10 ** (-60 / 20) * rng.standard_normal(n)
+    beats = np.arange(0.5, seconds - 1, 60.0 / bpm)
+    if jitter:
+        beats = beats + rng.uniform(-jitter, jitter, len(beats))
+    length = int(2.0 * RATE)
+    tt = np.arange(length) / RATE
+    shape = np.minimum(1.0, tt / attack) * np.exp(-np.maximum(0.0, tt - attack) / 0.6)
+    for b in beats:
+        f = rng.choice([261.6, 293.7, 329.6, 392.0, 440.0, 523.3])
+        note = sum(np.sin(2 * np.pi * f * k * tt) / k ** 1.5 for k in (1, 2, 3, 4))
+        i = int(round(b * RATE))
+        m = min(length, n - i)
+        x[i:i + m] += 0.05 * shape[:m] * note[:m]
+    return x.astype(np.float32), beats
+
+
+def test_soft_piano_gives_its_tempo_and_beats():
+    x, truth = soft_piano()
+    result = measure.analyse(x, RATE)
+    assert result["bpm"] == pytest.approx(72.0, rel=0.02)
+    beats = np.array(result["beats"])
+    near = [np.abs(beats - b).min() < 0.030 for b in truth[1:-1]]
+    assert np.mean(near) >= 0.9
+
+
+def test_loose_soft_piano_still_gives_a_tempo():
+    x, _ = soft_piano(attack=0.04, jitter=0.015)
+    result = measure.analyse(x, RATE)
+    assert result["bpm"] == pytest.approx(72.0, rel=0.03)
+    assert len(result["beats"]) > 30
+
+
 def test_click_track_gives_its_tempo_and_beats():
     x, truth = click_track()
     result = measure.analyse(x, RATE)
@@ -82,12 +121,39 @@ def test_a_drop_is_found_and_a_small_change_is_not():
     assert abs(moves[0]["t"] - 15.0) <= 1.5 and moves[0]["db"] == pytest.approx(-8, abs=1.5)
 
 
-def test_steady_sine_has_no_beats_and_no_error():
+@pytest.mark.parametrize("freq", [440, 441, 100.5, 1000])
+def test_steady_sine_has_no_beats_and_no_error(freq):
     t = np.arange(RATE * 20) / RATE
-    x = (0.3 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+    x = (0.3 * np.sin(2 * np.pi * freq * t)).astype(np.float32)
     result = measure.analyse(x, RATE)
     assert result["beats"] == []
     assert result["bpm"] is None
+
+
+def test_noise_and_a_bare_pad_have_no_beats():
+    rng = np.random.default_rng(0)
+    t = np.arange(RATE * 30) / RATE
+    noise = 0.1 * rng.standard_normal(len(t))
+    bare = 0.01 * sum(np.sin(2 * np.pi * f * t) for f in (130.8, 196.0, 261.6)) \
+        + 1e-3 * rng.standard_normal(len(t))
+    for x in (noise, bare, pad([-20], [30])):
+        result = measure.analyse(x.astype(np.float32), RATE)
+        assert result["beats"] == [] and result["bpm"] is None
+
+
+@pytest.mark.parametrize("db,seconds", [(10, 8), (12, 6), (12, 12)])
+def test_a_slow_swell_is_one_rise_at_its_start(db, seconds):
+    before, after = 15.0, 15.0
+    steps = int(RATE * seconds)
+    gain_db = np.concatenate([np.full(int(RATE * before), -30.0),
+                              np.linspace(-30.0, -30.0 + db, steps),
+                              np.full(int(RATE * after), -30.0 + db)])
+    t = np.arange(len(gain_db)) / RATE
+    x = 10 ** (gain_db / 20) * sum(np.sin(2 * np.pi * f * t) for f in (220, 277.2, 329.6)) * np.sqrt(2 / 3)
+    moves = measure.analyse(x.astype(np.float32), RATE)["moves"]
+    assert [m["kind"] for m in moves] == ["rise"]
+    assert abs(moves[0]["t"] - before) <= 2.0
+    assert moves[0]["db"] == pytest.approx(db, abs=1.5)
 
 
 def test_silence_and_tiny_files_do_not_fail():
@@ -116,7 +182,12 @@ def test_command_prints_progress_then_done(tmp_path):
     assert done["bpm"] == pytest.approx(120, rel=0.02)
 
 
-def test_command_reports_a_missing_file(tmp_path):
+def test_command_reports_a_missing_or_unreadable_file(tmp_path):
     out = run(str(tmp_path / "nothing.wav"))
     assert out.returncode != 0
-    assert "error" in json.loads(out.stdout.splitlines()[-1])
+    assert json.loads(out.stdout.splitlines()[-1])["error"].startswith("Couldn't read nothing.wav as audio. ")
+    junk = tmp_path / "junk.wav"
+    junk.write_text("not audio")
+    out = run(str(junk))
+    assert out.returncode != 0
+    assert json.loads(out.stdout.splitlines()[-1])["error"].startswith("Couldn't read junk.wav as audio. ")
