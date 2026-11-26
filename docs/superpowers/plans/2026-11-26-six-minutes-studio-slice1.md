@@ -125,7 +125,7 @@ Repo `README.md`: add a line for six-minutes-studio.
   - `openFilm(host, dir) -> Promise<FilmStore>`; creates `studio\`, `studio\blender\`, `studio\media\` if missing.
   - `FilmStore = { state, update(fn: (draft)=>void) -> Promise<State>, log(text) -> Promise<void>, readLog(limit) -> Promise<{t,text}[]> }`
   - `State = { v:1, film, part:2, waiting: string|null, assets: Asset[] }`
-  - `Asset = { id:"BR-07", kind:"broll"|"lineart"|"blender", line: string, lineIndex: number, desc, tool:"higgsfield"|"blender", sourceId?: string, takes: Take[], chosen: number, approved: boolean }`
+  - `Asset = { id:"BR-07", kind:"broll"|"lineart"|"blender", line: string, lineIndex: number, desc, tool:"higgsfield"|"blender", sourceId?: string, draftPrompt?: string, takes: Take[], chosen: number, approved: boolean }`
   - `Take = { n, prompt?, script?, note?, jobId?, file?, proxy?, status:"queued"|"running"|"done"|"failed", error?, at }`
 
 - [ ] **Step 1: Failing tests:** `creates studio folders and empty state`; `update persists to state.json via temp file then rename`; `concurrent updates are applied in order and none are lost` (fire 20 `update` calls without awaiting, each pushes a number; final array has 20 in order); `log appends JSON lines and readLog returns newest first`; `corrupt state.json is renamed state.bad-<t>.json and a fresh state is started, with a log line saying so`.
@@ -158,7 +158,7 @@ Repo `README.md`: add a line for six-minutes-studio.
 - Consumes: `Host.claude`, `FilmStore`.
 - Produces:
   - `askJson(host, {instructions, data, tier, validate}) -> Promise<any>`: one memoryless call; throws `ClaudeError{code, message}` on refusal, non-JSON or failed `validate`.
-  - `buildShotList(host, store, {scriptText, handoverText}) -> Promise<Asset[]>`: asks at tier `"default"` for `[{id, kind, line, lineIndex, desc, tool, sourceId?, prompt}]`; writes assets with one queued-free take 0 (`takes: []`, prompt kept on the asset as `draftPrompt`); ids `BR-01…` in script order; `kind:"blender"` requires `sourceId` of a `lineart` asset.
+  - `buildShotList(host, store, {scriptText, handoverText}) -> Promise<Asset[]>`: asks at tier `"default"` for `[{id, kind, line, lineIndex, desc, tool, sourceId?, prompt}]`; writes the assets with no takes yet (`takes: []`) and each shot's prompt kept as `draftPrompt`; ids `BR-01…` in script order; `kind:"blender"` requires `sourceId` of a `lineart` asset.
   - `orderByScript(assets) -> Asset[]`.
 
 - [ ] **Step 1: Failing tests:** `askJson sends instructions and data only, no prior turns`; `rejects shot list without required fields`; `refusal surfaces as ClaudeError code refusal`; `blender shot without lineart source is rejected`; `orderByScript sorts by lineIndex then id`.
