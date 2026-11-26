@@ -47,3 +47,13 @@ Open **Probe**, press **Run checks**. All should pass:
 ## Known limits in this version
 - Pressing **Check again** many times quickly asks Higgsfield for the job's status each time (free, but more often than every 20 seconds).
 - Blender runs Python that Claude writes, with full access to the PC.
+
+## ComfyUI b-roll (version 2)
+Have ComfyUI Desktop running, with `S:\Youtube video ideas\ComfyUI workflows\broll_ltx.json` in place. Nothing here spends credits.
+1. **Probe:** the "ComfyUI" check passes and shows the ComfyUI version.
+2. **Review:** tick **Prefer ComfyUI for b-roll** on a film. B-roll shots without takes switch to ComfyUI; line-art and Blender shots don't change. Untick it and they switch back.
+3. On one b-roll card, use the **Higgsfield / ComfyUI** switch to choose ComfyUI, then **Make first take**. Live jobs shows it on the GPU queue with "about N min left"; it takes about 4 minutes.
+4. The take lands as `<film>\studio\media\HF-nn_t1.mp4`: 1920×1080, no sound. ComfyUI's own copy is still in its `output\broll\` folder.
+5. Start a ComfyUI take, close the app, reopen it: the job reconnects to the same render (no second render appears in ComfyUI's queue).
+6. Start a ComfyUI take and a Blender take: they run one after the other, never together.
+7. Quit ComfyUI and start a ComfyUI take: it fails at once with "ComfyUI isn't running at 127.0.0.1:8188…".
