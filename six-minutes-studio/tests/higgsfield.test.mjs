@@ -10,20 +10,23 @@ const UUID = "123e4567-e89b-12d3-a456-426614174000";
 const settings = { videoModel: "kling3_0", imageModel: "gpt_image_2", blenderPath: "blender" };
 const job = (kind = "broll", extra = {}) => ({ id: "j1", tool: "higgsfield", input: { kind, prompt: "a dark harbour", out: OUT }, ...extra });
 
-function setup({ mcp, sleeps = [], exec } = {}) {
+function setup({ mcp, sleeps = [], spawn } = {}) {
   const host = new FakeHost();
   const calls = [];
   const refs = [];
   const progress = [];
   host.mcpScript((s, t, i) => { calls.push({ s, t, i }); return mcp(t, i, calls); });
-  host.execScript(exec ?? (async (cmd) => {
-    const m = cmd.match(/-o "([^"]+)"/);
-    if (m) { await host.fs.write(m[1], "data"); }
-    return { stdout: "", stderr: "", code: 0 };
-  }));
+  const spawns = [];
+  host.spawnScript(async (cmd, args, o, p) => {
+    spawns.push({ cmd, args });
+    if (spawn) return spawn(cmd, args, p, host);
+    const i = args.indexOf("-o");
+    if (i >= 0) await host.fs.write(args[i + 1], "data");
+    p.exit(0);
+  });
   const runner = makeHiggsfieldRunner({ settings, sleep: async (ms) => { sleeps.push(ms); host.t += ms; } });
   const ctx = { host, progress: (p, e) => progress.push([p, e]), setRef: (r) => refs.push(r) };
-  return { host, calls, refs, progress, runner, ctx, sleeps };
+  return { host, calls, refs, progress, runner, ctx, sleeps, spawns };
 }
 const done = (url = "https://cdn.example.com/x/out.mp4?sig=1") => ({ jobs: [{ job_id: UUID, status: "completed", url }], all_terminal: true });
 const running = () => ({ jobs: [{ job_id: UUID, status: "in_progress" }], all_terminal: false, poll_after_seconds: 5 });
@@ -130,10 +133,25 @@ test("non-https url refused", async () => {
 });
 
 test("download failure rejects", async () => {
-  const t = setup({ mcp: (tool) => (tool === "generate_video" ? { job_id: UUID } : done()), exec: async () => ({ stdout: "", stderr: "404", code: 22 }) });
-  await assert.rejects(t.runner.start(job(), t.ctx), /download/i);
-  const u = setup({ mcp: (tool) => (tool === "generate_video" ? { job_id: UUID } : done()), exec: async () => ({ stdout: "", stderr: "", code: 0 }) });
+  const t = setup({ mcp: (tool) => (tool === "generate_video" ? { job_id: UUID } : done()), spawn: (c, a, p) => { p.err("404"); p.exit(22); } });
+  await assert.rejects(t.runner.start(job(), t.ctx), /Download failed \(curl exit 22\): 404/);
+  const u = setup({ mcp: (tool) => (tool === "generate_video" ? { job_id: UUID } : done()), spawn: (c, a, p) => p.exit(0) });
   await assert.rejects(u.runner.start(job(), u.ctx), /download/i);
+});
+
+test("curl runs with an argument list, no shell", async () => {
+  const t = setup({ mcp: (tool) => (tool === "generate_video" ? { job_id: UUID } : done()) });
+  await t.runner.start(job(), t.ctx);
+  assert.equal(t.spawns.length, 1);
+  assert.equal(t.spawns[0].cmd, "curl");
+  assert.deepEqual(t.spawns[0].args.slice(-3), ["-o", OUT + ".mp4", "https://cdn.example.com/x/out.mp4?sig=1"]);
+});
+
+test("an output folder that can't be made fails before generating", async () => {
+  const t = setup({ mcp: (tool) => (tool === "generate_video" ? { job_id: UUID } : done()) });
+  t.host.fs.mkdir = async () => { throw new Error("EACCES: permission denied"); };
+  await assert.rejects(t.runner.start(job(), t.ctx), /EACCES.*not generating/);
+  assert.equal(t.calls.length, 0);
 });
 
 test("30 minute cap rejects keeping the ref", async () => {
@@ -194,27 +212,19 @@ test("start rejects with the unreachable message after 5 consecutive jobs_wait e
 
 test("unsafe result URL characters are rejected without running curl", async () => {
   for (const bad of ["https://cdn.example.com/a.mp4?x=%41", "https://cdn.example.com/a'b.mp4", "https://cdn.example.com/a`b.mp4", "https://cdn.example.com/a$b.mp4", "https://cdn.example.com/a!b.mp4", "https://cdn.example.com/a^b.mp4"]) {
-    let execs = 0;
-    const t = setup({ mcp: (tool) => (tool === "generate_video" ? { job_id: UUID } : done(bad)), exec: async () => { execs++; return { code: 0 }; } });
+    const t = setup({ mcp: (tool) => (tool === "generate_video" ? { job_id: UUID } : done(bad)) });
     await assert.rejects(t.runner.start(job(), t.ctx), /unsafe/, bad);
-    assert.equal(execs, 0);
+    assert.equal(t.spawns.length, 0);
   }
 });
 
-test("a URL with an apostrophe is not silently truncated", async () => {
-  let cmd = "";
-  const t = setup({ mcp: (tool) => (tool === "generate_video" ? { job_id: UUID } : done("https://cdn.example.com/a'b.mp4")), exec: async (c) => { cmd = c; return { code: 0 }; } });
-  await assert.rejects(t.runner.start(job(), t.ctx), /unsafe/);
-  assert.equal(cmd, "");
-});
-
-test("unsafe output path characters are rejected without running curl", async () => {
-  for (const ch of ['"', "%", "&", "|", "<", ">", "^", "`", "$", "!"]) {
-    let execs = 0;
-    const t = setup({ mcp: (tool) => (tool === "generate_video" ? { job_id: UUID } : done()), exec: async () => { execs++; return { code: 0 }; } });
-    const j = job(); j.input.out = OUT + ch + "x";
-    await assert.rejects(t.runner.start(j, t.ctx), /unsafe/, ch);
-    assert.equal(execs, 0);
+test("output folders with & % ! ^ $ ` download fine: the path goes in as one argument", async () => {
+  for (const ch of ["%", "&", "^", "`", "$", "!"]) {
+    const t = setup({ mcp: (tool) => (tool === "generate_video" ? { job_id: UUID } : done()) });
+    const j = job(); j.input.out = MEDIA + `\Tom ${ch} Jerry\HF-07_t3`;
+    const r = await t.runner.start(j, t.ctx);
+    assert.equal(r.file, j.input.out + ".mp4", ch);
+    assert.equal(t.spawns[0].args.at(-2), j.input.out + ".mp4");
   }
 });
 

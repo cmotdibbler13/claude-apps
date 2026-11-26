@@ -1,5 +1,6 @@
 // Preview helpers: 640px ffmpeg proxies for video, blob URLs for the webview, open-in-default-app.
 import { join } from "./paths.js";
+import { runProcess } from "./proc.js";
 
 const VIDEO = new Set(["mp4", "mov", "webm", "mkv"]);
 const IMAGE = new Set(["png", "jpg", "jpeg", "webp", "gif"]);
@@ -7,7 +8,6 @@ const MIME = {
   mp4: "video/mp4", webm: "video/webm",
   png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif",
 };
-const UNSAFE = /["%&|<>^`$!]/;
 const TEN_MIN = 10 * 60 * 1000;
 
 const split = (file) => {
@@ -29,16 +29,14 @@ async function build(host, file, dir, name) {
   const src = await mtimeOf(host, file);
   const have = await mtimeOf(host, out);
   if (have !== null && src !== null && have >= src) return out;
-  if (UNSAFE.test(file) || UNSAFE.test(out)) {
-    throw new Error("The file path contains characters that are unsafe for the shell (\" % & | < > ^ ` $ !); rename it to make a preview.");
-  }
   await host.fs.mkdir(join(dir, "proxy"));
   // Encode to a .part file so a failed or interrupted run never leaves a truncated proxy at the final name.
   const part = join(dir, "proxy", `${name}_640.part.mp4`);
   const discard = async () => { try { if (await host.fs.exists(part)) await host.fs.trash(part); } catch { /* best effort */ } };
   let r;
   try {
-    r = await host.exec(`ffmpeg -y -i "${file}" -vf scale=640:-2 -c:v libx264 -crf 28 -an "${part}"`, { timeout: TEN_MIN });
+    // An argument list, no shell: folder names with & % ! ^ $ ` reach ffmpeg exactly as they are.
+    r = await runProcess(host, "ffmpeg", ["-y", "-i", file, "-vf", "scale=640:-2", "-c:v", "libx264", "-crf", "28", "-an", part], { timeout: TEN_MIN });
   } catch (e) { await discard(); throw e; }
   if (r.code !== 0) {
     await discard();

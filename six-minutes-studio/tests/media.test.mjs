@@ -12,10 +12,10 @@ function setup() {
   h.files.set(SRC, new Uint8Array([1, 2, 3]));
   h.dirs.add("S:/Films/One");
   const calls = [];
-  h.execScript(async (cmd, opts) => {
-    calls.push({ cmd, opts });
+  h.spawnScript(async (cmd, args, opts, p) => {
+    calls.push({ cmd, args });
     await h.fs.write(PART, new Uint8Array([9]));
-    return { stdout: "", stderr: "", code: 0 };
+    p.exit(0);
   });
   return { h, calls };
 }
@@ -24,8 +24,8 @@ test("builds ffmpeg proxy once and reuses it", async () => {
   const { h, calls } = setup();
   assert.equal(await ensureProxy(h, SRC), PROXY);
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].cmd, `ffmpeg -y -i "${SRC}" -vf scale=640:-2 -c:v libx264 -crf 28 -an "${PART}"`);
-  assert.equal(calls[0].opts.timeout, 600000);
+  assert.equal(calls[0].cmd, "ffmpeg");
+  assert.deepEqual(calls[0].args, ["-y", "-i", SRC, "-vf", "scale=640:-2", "-c:v", "libx264", "-crf", "28", "-an", PART]);
   assert.equal(await ensureProxy(h, SRC), PROXY);
   assert.equal(calls.length, 1);
 });
@@ -58,23 +58,25 @@ test("reuses a proxy newer than the source, rebuilds when the source is newer", 
   assert.equal(calls.length, 1);
 });
 
-test("unsafe paths are rejected without exec", async () => {
-  const { h, calls } = setup();
-  for (const bad of ['S:\\a\\x&y.mp4', 'S:\\a\\x%y.mp4', 'S:\\a\\x"y.mp4', "S:\\a\\x$y.mp4"]) {
-    await assert.rejects(ensureProxy(h, bad), /unsafe/i);
-  }
-  assert.equal(calls.length, 0);
+test("paths with & % ! ^ $ are passed to ffmpeg as single arguments", async () => {
+  const h = new FakeHost();
+  const src = "S:\\Tom & Jerry 100%!\\x^y$z.mp4";
+  h.files.set(src, new Uint8Array([1]));
+  const seen = [];
+  h.spawnScript(async (cmd, args, o, p) => { seen.push(args); await h.fs.write(args.at(-1), new Uint8Array([9])); p.exit(0); });
+  assert.equal(await ensureProxy(h, src), "S:\\Tom & Jerry 100%!\\proxy\\x^y$z_640.mp4");
+  assert.equal(seen[0][2], src);
 });
 
 test("ffmpeg failure rejects with the last stderr lines", async () => {
   const { h } = setup();
-  h.execScript(async () => ({ stdout: "", stderr: "a\nb\nc\nd\ne\nf\ng", code: 1 }));
+  h.spawnScript((c, a, o, p) => { p.err("a\nb\nc\nd\ne\nf\ng"); p.exit(1); });
   await assert.rejects(ensureProxy(h, SRC), (e) => /c\nd\ne\nf\ng/.test(e.message) && !/\nb\n/.test(e.message));
 });
 
 test("rejects when the proxy is missing after a successful exec", async () => {
   const { h } = setup();
-  h.execScript(async () => ({ stdout: "", stderr: "", code: 0 }));
+  h.spawnScript((c, a, o, p) => p.exit(0));
   await assert.rejects(ensureProxy(h, SRC), /proxy/i);
 });
 
@@ -110,10 +112,11 @@ test("openFull opens the file via host.open", async () => {
 
 test("a failed encode leaves no proxy at the final name and the next call re-encodes", async () => {
   const { h, calls } = setup();
-  h.execScript(async (cmd, opts) => {
-    calls.push({ cmd, opts });
+  h.spawnScript(async (cmd, args, opts, p) => {
+    calls.push({ cmd, args });
     await h.fs.write(PART, new Uint8Array([9]));
-    return { stdout: "", stderr: "boom", code: 1 };
+    p.err("boom");
+    p.exit(1);
   });
   await assert.rejects(ensureProxy(h, SRC), /boom/);
   assert.equal(await h.fs.exists(PROXY), false);
@@ -122,9 +125,10 @@ test("a failed encode leaves no proxy at the final name and the next call re-enc
   assert.equal(calls.length, 2);
 });
 
-test("a timed-out encode (exec rejects) leaves no proxy at the final name", async () => {
+test("an encode that stops without an exit code (killed, or never started) leaves no proxy at the final name", async () => {
   const { h } = setup();
-  h.execScript(async () => { await h.fs.write(PART, new Uint8Array([9])); throw new Error("timeout"); });
-  await assert.rejects(ensureProxy(h, SRC), /timeout/);
+  h.spawnScript(async (c, a, o, p) => { await h.fs.write(PART, new Uint8Array([9])); p.err("killed"); p.exit(null); });
+  await assert.rejects(ensureProxy(h, SRC), /killed/);
+  assert.equal(await h.fs.exists(PART), false);
   assert.equal(await h.fs.exists(PROXY), false);
 });

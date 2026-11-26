@@ -1,10 +1,12 @@
 // Higgsfield runner (connector lane): generate_video / generate_image, wait with jobs_wait, download with curl.
 // A generation costs credits, so generate is called at most once per start() and never retried.
 import { DEFAULT_SETTINGS } from "../settings.js";
+import { runProcess } from "../proc.js";
 
 const MIN_POLL_MS = 20_000;
 const CAP_MS = 30 * 60 * 1000;
 const MAX_WAIT_ERRORS = 5;
+const DOWNLOAD_MS = 15 * 60 * 1000;
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const OK = new Set(["completed", "succeeded", "success", "done", "finished"]);
 const BAD = new Set(["failed", "nsfw", "ip_detected", "cancelled", "canceled", "error", "rejected"]);
@@ -41,6 +43,8 @@ function parseEntry(p) {
   return { status, error: typeof e.error === "string" ? e.error : e.error?.message, url, httpUrl };
 }
 
+const parentOf = (p) => String(p).replace(/[\\/][^\\/]*$/, "");
+
 const extOf = (url, kind) => {
   const m = url.split(/[?#]/)[0].match(/\.([a-z0-9]{2,5})$/i);
   return m ? m[1].toLowerCase() : kind === "lineart" ? "png" : "mp4";
@@ -52,12 +56,11 @@ export function makeHiggsfieldRunner({ settings = DEFAULT_SETTINGS, sleep = real
   async function download(host, url, input) {
     if (!/^https:\/\//i.test(url)) throw new Error("Higgsfield returned a non-https result URL; refusing to download it.");
     if (/["%`$!^'\s]/.test(url)) throw new Error("Higgsfield returned a result URL with characters that are unsafe to pass to curl; refusing to download it.");
-    if (/["%&|<>^`$!]/.test(input.out)) throw new Error("The output path contains characters that are unsafe for the shell (\" % & | < > ^ ` $ !); refusing to download.");
     const file = `${input.out}.${extOf(url, input.kind)}`;
-    const dir = file.replace(/[\\/][^\\/]*$/, "");
-    await host.fs.mkdir(dir);
-    const r = await host.exec(`curl -L --fail -o "${file}" "${url}"`, { cwd: dir });
-    if (r.code !== 0) throw new Error(`Download failed (curl exit ${r.code}): ${String(r.stderr ?? "").slice(0, 200)}`);
+    await host.fs.mkdir(parentOf(file));
+    // An argument list, no shell: the path and URL reach curl exactly as they are.
+    const r = await runProcess(host, "curl", ["-L", "--fail", "-sS", "-o", file, url], { timeout: DOWNLOAD_MS });
+    if (r.code !== 0) throw new Error(`Download failed (curl exit ${r.code}): ${String(r.stderr ?? "").trim().slice(0, 200)}`);
     if (!(await host.fs.exists(file))) throw new Error("Download failed: the file was not written.");
     return { file };
   }
@@ -103,7 +106,10 @@ export function makeHiggsfieldRunner({ settings = DEFAULT_SETTINGS, sleep = real
 
     async start(job, ctx) {
       const { host } = ctx;
-      const { kind, prompt } = job.input ?? {};
+      const { kind, prompt, out } = job.input ?? {};
+      // A take folder that can't be made must fail before any credits are spent.
+      if (typeof out !== "string" || !out) throw new Error("This job has no output path; not generating.");
+      try { await host.fs.mkdir(parentOf(out)); } catch (e) { throw new Error(`Couldn't make the folder for this take (${msg(e)}); not generating.`); }
       const video = kind === "broll";
       const params = { model: video ? settings.videoModel : settings.imageModel, prompt, aspect_ratio: "16:9", count: 1, use_unlim: false };
       if (video) { params.mode = "pro"; params.sound = false; }
