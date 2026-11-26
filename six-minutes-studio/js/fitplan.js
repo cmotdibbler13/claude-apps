@@ -10,12 +10,15 @@ const LENGTH_SLACK_S = 0.5;
 const MOVE_WINDOW_S = 15;
 const NEW_TAKE_S = 5;
 const KEEP_NEAR_S = 0.05;
+const MIN_STEP_S = 0.1;
+const NO_BPM_WINDOW_S = 0.25;
+const MAX_BEAT_TIMES = 400;
 
 export const FIT_INSTRUCTIONS = `You fit a film score to a Six Minutes On... documentary film (dark, calm, precise, British English).
 The score is already made. You plan how to cut, repeat and gently speed up or slow down parts of it so it runs the length of the film and its musical moves land where the sections start.
 
 You get:
-- measure: the score's length in seconds (duration_s), its tempo (bpm, or null when there is no clear beat), how many beats were found, its loudness in dB once a second (loud[0] is 0 s, loud[1] is 1 s and so on), and its big moves (t in seconds, kind "rise", "drop" or "fade", and the change in dB).
+- measure: the score's length in seconds (duration_s), its tempo (bpm, or null when there is no clear beat), how many beats were found (beats), the first and last beat times (beatSpan, or null), up to 400 beat times in seconds (beatTimes, evenly picked when there are more), its loudness in dB once a second (loud[0] is 0 s, loud[1] is 1 s and so on), and its big moves (t in seconds, kind "rise", "drop" or "fade", and the change in dB).
 - targets: the film's length in seconds (filmS) and each section's start in film time (sections, name and startS).
 - note: Jon's note for this fit, which may be empty. Follow it.
 - previous: the last plan, or null. When there is one, change it to follow the note rather than starting again.
@@ -23,10 +26,11 @@ You get:
 The plan is a list of steps played one after another. Each step plays the score from from_s to to_s (score time, in seconds) at a tempo, then crossfades into the next step.
 Rules:
 - tempo is from 0.90 to 1.10. Keep it near 1.00 where you can.
-- xfade_s is 0.03 when the cut is on a beat, or 2.5 in an ambient stretch with no clear beat.
+- xfade_s is 0.03 when the cut is on a beat, or 2.5 in an ambient stretch with no clear beat. Put on-beat cuts on times from beatTimes.
 - A step lasts (to_s - from_s) / tempo seconds in the film. Each crossfade overlaps the next step by its xfade_s. The total, the sum of the step lengths minus the overlaps, must be within 0.5 s of filmS.
 - Each section's musical move (the nearest rise or drop) should land on that section's start in film time.
 - Keep the opening: the first step starts at 0. Keep the final fade: the last step ends at duration_s.
+- Every step stays inside the score (0 to duration_s) and lasts at least 0.1 s.
 - Prefer cutting or repeating whole bars from steady stretches. Do not cut through a move.
 - Steps may reuse a part of the score.
 
@@ -77,11 +81,24 @@ function nearest(beats, t) {
   return best;
 }
 
-// Moves each from_s/to_s to the nearest beat. Times within 0.05 s of a `keep` time (the score's start and end) stay put.
-export function snapToBeats(steps, beats, { keep = [] } = {}) {
+// Moves both ends of each on-beat (0.03 s) join to the nearest beat, when that beat is within half a beat
+// (30 / bpm s, or 0.25 s with no bpm). Ambient (2.5 s) joins, the first start and the last end are left alone,
+// and so is any time within 0.05 s of a `keep` time (the score's start and end).
+export function snapToBeats(steps, beats, { keep = [], bpm = null } = {}) {
   if (!Array.isArray(beats) || !beats.length) return steps;
-  const snap = (t) => (keep.some((k) => Math.abs(k - t) <= KEEP_NEAR_S) ? t : nearest(beats, t));
-  return steps.map((s) => ({ ...s, from_s: snap(s.from_s), to_s: snap(s.to_s) }));
+  const window = bpm > 0 ? 30 / bpm : NO_BPM_WINDOW_S;
+  const snap = (t) => {
+    if (keep.some((k) => Math.abs(k - t) <= KEEP_NEAR_S)) return t;
+    const b = nearest(beats, t);
+    return Math.abs(b - t) <= window ? b : t;
+  };
+  const out = steps.map((s) => ({ ...s }));
+  for (let i = 0; i < out.length - 1; i++) {
+    if (out[i].xfade_s !== XFADES[0]) continue;
+    out[i].to_s = snap(out[i].to_s);
+    out[i + 1].from_s = snap(out[i + 1].from_s);
+  }
+  return out;
 }
 
 function validatePlan(r) {
@@ -100,10 +117,16 @@ function summary(measure) {
   const loud = measure.loud ?? [];
   const perSecond = [];
   for (let i = 0; i < loud.length; i += 10) perSecond.push(Math.round(loud[i] * 10) / 10);
+  const beats = measure.beats ?? [];
+  const r2 = (t) => Math.round(t * 100) / 100;
+  const picked = beats.length <= MAX_BEAT_TIMES ? beats
+    : Array.from({ length: MAX_BEAT_TIMES }, (_, i) => beats[Math.floor((i * beats.length) / MAX_BEAT_TIMES)]);
   return {
     duration_s: measure.duration_s,
     bpm: measure.bpm ?? null,
-    beats: (measure.beats ?? []).length,
+    beats: beats.length,
+    beatSpan: beats.length ? [r2(beats[0]), r2(beats[beats.length - 1])] : null,
+    beatTimes: picked.map(r2),
     loud: perSecond,
     moves: measure.moves ?? [],
   };
@@ -116,14 +139,18 @@ export async function planFit(host, { measure, targets, note = "", previous = nu
     tier: "default",
     validate: validatePlan,
   });
+  const end = measure.duration_s;
   const clamped = r.steps.map((s) => ({
     from_s: s.from_s,
-    to_s: s.to_s,
+    to_s: Math.min(s.to_s, end),
     tempo: Math.min(TEMPO[1], Math.max(TEMPO[0], s.tempo)),
     xfade_s: Math.abs(s.xfade_s - XFADES[0]) <= Math.abs(s.xfade_s - XFADES[1]) ? XFADES[0] : XFADES[1],
   }));
-  const steps = snapToBeats(clamped, measure.beats, { keep: [0, measure.duration_s] });
-  if (steps.some((s) => s.to_s <= s.from_s)) throw new Error("A step vanished when its cuts were moved onto beats; try again or add a note.");
+  const steps = snapToBeats(clamped, measure.beats, { keep: [0, end], bpm: measure.bpm });
+  steps.forEach((s, i) => {
+    if (s.from_s >= end - MIN_STEP_S) throw new Error(`Step ${i + 1} starts at the end of the score or after it; try again or add a note.`);
+    if (s.to_s - s.from_s < MIN_STEP_S) throw new Error(`Step ${i + 1} is shorter than 0.1 s; try again or add a note.`);
+  });
   const off = renderedLength(steps) - targets.filmS;
   if (Math.abs(off) > LENGTH_SLACK_S) {
     throw new Error(`The fit came out ${Math.abs(off).toFixed(1)} s ${off > 0 ? "too long" : "too short"}; try again or add a note.`);
@@ -149,10 +176,13 @@ export function fitSheet(steps, measure, targets) {
     let landsS = null;
     for (const m of moves) {
       const at = landing(steps, m.t);
-      if (at != null && Math.abs(at - sec.startS) <= MOVE_WINDOW_S) { landsS = at; break; }
+      if (at == null || Math.abs(at - sec.startS) > MOVE_WINDOW_S) continue;
+      if (landsS == null || Math.abs(at - sec.startS) < Math.abs(landsS - sec.startS)) landsS = at;
     }
-    return { section: sec.name, targetS: sec.startS, landsS, missS: landsS == null ? null : landsS - sec.startS };
+    const noMove = landsS == null;
+    return { section: sec.name, targetS: sec.startS, landsS, missS: noMove ? null : landsS - sec.startS, noMove };
   });
   const worstS = rows.reduce((w, r) => (r.missS == null ? w : Math.max(w, Math.abs(r.missS))), 0);
-  return { rows, worstS, suggestNewTake: worstS > NEW_TAKE_S };
+  const missing = rows.filter((r) => r.noMove).map((r) => r.section);
+  return { rows, worstS, suggestNewTake: worstS > NEW_TAKE_S, missing };
 }
