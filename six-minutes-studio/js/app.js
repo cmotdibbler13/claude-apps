@@ -5,6 +5,7 @@ import { loadSettings } from "./settings.js";
 import { scanFilms } from "./films.js";
 import { makeFilmSession, readSavedJobs } from "./session.js";
 import { makeJobs } from "./jobs.js";
+import { notifyRules } from "./notify.js";
 import { buildShotList } from "./shots.js";
 import { startTake, approve, unapprove, choose } from "./redo.js";
 import { ensureProxy, toBlobUrl, openFull, revokeAll } from "./media.js";
@@ -45,6 +46,53 @@ function drawIcon() {
   g.fillStyle = "#d5a867"; g.font = "300 120px Inter, sans-serif"; g.textAlign = "center"; g.textBaseline = "middle";
   g.fillText("6", 128, 136);
   return c.toDataURL("image/png");
+}
+
+// ---- notifications and tray ----
+// Nothing is asked of the person until their first job start (a click): restore() at boot never notifies.
+let armed = false, prevJobs = [], trayAt = 0, trayTimer = null, trayIcon = null;
+
+function drawTrayIcon() {
+  if (trayIcon) return trayIcon;
+  const c = document.createElement("canvas");
+  c.width = c.height = 32;
+  const g = c.getContext("2d");
+  g.fillStyle = "#d5a867"; g.beginPath(); g.arc(16, 16, 11, 0, Math.PI * 2); g.fill();
+  return (trayIcon = c.toDataURL("image/png"));
+}
+
+function updateTray() {
+  if (!armed || !app.host?.tray) return;
+  const wait = trayAt + 2000 - Date.now();
+  if (wait > 0) { if (!trayTimer) trayTimer = setTimeout(() => { trayTimer = null; updateTray(); }, wait); return; }
+  trayAt = Date.now();
+  try {
+    const n = jobsView.activeCount(app.jobs ? app.jobs.list() : []);
+    const open = () => { try { app.host.showWindow?.().catch(() => {}); } catch { /* ignore */ } };
+    Promise.resolve(app.host.tray({
+      icon: drawTrayIcon(), iconIsTemplate: false,
+      toolTip: `Six Minutes Studio \u2014 ${n} running`,
+      menu: [
+        { label: "Open", click: open },
+        { label: "Live jobs", click: () => { open(); showView("jobs"); } },
+      ],
+    })).catch(() => {});
+  } catch { /* tray failures never break the app */ }
+}
+
+function userStarted() {
+  if (armed) return;
+  armed = true;
+  prevJobs = app.jobs ? app.jobs.list() : [];
+  updateTray();
+}
+
+function onJobsChanged(list) {
+  if (!armed) { prevJobs = list; return; }
+  const msgs = notifyRules(prevJobs, list);
+  prevJobs = list;
+  for (const m of msgs) { try { Promise.resolve(app.host.notify(m)).catch(() => {}); } catch { /* a no is final */ } }
+  updateTray();
 }
 
 // ---- rendering ----
@@ -109,7 +157,7 @@ async function loadRoot() {
     });
     const saved = await readSavedJobs(host, file);
     app.session = makeFilmSession({ host, jobs: app.jobs, onSaved: () => render() });
-    app.jobs.onChange(() => render());
+    app.jobs.onChange((list) => { onJobsChanged(list); render(); });
     app.jobs.onPersistError(() => render());
     app.jobs.restore(saved);
   }
@@ -147,6 +195,7 @@ const jobsActions = {
   retry(id) {
     if (app.retried.has(id)) return;
     app.retried.add(id);
+    userStarted();
     try { app.jobs.retry(id); } catch (e) { console.error(e); }
     render();
   },
@@ -169,6 +218,7 @@ async function findScript(dir, handoverText) {
 async function makeShotList() {
   const r = app.review;
   if (r.making) return;
+  userStarted();
   r.making = true; r.listError = null; render();
   try {
     const dir = app.film.dir;
@@ -211,12 +261,13 @@ const reviewActions = {
     try { localStorage.setItem(LAYOUT_KEY, v); } catch { /* storage blocked: per-session only */ }
     render();
   },
-  first: cardAction((id) => startTake(ctx(), id)),
+  first: cardAction((id) => { userStarted(); return startTake(ctx(), id); }),
   approve: cardAction((id) => approve(ctx(), id)),
   unapprove: cardAction((id) => unapprove(ctx(), id)),
   choose: cardAction((id, n) => choose(ctx(), id, n)),
   redo: cardAction(async (id, note) => {
     if (!note || !note.trim()) throw new Error("Write a note saying what should change.");
+    userStarted();
     await startTake(ctx(), id, { note: note.trim() });
     app.review.noteFor = null; app.review.draft = "";
   }),

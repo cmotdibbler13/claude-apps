@@ -116,6 +116,7 @@ function fakeClaude({ fs = true } = {}) {
     },
     notification: { show: async (o) => log.push(["notify", o.body]) },
     tray: { set: async (o) => (log.push(["tray", o.toolTip]), true) },
+    window: { show: async () => log.push(["show"]) },
   };
   let desktopProc;
   const mcp = {
@@ -148,10 +149,11 @@ test("makeHost adapts fs, mcp payload, claude tier, and defers permissions to fi
   const sampleCalls = f.log.filter((e) => Array.isArray(e) && e[0].startsWith("sample"));
   assert.equal(sampleCalls[0][2].modelTier, "quick");
   assert.equal(sampleCalls[1][2].modelTier, "complex");
-  assert.ok(!f.log.some((e) => Array.isArray(e) && (e[0] === "notify" || e[0] === "tray")));
+  assert.ok(!f.log.some((e) => Array.isArray(e) && (e[0] === "notify" || e[0] === "tray" || e[0] === "show")));
   await h.notify("hi");
   await h.tray({ toolTip: "t" });
-  assert.deepEqual(f.log.filter((e) => Array.isArray(e) && (e[0] === "notify" || e[0] === "tray")), [["notify", "hi"], ["tray", "t"]]);
+  await h.showWindow();
+  assert.deepEqual(f.log.filter((e) => Array.isArray(e) && (e[0] === "notify" || e[0] === "tray" || e[0] === "show")), [["notify", "hi"], ["tray", "t"], ["show"]]);
 });
 
 test("makeHost spawn wraps handlers; exec passes cwd and timeout", async () => {

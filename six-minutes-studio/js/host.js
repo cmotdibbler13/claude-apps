@@ -89,6 +89,7 @@ export async function makeHost(claude = globalThis.claude) {
     async tray(opts) {
       if (await allowed("menu-bar")) await desktop.tray.set(opts);
     },
+    async showWindow() { await desktop.window.show(); },
     now: () => Date.now(),
   };
 }

@@ -131,5 +131,6 @@ export class FakeHost {
   async open(p) { this.opened.push(p); }
   async notify(body) { this.notified.push(body); }
   async tray(opts) { this.trays.push(opts); }
+  async showWindow() { this.shown = (this.shown ?? 0) + 1; }
   now() { return this.t; }
 }
