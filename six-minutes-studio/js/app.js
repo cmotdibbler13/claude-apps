@@ -3,10 +3,10 @@ import { makeHost } from "./host.js";
 import { resolveRoot, join } from "./paths.js";
 import { loadSettings } from "./settings.js";
 import { scanFilms } from "./films.js";
-import { openFilm } from "./store.js";
+import { makeFilmSession, readSavedJobs } from "./session.js";
 import { makeJobs } from "./jobs.js";
 import { buildShotList } from "./shots.js";
-import { startTake, watchJobs, approve, unapprove, choose } from "./redo.js";
+import { startTake, approve, unapprove, choose } from "./redo.js";
 import { ensureProxy, toBlobUrl, openFull, revokeAll } from "./media.js";
 import { makeHiggsfieldRunner } from "./tools/higgsfield.js";
 import { makeBlenderRunner } from "./tools/blender.js";
@@ -21,7 +21,7 @@ const LAYOUT_KEY = "six-minutes-studio.reviewLayout";
 
 const app = {
   host: null, root: null, jobs: null, films: [], view: "films",
-  film: null, store: null, unwatch: null, retried: new Set(),
+  film: null, store: null, session: null, retried: new Set(),
   review: { making: false, listError: null, cardErrors: new Map(), pending: new Set(), noteFor: null, draft: "" },
   previews: new Map(),
   layout: (() => { try { return localStorage.getItem(LAYOUT_KEY) || "script"; } catch { return "script"; } })(),
@@ -107,8 +107,8 @@ async function loadRoot() {
       runners: { higgsfield: makeHiggsfieldRunner({ settings }), blender: makeBlenderRunner({ settings }) },
       file,
     });
-    let saved = [];
-    try { const v = JSON.parse(await host.fs.read(file, "utf8")); if (Array.isArray(v)) saved = v; } catch { /* missing or bad: start empty */ }
+    const saved = await readSavedJobs(host, file);
+    app.session = makeFilmSession({ host, jobs: app.jobs, onSaved: () => render() });
     app.jobs.onChange(() => render());
     app.jobs.onPersistError(() => render());
     app.jobs.restore(saved);
@@ -122,28 +122,22 @@ const filmsActions = {
   openReview: (dir) => { openReview(dir).catch((e) => console.error(e)); },
 };
 
-async function closeFilm() {
-  app.unwatch?.();
-  app.unwatch = null;
-  app.store = null;
-  app.film = null;
+function resetReview() {
   app.previews.clear();
   revokeAll();
   app.review = { making: false, listError: null, cardErrors: new Map(), pending: new Set(), noteFor: null, draft: "" };
 }
 
+// The session keeps one store and one watcher; a superseded open resolves to null and is ignored.
 async function openReview(dir) {
   const film = app.films.find((f) => f.dir === dir);
   if (!film) return;
-  if (app.film?.dir !== dir) {
-    await closeFilm();
-    const store = await openFilm(app.host, dir);
-    // The store has no change events; re-render after every saved update (approvals, job syncs).
-    const update = store.update;
-    store.update = (fn) => { const p = update(fn); p.then(() => render(), () => render()); return p; };
+  const store = await app.session.open(dir);
+  if (!store || app.session.current?.store !== store) return;
+  if (app.store !== store) {
+    resetReview();
     app.film = film;
     app.store = store;
-    app.unwatch = watchJobs({ host: app.host, store, jobs: app.jobs });
   }
   showView("review");
 }
