@@ -10,8 +10,29 @@ test("done, failed and all-shots messages", () => {
   assert.deepEqual(notifyRules(prev, next), [
     "BR-07 take 3 is ready to review",
     "HF-02 take 1 failed in Higgsfield",
-    "All shots for Deep Sea are ready",
+    "Nothing left running for Deep Sea: 1 ready, 1 failed",
   ]);
+});
+
+test("the film message counts this batch only, the latest job per take, and omits zero parts", () => {
+  const prev = [
+    job({ id: "old", assetId: "HF-01", take: 1, status: "done", startedAt: 1, endedAt: 2 }),
+    job({ id: "early", assetId: "HF-02", take: 1, status: "done", startedAt: 5, endedAt: 15 }),
+    job({ id: "f1", assetId: "HF-03", take: 1, status: "failed", startedAt: 11, endedAt: 12 }),
+    job({ id: "f2", assetId: "HF-03", take: 1, status: "running", startedAt: 13 }),
+    job({ id: "last", assetId: "HF-04", take: 1, status: "running", startedAt: 10 }),
+  ];
+  const next = prev.map((j) => (j.status === "running" ? { ...j, status: "done", endedAt: 20 } : j));
+  assert.equal(notifyRules(prev, next).at(-1), "Nothing left running for Deep Sea: 3 ready");
+  const allFailed = notifyRules([job({ id: "x", startedAt: 1 })], [job({ id: "x", status: "interrupted", startedAt: 1 })]);
+  assert.deepEqual(allFailed, ["Nothing left running for Deep Sea: 1 failed"]);
+});
+
+test("the film message treats the S: and UNC copies as one film", () => {
+  const unc = "\\\\192.168.1.171\\jon\\Youtube video ideas\\Deep Sea";
+  const prev = [job({ id: "a", startedAt: 1 }), job({ id: "b", film: unc, startedAt: 1 })];
+  const next = [job({ id: "a", status: "done", startedAt: 1 }), job({ id: "b", film: unc, startedAt: 1 })];
+  assert.deepEqual(notifyRules(prev, next), ["BR-07 take 3 is ready to review"]);
 });
 
 test("failed names Blender capitalised and no film message while others are active", () => {
