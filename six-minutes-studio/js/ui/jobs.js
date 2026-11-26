@@ -8,6 +8,11 @@ const same = (a, b) => sameFilm(a, b) && a.assetId === b.assetId && a.take === b
 
 export const activeCount = (jobs = []) => jobs.filter(active).length;
 
+// With a tray icon, closing the window only hides the app, so jobs keep running; Exit is in the tray menu.
+export const keepOpenText = (inTray) => inTray
+  ? "Jobs keep running if you close this window: the app stays in the system tray. To quit, right-click its tray icon and choose Exit."
+  : "Keep this window open while jobs run.";
+
 const STATUS_TEXT = { done: "Done", failed: "Failed", interrupted: "Interrupted", queued: "queued" };
 
 export function jobRow(job, index, jobs, retried) {

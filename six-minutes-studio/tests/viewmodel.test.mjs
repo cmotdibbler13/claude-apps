@@ -345,3 +345,10 @@ test("higgsfield on the gpu lane still gets the credits wording; blender never c
   assert.equal(by.b.retryLabel, "Run again");
   assert.equal(by.b.warning, null);
 });
+
+import { keepOpenText } from "../js/ui/jobs.js";
+test("keep-open line explains the tray once the app lives there", () => {
+  assert.equal(keepOpenText(false), "Keep this window open while jobs run.");
+  assert.match(keepOpenText(true), /system tray/);
+  assert.match(keepOpenText(true), /right-click its tray icon and choose Exit/);
+});

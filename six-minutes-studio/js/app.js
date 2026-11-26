@@ -124,6 +124,7 @@ async function renderNow() {
   badge.textContent = count ? String(count) : "";
   badge.hidden = !count;
   $("keep-open").hidden = !list.some((j) => j.status === "queued" || j.status === "running");
+  $("keep-text").textContent = jobsView.keepOpenText(armed);
   const pe = app.jobs?.persistError ?? null;
   const banner = $("persist-banner");
   banner.hidden = !pe;
@@ -383,6 +384,17 @@ async function startWithAccess(fromClick = false) {
   $("nav").hidden = false;
   for (const s of sections) s.hidden = s.dataset.view !== app.view;
   await startRoot();
+  // Tray and notifications already allowed (an earlier version or run): put the tray icon up now, so
+  // closing the window hides the app instead of ending running jobs. Never asks on load.
+  try { if ((await app.host.permissionState("menu-bar")) === "granted") { userStarted(); render(); } } catch { /* stay unarmed */ }
+}
+
+// The sticky summary bar on Review sits just under the sticky header, whatever its height.
+{
+  const top = document.querySelector(".top");
+  const setH = () => document.documentElement.style.setProperty("--toph", `${top.offsetHeight}px`);
+  setH();
+  try { new ResizeObserver(setH).observe(top); } catch { /* older webview: header height fixed at load */ }
 }
 
 boot();

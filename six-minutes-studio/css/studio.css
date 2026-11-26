@@ -5,7 +5,7 @@ html,body{margin:0}
 body{background:var(--s0);color:var(--ink);font:15px/1.55 Inter,"Helvetica Neue",Arial,sans-serif;overflow-x:clip}
 button{font:inherit;color:inherit;cursor:pointer}
 button:focus-visible,textarea:focus-visible{outline:2px solid var(--tide);outline-offset:2px}
-.top{display:flex;flex-wrap:wrap;align-items:center;gap:12px 24px;padding:14px max(5vw,16px,env(safe-area-inset-right,0px)) 14px max(5vw,16px,env(safe-area-inset-left,0px));background:var(--s1);border-bottom:1px solid var(--rule)}
+.top{position:sticky;top:0;z-index:5;display:flex;flex-wrap:wrap;align-items:center;gap:12px 24px;padding:14px max(5vw,16px,env(safe-area-inset-right,0px)) 14px max(5vw,16px,env(safe-area-inset-left,0px));background:var(--s1);border-bottom:1px solid var(--rule)}
 .brand{font-weight:400;font-size:17px;letter-spacing:.02em;margin-right:auto}
 .brand b{font-weight:500;color:var(--brass)}
 .nav{display:flex;flex-wrap:wrap;gap:6px}
@@ -73,7 +73,7 @@ h2{font-weight:500;font-size:13px;letter-spacing:.2em;text-transform:uppercase;c
 .log p.empty{display:block;color:var(--mut)}
 .log time{color:var(--fnt);font-variant-numeric:tabular-nums}
 /* review */
-.sum{display:flex;flex-wrap:wrap;gap:12px 28px;align-items:center;background:var(--s1);border:1px solid var(--rule);padding:16px 18px;position:sticky;top:0;z-index:2}
+.sum{display:flex;flex-wrap:wrap;gap:12px 28px;align-items:center;background:var(--s1);border:1px solid var(--rule);padding:16px 18px;position:sticky;top:var(--toph,0px);z-index:2}
 .sum .big{font-size:30px;font-weight:300;font-variant-numeric:tabular-nums}
 .sum .lbl{font-size:12px;color:var(--mut);letter-spacing:.12em;text-transform:uppercase}
 .h2row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 16px;margin:30px 0 12px}
