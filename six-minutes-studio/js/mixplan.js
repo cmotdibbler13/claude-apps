@@ -2,12 +2,12 @@
 // state.mix holds one holder per step (VOICEOVER, FIT, MIX). Each has a one-element takes list for its
 // current run, so redo.watchJobs mirrors its job like any take. A later step made from an earlier step's
 // older output is out of date until it is run again.
-import { join } from "./paths.js";
+import { join, filmKey } from "./paths.js";
 import { projectOf } from "./audio.js";
 import { filmTargets, planFit, fitSheet } from "./fitplan.js";
 import { NO_LINE_SCRIPT } from "./narration.js";
 import { MSG_NO_STEM_REMIXER, measureFileFor } from "./tools/stemfit.js";
-import { musicRide, speakingSpans, VOICE_RMS_DB } from "./tools/mixdown.js";
+import { musicRide, MUSIC_DB, SFX_DB } from "./tools/mixdown.js";
 
 export const OUT_OF_DATE = "Out of date: run again";
 const SLOTS = { VOICEOVER: "voiceover", FIT: "fit", MIX: "mix" };
@@ -58,7 +58,20 @@ export function mixStale(state) {
   if (!x || x.status !== "done") return false;
   if (fitStale(state)) return true;
   const { fit: f, voiceover: vo } = state.mix;
-  return !f || f.status !== "done" || x.fromFitAt !== f.at || !vo || vo.status !== "done" || x.fromVoiceoverAt !== vo.at;
+  if (!f || f.status !== "done" || x.fromFitAt !== f.at || !vo || vo.status !== "done" || x.fromVoiceoverAt !== vo.at) return true;
+  return JSON.stringify(x.fromSfx ?? []) !== JSON.stringify(sfxUsed(state));
+}
+
+// What the mix takes from the sound effects: each approved cue with a finished chosen take, its take and start.
+export function sfxUsed(state) {
+  const out = [];
+  for (const x of state?.audio?.sfx ?? []) {
+    if (!x.approved) continue;
+    const t = (x.takes ?? []).find((y) => y.n === x.chosen && y.status === "done" && y.file);
+    if (!t) continue;
+    out.push({ id: x.id, take: x.chosen, file: t.file, startS: x.startS == null ? null : Number(x.startS), loop: !!x.loop, meanDb: t.meanDb ?? null });
+  }
+  return out;
 }
 
 // ---- helpers ----
@@ -108,7 +121,6 @@ export function waitJob(jobs, id) {
 }
 
 const goodMeasure = (m) => m && typeof m === "object" && Array.isArray(m.loud) && Number(m.duration_s) > 0;
-let measureN = 0;
 
 // A measure.py result for this audio: the cached one, or a fresh measure job (gpu lane) awaited here.
 async function measured(ctx, audio, { cacheFile, force = false, why } = {}) {
@@ -117,8 +129,10 @@ async function measured(ctx, audio, { cacheFile, force = false, why } = {}) {
   if (!force) {
     try { const m = JSON.parse(await host.fs.read(cache, "utf8")); if (goodMeasure(m)) return m; } catch { /* not cached yet */ }
   }
+  const film = filmKey(store.dir);
+  const take = jobs.list().filter((j) => j.assetId === "MEASURE" && filmKey(j.film) === film).reduce((m, j) => Math.max(m, Number(j.take) || 0), 0) + 1;
   const id = jobs.add({
-    film: store.dir, assetId: "MEASURE", take: host.now() * 1000 + (++measureN % 1000), tool: "stemfit",
+    film: store.dir, assetId: "MEASURE", take, tool: "stemfit",
     what: "Score measure", why: why ?? "Before the fit",
     input: { score: audio, measureOnly: true, ...(cacheFile ? { measureOut: cacheFile } : {}) },
   });
@@ -279,22 +293,17 @@ export async function startMix(ctx) {
     const rows = await readTimings(host, vo.csv);
     const targets = filmTargets(rows, settings.endCardS ?? 12);
     const music = await measured(ctx, fit.file, { cacheFile: fit.measureFile ?? undefined, why: "Before the mix" });
-    const ride = musicRide(music, VOICE_RMS_DB, rows);
-    const spans = speakingSpans(rows);
-    const sfx = [];
-    for (const x of state.audio?.sfx ?? []) {
-      if (!x.approved) continue;
-      const t = (x.takes ?? []).find((y) => y.n === x.chosen && y.status === "done" && y.file);
-      if (!t) continue;
-      const startS = x.startS == null ? null : Number(x.startS);
-      const item = { id: x.id, file: t.file, startS, loop: !!x.loop, meanDb: t.meanDb ?? null, speaking: startS != null && spans.some(([a, b]) => startS >= a && startS < b) };
-      if (x.loop && startS != null) item.endS = loopEnd(startS, targets);
-      sfx.push(item);
-    }
+    const ride = musicRide(music, rows, { musicDb: Number(settings.mixMusicDb ?? MUSIC_DB) });
+    const used = sfxUsed(state);
+    const sfx = used.map(({ id, file, startS, loop, meanDb }) => {
+      const item = { id, file, startS, loop, meanDb };
+      if (loop && startS != null) item.endS = loopEnd(startS, targets);
+      return item;
+    });
     const out = join(mixDir(store), `${projectOf(store.dir)}_mix.wav`);
     return startRun(ctx, "MIX", {
-      files: null, unplaced: [], approved: false, fromFitAt: fit.at, fromVoiceoverAt: vo.at, at: null,
-    }, { input: { voice: vo.wav, music: fit.file, sfx, filmS: targets.filmS, out, ride } });
+      files: null, unplaced: [], approved: false, fromFitAt: fit.at, fromVoiceoverAt: vo.at, fromSfx: used, at: null,
+    }, { input: { voice: vo.wav, music: fit.file, sfx, filmS: targets.filmS, out, ride, sfxDb: Number(settings.mixSfxDb ?? SFX_DB) } });
   });
 }
 

@@ -76,10 +76,10 @@ test("stableAudio defaults are present and partial overrides keep the rest", asy
 
 test("voiceover and mix settings default, and merge from the file", async () => {
   let s = await loadSettings(new FakeHost(), ROOT);
-  assert.deepEqual([s.autocuePython, s.stemRemixerDir, s.endCardS], ["python", null, 12]);
+  assert.deepEqual([s.autocuePython, s.stemRemixerDir, s.endCardS, s.mixMusicDb, s.mixSfxDb], ["python", null, 12, -26, -18]);
   const host = new FakeHost();
   await host.fs.mkdir(ROOT);
-  await host.fs.write(ROOT + "\\.studio-settings.json", JSON.stringify({ stemRemixerDir: "C:\\Apps\\Stem Remixer", endCardS: 14 }));
+  await host.fs.write(ROOT + "\\.studio-settings.json", JSON.stringify({ stemRemixerDir: "C:\\Apps\\Stem Remixer", endCardS: 14, mixMusicDb: -28 }));
   s = await loadSettings(host, ROOT);
-  assert.deepEqual([s.autocuePython, s.stemRemixerDir, s.endCardS], ["python", "C:\\Apps\\Stem Remixer", 14]);
+  assert.deepEqual([s.autocuePython, s.stemRemixerDir, s.endCardS, s.mixMusicDb, s.mixSfxDb], ["python", "C:\\Apps\\Stem Remixer", 14, -28, -18]);
 });

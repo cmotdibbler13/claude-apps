@@ -13,19 +13,18 @@ const LOOP_FADE_S = 1;
 const MIX_MS = 30 * 60 * 1000;
 
 // ---- levels ----
+// The bed (music plus sound effects) sits at one steady level before the duck. The sidechain then pulls it
+// down about 18 dB while he speaks (measured through mixGraph), so it is heard about 30 dB under the voice
+// while he speaks and near the steady level in the gaps, without pumping between speech and pauses.
 export const VOICE_RMS_DB = -13.8; // each joined clip's RMS
-const UNDER_VOICE_DB = 24;         // music under the voice while he speaks (the band is 20 to 30)
-const PAUSE_DB = -30;              // music in the pauses
+export const MUSIC_DB = -26;       // settings.mixMusicDb: the bed's music before the duck
+export const SFX_DB = -18;         // settings.mixSfxDb: each sound effect's mean before the duck
 const RIDE_MAX_DB = 9;
 const RAMP_S = 3;
-const MIN_PAUSE_S = 4;             // shorter gaps (between clips and sections) ride with the speech
+const MIN_PAUSE_S = 4;             // shorter gaps (between clips and sections) ride with their section
 const STEP_S = 0.1;                // measure.py loudness steps
-const SFX_MEAN_DB = -21;           // sound effects sit -24 to -18 dBFS while he speaks
 const SFX_GAIN_MAX_DB = 30;
-// How far the sidechain pulls the bed down while he speaks. Measured through mixGraph on a speech-like
-// test signal (pink noise bursts) at -13.8 dB RMS: about 18 dB. The ride and SFX gains make up for it,
-// so the levels above are what is heard after ducking.
-export const DUCK_DB = 18;
+const MP3_TRIM_DB = -0.5;          // the MP3 encode overshoots: about -1.5 dBFS peaks after it
 
 const r1 = (x) => Math.round(x * 10) / 10;
 const r3 = (x) => Math.round(x * 1000) / 1000;
@@ -37,12 +36,7 @@ function median(xs) {
   return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
 }
 
-// Film-time speaking spans and section spans from the voiceover timings (voiceover time).
-export function speakingSpans(timings) {
-  return (timings ?? []).map((r) => [Number(r.start_s) + HOLD_S, Number(r.end_s) + HOLD_S]).filter(([a, b]) => Number.isFinite(a) && b > a);
-}
-const speakingAt = (spans, t) => spans.some(([a, b]) => t >= a && t < b);
-
+// Film-time section spans from the voiceover timings (voiceover time).
 function sections(timings) {
   const out = [];
   for (const r of timings ?? []) {
@@ -56,63 +50,55 @@ function sections(timings) {
 }
 
 // Pure. The music's gain: baseDb, plus a ride by section (dB offsets at film times, linear between).
-// While he speaks the music's median sits UNDER_VOICE_DB under voiceRmsDb (after ducking), and in the
-// pauses near PAUSE_DB. Each section's offset is held within RIDE_MAX_DB, with RAMP_S ramps.
-export function musicRide(measureMusic, voiceRmsDb, timings, { duckDb = DUCK_DB } = {}) {
+// The base puts the score's median at musicDb; each section (and the cold open and end card) is then
+// nudged towards musicDb by up to RIDE_MAX_DB, so only the score's own loudness changes are evened out.
+// Ramps take RAMP_S and end where the next section starts.
+export function musicRide(measureMusic, timings, { musicDb = MUSIC_DB } = {}) {
   const loud = measureMusic?.loud ?? [];
   const endS = Number(measureMusic?.duration_s) || loud.length * STEP_S;
-  const at = (i) => loud[i];
-  const framesIn = (a, b, keep = () => true) => {
+  const framesIn = (a, b) => {
     const out = [];
-    for (let i = Math.max(0, Math.ceil(a / STEP_S)); i * STEP_S < b && i < loud.length; i++) if (keep(i * STEP_S)) out.push(at(i));
+    for (let i = Math.max(0, Math.ceil(a / STEP_S)); i * STEP_S < b && i < loud.length; i++) out.push(loud[i]);
     return out;
   };
-  const spans = speakingSpans(timings);
-  const speakTarget = voiceRmsDb - UNDER_VOICE_DB + duckDb; // before the sidechain pulls it down
-  const speakMedian = median(spans.flatMap(([a, b]) => framesIn(a, b)));
-  if (speakMedian == null) return { baseDb: 0, ride: [{ t: 0, db: 0 }], duckDb };
-  const baseDb = r1(speakTarget - speakMedian);
+  const all = median(framesIn(0, endS));
+  if (all == null) return { baseDb: 0, ride: [{ t: 0, db: 0 }] };
+  const baseDb = r1(musicDb - all);
 
-  // Segments: pauses of MIN_PAUSE_S or more, and the speech between them.
+  // Segments: pauses of MIN_PAUSE_S or more, and each section with the short gaps before it.
   const segs = [];
   let cursor = 0;
   for (const s of sections(timings)) {
     const prev = segs[segs.length - 1];
     let start = s.start;
-    if (s.start - cursor >= MIN_PAUSE_S) segs.push({ kind: "pause", start: cursor, end: s.start });
+    if (s.start - cursor >= MIN_PAUSE_S) segs.push({ start: cursor, end: s.start });
     else if (prev) prev.end = s.start;
     else start = 0;
-    segs.push({ kind: "speech", start, end: s.end, clips: s.clips });
+    segs.push({ start, end: s.end });
     cursor = s.end;
   }
-  if (endS - cursor >= MIN_PAUSE_S) segs.push({ kind: "pause", start: cursor, end: endS });
-  else if (segs.length) segs[segs.length - 1].end = Math.max(segs[segs.length - 1].end, endS);
+  if (endS - cursor >= MIN_PAUSE_S || !segs.length) segs.push({ start: cursor, end: endS });
+  else segs[segs.length - 1].end = Math.max(segs[segs.length - 1].end, endS);
   for (const g of segs) {
-    const level = g.kind === "speech"
-      ? median(g.clips.flatMap(([a, b]) => framesIn(a, b)))
-      : median(framesIn(g.start, g.end));
-    const target = g.kind === "speech" ? speakTarget : PAUSE_DB;
-    g.db = level == null ? 0 : r1(clamp(target - level - baseDb, -RIDE_MAX_DB, RIDE_MAX_DB));
+    const level = median(framesIn(g.start, g.end));
+    g.db = level == null ? 0 : r1(clamp(musicDb - level - baseDb, -RIDE_MAX_DB, RIDE_MAX_DB));
   }
 
-  const ride = [{ t: 0, db: segs[0]?.db ?? 0 }];
+  const ride = [{ t: 0, db: segs[0].db }];
   for (let i = 1; i < segs.length; i++) {
     const a = segs[i - 1].db, b = segs[i].db, B = segs[i].start;
     if (a === b) continue;
-    const lastT = ride[ride.length - 1].t;
-    // Into speech the ramp ends as he starts; into a pause it starts as he stops.
-    let t0 = segs[i].kind === "speech" ? B - RAMP_S : B;
-    t0 = Math.max(lastT, t0);
-    const t1 = Math.max(t0, Math.min(t0 + RAMP_S, segs[i].end));
+    const t0 = Math.max(ride[ride.length - 1].t, B - RAMP_S);
+    const t1 = Math.max(t0, B);
     ride.push({ t: r3(t0), db: a }, { t: r3(t1), db: b });
   }
-  return { baseDb, ride, duckDb };
+  return { baseDb, ride };
 }
 
-// Pure. Gain for a sound effect so its mean lands near SFX_MEAN_DB (made up for the duck while he speaks).
-export function sfxGainDb(meanDb, speaking, { duckDb = DUCK_DB } = {}) {
+// Pure. Gain for a sound effect so its mean sits at sfxDb in the bed (it ducks with the music).
+export function sfxGainDb(meanDb, { sfxDb = SFX_DB } = {}) {
   if (meanDb == null || !Number.isFinite(meanDb)) return 0;
-  return r1(clamp(SFX_MEAN_DB + (speaking ? duckDb : 0) - meanDb, -SFX_GAIN_MAX_DB, SFX_GAIN_MAX_DB));
+  return r1(clamp(sfxDb - meanDb, -SFX_GAIN_MAX_DB, SFX_GAIN_MAX_DB));
 }
 
 const n = (x) => { const v = r3(x); return v < 0 ? `(${v})` : String(v); };
@@ -169,7 +155,7 @@ export function mixGraph({ voice, music, sfx = [], filmS, ride = { baseDb: 0, ri
       parts.push(`atrim=0:${n(dur)}`, "asetpts=N/SR/TB");
       if (dur > 2 * LOOP_FADE_S) parts.push(`afade=t=out:st=${n(dur - LOOP_FADE_S)}:d=${LOOP_FADE_S}`);
     }
-    parts.push(`volume=${n(s.gainDb ?? 0)}dB`, `adelay=${ms}|${ms}`);
+    parts.push(`volume=${r1(Number(s.gainDb) || 0)}dB`, `adelay=${ms}|${ms}`);
     g.push(`${parts.join(",")}[s${i}]`);
     beds.push(`[s${i}]`);
   });
@@ -177,7 +163,8 @@ export function mixGraph({ voice, music, sfx = [], filmS, ride = { baseDb: 0, ri
   else g.push("[mus]anull[bed]");
   g.push(`[bed][vkey]${SIDECHAIN}[duck]`);
   g.push("[duck]asplit=2[mstem][mm]");
-  g.push(`[vmix][mm]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,${LIMITER},atrim=0:${F},asplit=2[mixwav][mixmp3]`);
+  g.push(`[vmix][mm]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,${LIMITER},atrim=0:${F},asplit=2[mixwav][mx]`);
+  g.push(`[mx]volume=${MP3_TRIM_DB}dB[mixmp3]`);
   const filter = g.join(";");
 
   args.push("-filter_complex", filter,
@@ -228,7 +215,7 @@ export function makeMixdownRunner() {
     lane: "gpu",
     async start(job, ctx) {
       const { host } = ctx;
-      const { voice, music, sfx = [], filmS, out, ride } = job.input ?? {};
+      const { voice, music, sfx = [], filmS, out, ride, sfxDb = SFX_DB } = job.input ?? {};
       if (typeof voice !== "string" || !voice) throw new Error("This mix has no voiceover.");
       if (typeof music !== "string" || !music) throw new Error("This mix has no fitted score.");
       if (!(Number(filmS) > 0)) throw new Error("This mix has no film length.");
@@ -238,7 +225,7 @@ export function makeMixdownRunner() {
       for (const s of sfx) {
         let meanDb = s.meanDb;
         if (s.startS != null && (meanDb == null || !Number.isFinite(meanDb))) meanDb = (await measure(host, s.file)).meanDb;
-        withGain.push({ ...s, gainDb: sfxGainDb(meanDb, !!s.speaking) });
+        withGain.push({ ...s, gainDb: sfxGainDb(meanDb, { sfxDb }) });
       }
       const parts = { wav: partOf(outs.wav), mp3: partOf(outs.mp3), voice: partOf(outs.voice), music: partOf(outs.music) };
       const { args, unplaced } = mixGraph({ voice, music, sfx: withGain, filmS: Number(filmS), ride, outs: parts });

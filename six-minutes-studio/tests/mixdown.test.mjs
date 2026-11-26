@@ -1,7 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FakeHost } from "./fake-host.mjs";
-import { mixGraph, musicRide, rideExpr, sfxGainDb, mixOutputs, makeMixdownRunner, SIDECHAIN, DUCK_DB } from "../js/tools/mixdown.js";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, existsSync, statSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join as pjoin } from "node:path";
+import { mixGraph, musicRide, rideExpr, sfxGainDb, mixOutputs, makeMixdownRunner, SIDECHAIN } from "../js/tools/mixdown.js";
 
 const MIX = "S:\\Film A\\studio\\mix";
 const outs = mixOutputs(MIX + "\\film_a_mix.wav");
@@ -31,10 +35,12 @@ test("mixGraph: the sidechain string verbatim, the voice held 6 s, fades, one ad
   assert.equal(count(filter, "adelay="), 3, "the voice and two placed SFX");
   assert.ok(filter.includes("adelay=12500|12500"));
   assert.ok(filter.includes("adelay=40000|40000"));
-  assert.ok(filter.includes("volume=4dB") && filter.includes("volume=(-2)dB"));
+  assert.ok(filter.includes("volume=4dB") && filter.includes("volume=-2dB"));
+  assert.ok(!/volume=\(/.test(filter), "a plain dB gain, which ffmpeg parses");
   assert.match(filter, /\[3:a\][^;]*atrim=0:55,asetpts/, "the loop runs to its end time");
   assert.ok(filter.includes("amix=inputs=3:"), "music and two SFX mix into the bed before the sidechain");
   assert.match(filter, /alimiter=limit=0\.84[^;]*,atrim=0:300,/);
+  assert.ok(filter.includes("[mx]volume=-0.5dB[mixmp3]"), "the MP3 is trimmed 0.5 dB for its encode overshoot");
   assert.deepEqual(unplaced, ["SFX-03"]);
   // inputs: voice, music, a.wav, then the loop with -stream_loop -1
   const i = args.indexOf("b.wav");
@@ -75,36 +81,64 @@ const gainAt = (ride, t) => {
   return p[p.length - 1].db;
 };
 
-test("musicRide holds the music 24 dB under the voice while he speaks and near -30 in the pauses", () => {
-  // Section A's music is 4 dB louder than B's; the pauses are a little quieter.
+test("musicRide holds the bed at a steady level, evening out the score's own loudness changes", () => {
+  // Section A's music is 4 dB louder than B's; the cold open and end card are quieter still.
   const m = loudness((t) => (t >= 6 && t < 36 ? -16 : t >= 36 && t < 66 ? -20 : -24));
-  const r = musicRide(m, -13.8, timings);
+  const r = musicRide(m, timings, { musicDb: -26 });
   for (const p of r.ride) assert.ok(Math.abs(p.db) <= 9, `ride within 9 dB: ${p.db}`);
-  const heard = (t) => m.loud[Math.round(t * 10)] + r.baseDb + gainAt(r, t);
-  // after the sidechain's duck, the music sits 24 dB under the -13.8 voice
-  for (const t of [10, 25, 40, 60]) assert.ok(Math.abs(heard(t) - DUCK_DB - (-13.8 - 24)) < 0.15, `speaking at ${t}: ${heard(t) - DUCK_DB}`);
-  // pauses: the cold open and the end card, no duck, as near -30 as the 9 dB ride allows
-  const want = (t) => Math.max(-30, m.loud[Math.round(t * 10)] + r.baseDb - 9);
-  for (const t of [1, 70, 76]) assert.ok(Math.abs(heard(t) - want(t)) < 0.15, `pause at ${t}`);
+  const bed = (t) => m.loud[Math.round(t * 10)] + r.baseDb + gainAt(r, t);
+  // speech and pauses alike sit at -26 before the duck: nothing switches between them
+  for (const t of [1, 10, 25, 40, 60, 70, 76]) assert.ok(Math.abs(bed(t) + 26) < 0.15, `bed at ${t}: ${bed(t)}`);
   assert.equal(r.ride[0].t, 0);
-  // ramps take 3 s, and end as he starts speaking
+  // ramps take 3 s and end where the next section starts
   const into = r.ride.findIndex((p, i) => i > 0 && p.t === 6);
   assert.ok(into > 0 && r.ride[into - 1].t === 3);
 });
 
+test("musicRide on a steady score has no ride, whatever the speech does", () => {
+  const r = musicRide(loudness(() => -20), timings, { musicDb: -26 });
+  assert.equal(r.baseDb, -6);
+  assert.deepEqual(r.ride, [{ t: 0, db: 0 }]);
+});
+
 test("musicRide clamps a very quiet section to +9 dB", () => {
   const m = loudness((t) => (t >= 36 && t < 66 ? -50 : -18));
-  const r = musicRide(m, -13.8, timings);
+  const r = musicRide(m, timings);
   const max = Math.max(...r.ride.map((p) => p.db)), min = Math.min(...r.ride.map((p) => p.db));
   assert.equal(max, 9);
   assert.ok(min >= -9);
 });
 
-test("sfxGainDb puts the mean near -21 dBFS, made up for the duck while he speaks", () => {
-  assert.equal(sfxGainDb(-30, false), 9);
-  assert.equal(sfxGainDb(-30, true), 9 + DUCK_DB);
-  assert.equal(sfxGainDb(null, true), 0);
-  assert.equal(sfxGainDb(-90, false), 30);
+test("sfxGainDb puts each sound effect's mean at sfxDb (default -18) in the bed", () => {
+  assert.equal(sfxGainDb(-30), 12);
+  assert.equal(sfxGainDb(-30, { sfxDb: -21 }), 9);
+  assert.equal(sfxGainDb(null), 0);
+  assert.equal(sfxGainDb(-90), 30);
+});
+
+const hasFfmpeg = spawnSync("ffmpeg", ["-version"]).status === 0;
+test("the generated graph runs in real ffmpeg: negative gains, a loop, a space and an apostrophe in paths", { skip: !hasFfmpeg && "ffmpeg is not on PATH" }, () => {
+  const dir = mkdtempSync(pjoin(tmpdir(), "mix it's "));
+  try {
+    const gen = (src, out, extra = []) => assert.equal(spawnSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", src, ...extra, pjoin(dir, out)]).status, 0);
+    gen("sine=f=220:d=4:r=48000", "voice it's.wav");
+    gen("anoisesrc=color=pink:amplitude=0.1:d=12:r=48000", "score fitted.wav", ["-ac", "2"]);
+    gen("sine=f=800:d=1:r=48000", "door it's.wav");
+    gen("anoisesrc=color=brown:amplitude=0.2:d=1.5:r=48000", "rain loop.wav");
+    const outs = { wav: pjoin(dir, "o_mix.part.wav"), mp3: pjoin(dir, "o_mix_preview.part.mp3"), voice: pjoin(dir, "o voice.part.flac"), music: pjoin(dir, "o music.part.flac") };
+    const { args } = mixGraph({
+      voice: pjoin(dir, "voice it's.wav"), music: pjoin(dir, "score fitted.wav"), filmS: 12, outs,
+      ride: { baseDb: -3, ride: [{ t: 0, db: -5 }, { t: 3, db: -5 }, { t: 6, db: 2 }] },
+      sfx: [
+        { id: "SFX-01", file: pjoin(dir, "door it's.wav"), startS: 7.25, gainDb: -2.5 },
+        { id: "SFX-02", file: pjoin(dir, "rain loop.wav"), startS: 2, loop: true, endS: 10, gainDb: -6 },
+        { id: "SFX-03", file: pjoin(dir, "door it's.wav"), startS: null },
+      ],
+    });
+    const r = spawnSync("ffmpeg", args, { encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr.split("\n").slice(-6).join("\n"));
+    for (const f of Object.values(outs)) assert.ok(existsSync(f) && statSync(f).size > 1000, f);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 async function runnerSetup({ ffmpegCode = 0, writeParts = true } = {}) {
@@ -124,7 +158,7 @@ async function runnerSetup({ ffmpegCode = 0, writeParts = true } = {}) {
 }
 const job = { input: { voice: "S:\\v.wav", music: "S:\\m.wav", filmS: 300, out: MIX + "\\film_a_mix.wav",
   ride: { baseDb: 0, ride: [{ t: 0, db: 0 }] },
-  sfx: [{ id: "SFX-01", file: "S:\\a.wav", startS: 20, loop: false, speaking: false }, { id: "SFX-02", file: "S:\\b.wav", startS: null }] } };
+  sfx: [{ id: "SFX-01", file: "S:\\a.wav", startS: 20, loop: false }, { id: "SFX-02", file: "S:\\b.wav", startS: null }] } };
 
 test("mixdown measures SFX, runs one ffmpeg, renames the .part files and moves earlier outputs aside", async () => {
   const s = await runnerSetup();
@@ -133,7 +167,7 @@ test("mixdown measures SFX, runs one ffmpeg, renames the .part files and moves e
   const ff = s.spawns.filter((x) => !x.args.includes("volumedetect"));
   assert.equal(ff.length, 1);
   assert.equal(s.spawns.filter((x) => x.args.includes("volumedetect")).length, 1, "only the placed SFX is measured");
-  assert.ok(ff[0].args[ff[0].args.indexOf("-filter_complex") + 1].includes("volume=6dB"), "-27 dB mean lifted to -21");
+  assert.ok(ff[0].args[ff[0].args.indexOf("-filter_complex") + 1].includes("volume=9dB"), "-27 dB mean lifted to -18");
   assert.deepEqual(r.meta.files, outs);
   assert.deepEqual(r.meta.unplaced, ["SFX-02"]);
   assert.equal(r.file, outs.wav);

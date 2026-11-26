@@ -185,7 +185,8 @@ test("startMix passes the voice, fitted score, approved SFX with starts, film le
   assert.equal(i.music, MIXD + "\\Film_A_score_fitted.wav");
   assert.equal(i.filmS, 48.5);
   assert.equal(i.out, MIXD + "\\Film_A_mix.wav");
-  assert.deepEqual(i.sfx.map((x) => [x.id, x.file, x.startS, x.loop, x.meanDb, x.speaking]), [["SFX-01", SFX1, 8, false, -25, true], ["SFX-02", SFX1, null, false, -25, false]]);
+  assert.deepEqual(i.sfx.map((x) => [x.id, x.file, x.startS, x.loop, x.meanDb]), [["SFX-01", SFX1, 8, false, -25], ["SFX-02", SFX1, null, false, -25]]);
+  assert.equal(i.sfxDb, -18);
   assert.ok(Number.isFinite(i.ride.baseDb) && i.ride.ride.length >= 1);
   const m = st(s).mix;
   assert.equal(m.files.mp3, MIXD + "\\Film_A_mix_preview.mp3");
@@ -194,6 +195,28 @@ test("startMix passes the voice, fitted score, approved SFX with starts, film le
   assert.equal(s.jobs.list().find((j) => j.assetId === "MIX").what, "Mix preview");
   await approveMix(s.ctx);
   assert.equal(st(s).mix.approved, true);
+});
+
+test("the mix goes out of date when a placed sound effect's start, take or approval changes", async () => {
+  for (const change of [(x) => { x.startS = 9; }, (x) => { x.chosen = 2; x.takes.push({ n: 2, status: "done", file: SFX1 }); }, (x) => { x.approved = false; }]) {
+    const s = await setup();
+    await joined(s);
+    await fitted(s);
+    await mixed(s);
+    assert.equal(mixStale(s.store.state), false);
+    await s.store.update((d) => change(d.audio.sfx[0]));
+    assert.equal(mixStale(s.store.state), true);
+    await assert.rejects(approveMix(s.ctx), { message: "The mix is out of date. Make it again first." });
+  }
+});
+
+test("measure jobs are numbered 1, 2, 3 per film", async () => {
+  const s = await setup();
+  await joined(s);
+  await fitted(s);
+  await s.host.fs.write(SCORE1 + ".measure.json", "{}"); // not a usable measure: measured again
+  await fitted(s);
+  assert.deepEqual(s.jobs.list().filter((j) => j.assetId === "MEASURE").map((j) => j.take), [1, 2]);
 });
 
 test("a loop runs to the next section start", async () => {
