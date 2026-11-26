@@ -71,7 +71,11 @@ export function narrationModel(n, playing = null) {
   return {
     message: null,
     counts: countsLine(n.counts),
-    rows: n.rows.map((r) => ({ id: r.id, text: snip(r.text), full: r.text, status: r.status, chip: STATUS_LABEL[r.status], flag: r.flags.join("; "), notes: r.notes.join("; "), file: r.file ?? null, playing: !!r.file && r.file === playing })),
+    rows: n.rows.map((r) => ({ id: r.id, text: snip(r.text), full: r.text, status: r.status, chip: STATUS_LABEL[r.status], flag: r.flags.join("; "), notes: r.notes.join("; "), file: r.file ?? null, playing: !!r.file && r.file === playing,
+      takeS: r.takeS ?? null,
+      // Jon listened and it's fine: offered on any recorded take that isn't already OK.
+      canOk: !!r.file && !["ok", "jon", "missing"].includes(r.status),
+      canUndoOk: r.status === "jon" })),
   };
 }
 
@@ -87,6 +91,8 @@ function narrationSection(n, actions) {
       h("span", { class: "nid", text: r.id }),
       h("span", { class: "ntx", title: r.full, text: r.text }),
       h("span", { class: `chip ${r.status}`, text: r.chip }),
+      r.canOk ? h("button", { type: "button", class: "nok", title: "I've listened: this take is fine", onclick: () => actions.okByJon(r.id, r.takeS) }, "Sounds OK") : null,
+      r.canUndoOk ? h("button", { type: "button", class: "nok undo", title: "Remove my OK", onclick: () => actions.undoOk(r.id) }, "Undo") : null,
       r.flag ? h("span", { class: "nflag", text: r.flag }) : null,
       r.notes ? h("span", { class: "nnote", text: r.notes }) : null))));
   }

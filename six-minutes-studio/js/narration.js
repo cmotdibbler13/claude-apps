@@ -2,6 +2,8 @@
 import { join } from "./paths.js";
 
 const TOL_S = 0.01;
+// Results from checks older than this were made with rules since fixed (numbers): Check all redoes them.
+export const MIN_CHECKS_VERSION = 2;
 const FLAG_KINDS = new Set(["cut_off", "misread", "clipping"]);
 
 // Port of Autocue Studio's parse_line_script (app.py).
@@ -110,41 +112,55 @@ async function readJson(host, p) {
   } catch { return null; }
 }
 
-async function rowFor(host, base, project, ln) {
+// Jon listened and says the take is fine: approvals[id] = {take_mtime}; only for that exact take.
+function approvedFor(approvals, id, takeS) {
+  const a = approvals?.[id];
+  return !!a && typeof a.take_mtime === "number" && Math.abs(a.take_mtime - takeS) <= TOL_S;
+}
+
+async function rowFor(host, base, project, ln, approvals) {
   const row = { id: ln.id, section: ln.section, text: ln.text, status: "missing", flags: [], notes: [] };
   let take;
   try { take = await host.fs.stat(join(base, `${project}_${ln.id}.wav`)); } catch { return row; }
   if (!take?.isFile) return row;
   row.file = join(base, `${project}_${ln.id}.wav`); // the take, for the play button
-  const res = await readJson(host, join(base, "checks", `${project}_${ln.id}.json`));
   const takeS = take.mtimeMs / 1000;
+  row.takeS = takeS;
+  const done = (r) => (approvedFor(approvals, ln.id, takeS) && r.status !== "ok" ? { ...r, okByJon: true, checkedStatus: r.status, status: "jon" } : r);
+  return done(await checkedRow(host, base, project, ln, row, takeS));
+}
+
+async function checkedRow(host, base, project, ln, row, takeS) {
+  const res = await readJson(host, join(base, "checks", `${project}_${ln.id}.json`));
   if (!res) return { ...row, status: "unchecked" }; // never checked: Check all in Autocue Studio
   if (typeof res.take_mtime !== "number" || res.take_mtime < takeS - TOL_S) return { ...row, status: "checking" };
   if (res.error) return { ...row, status: "error", flags: [String(res.error)] };
+  if (!(Number(res.version) >= MIN_CHECKS_VERSION)) return { ...row, status: "outdated" };
   const all = Array.isArray(res.flags) ? res.flags : [];
   for (const f of all) (FLAG_KINDS.has(f?.kind) ? row.flags : row.notes).push(String(f?.text ?? f?.kind ?? ""));
   row.status = res.ok === false || row.flags.length ? "flagged" : "ok";
   return row;
 }
 
-export async function narrationStatus(host, settings, lineScript) {
+export async function narrationStatus(host, settings, lineScript, approvals = {}) {
   const project = lineScript?.name ?? "";
   const base = join(settings?.autocueRecordings ?? "", project);
-  const rows = await Promise.all((lineScript?.lines ?? []).map((ln) => rowFor(host, base, project, ln)));
+  const rows = await Promise.all((lineScript?.lines ?? []).map((ln) => rowFor(host, base, project, ln, approvals)));
   const n = (s) => rows.filter((r) => r.status === s).length;
   return {
     project, rows,
-    counts: { total: rows.length, recorded: rows.filter((r) => r.status !== "missing").length, ok: n("ok"), flagged: n("flagged"), unchecked: n("unchecked") },
+    counts: { total: rows.length, recorded: rows.filter((r) => r.status !== "missing").length, ok: n("ok"), jon: n("jon"), flagged: n("flagged"), unchecked: n("unchecked") + n("outdated") },
   };
 }
 
 export function countsLine(c) {
   const parts = [`${c.recorded} of ${c.total} recorded`];
   if (c.ok) parts.push(`${c.ok} ok`);
+  if (c.jon) parts.push(`${c.jon} OK by Jon`);
   if (c.flagged) parts.push(`${c.flagged} flagged`);
   if (c.unchecked) parts.push(`${c.unchecked} not checked \u2014 press Check all in Autocue Studio`);
   return parts.join(" \u00B7 ");
 }
 
-export const STATUS_LABEL = { missing: "Missing", unchecked: "Not checked", checking: "Checking\u2026", ok: "OK", flagged: "Flagged", error: "Error" };
+export const STATUS_LABEL = { missing: "Missing", unchecked: "Not checked", outdated: "Old check", checking: "Checking\u2026", ok: "OK", jon: "OK by Jon", flagged: "Flagged", error: "Error" };
 export const NO_LINE_SCRIPT = "No line script found for this film. Name it in part1_handover.md.";

@@ -255,7 +255,7 @@ async function refreshNarration() {
       if (!path) { if (app.review === r) r.narration = { missingScript: true }; return; }
       r.lineScript = await loadLineScript(app.host, path);
     }
-    const st = await narrationStatus(app.host, app.settings ?? {}, r.lineScript);
+    const st = await narrationStatus(app.host, app.settings ?? {}, r.lineScript, app.store?.state?.narrationOk ?? {});
     if (app.review === r) r.narration = st;
   } catch (e) { console.error(e); }
 }
@@ -389,6 +389,18 @@ const reviewActions = {
   setDraft(v) { app.review.draft = v; },
   openFull: (file) => { openFull(app.host, file).catch((e) => console.error(e)); },
   playTake,
+  // Saved in the film's own studio state, for this take only (a re-record clears it).
+  okByJon: cardAction(async (id, takeS) => {
+    if (typeof takeS !== "number") return;
+    await app.store.update((d) => { d.narrationOk = { ...(d.narrationOk ?? {}), [id]: { take_mtime: takeS, at: Date.now() } }; });
+    await app.store.log(`Narration ${id}: OK by Jon`);
+    await refreshNarration();
+  }),
+  undoOk: cardAction(async (id) => {
+    await app.store.update((d) => { if (d.narrationOk) delete d.narrationOk[id]; });
+    await app.store.log(`Narration ${id}: OK removed`);
+    await refreshNarration();
+  }),
   reopen: (dir) => { openReview(dir); },
   preview,
 };

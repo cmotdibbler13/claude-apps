@@ -80,12 +80,13 @@ const take = async (host, id, mtimeMs) => {
   host.mt.set(path, mtimeMs);
   await put(host, path, "wav");
 };
-const result = (host, id, o) => put(host, `R:\\Rec\\p\\checks\\p_${id}.json`, JSON.stringify(o));
+// Results from the current checks unless a test says otherwise.
+const result = (host, id, o) => put(host, `R:\\Rec\\p\\checks\\p_${id}.json`, JSON.stringify({ version: 2, ...o }));
 
 test("no recordings folder lists all lines missing", async () => {
   const st = await narrationStatus(new FakeHost(), S, LS);
   assert.deepEqual(st.rows.map((r) => r.status), Array(5).fill("missing"));
-  assert.deepEqual(st.counts, { total: 5, recorded: 0, ok: 0, flagged: 0, unchecked: 0 });
+  assert.deepEqual(st.counts, { total: 5, recorded: 0, ok: 0, jon: 0, flagged: 0, unchecked: 0 });
   assert.equal(countsLine(st.counts), "0 of 5 recorded");
 });
 
@@ -106,7 +107,7 @@ test("statuses: missing, ok, flagged, unchecked, checking, error; notes vs flags
   assert.deepEqual(st.rows[1].flags, ["ends too abruptly"]);
   assert.deepEqual(st.rows[1].notes, ["room noise"]);
   assert.deepEqual(st.rows[4].flags, ["model unavailable"]);
-  assert.deepEqual(st.counts, { total: 6, recorded: 5, ok: 1, flagged: 1, unchecked: 1 });
+  assert.deepEqual(st.counts, { total: 6, recorded: 5, ok: 1, jon: 0, flagged: 1, unchecked: 1 });
   assert.equal(countsLine(st.counts), "5 of 6 recorded \u00B7 1 ok \u00B7 1 flagged \u00B7 1 not checked \u2014 press Check all in Autocue Studio");
   assert.equal(countsLine({ total: 4, recorded: 2, ok: 2, flagged: 0, unchecked: 0 }), "2 of 4 recorded \u00B7 2 ok");
   assert.equal(countsLine({ total: 4, recorded: 3, ok: 0, flagged: 0, unchecked: 3 }), "3 of 4 recorded \u00B7 3 not checked \u2014 press Check all in Autocue Studio");
@@ -199,4 +200,37 @@ test("narration rows show which take is playing", async () => {
   assert.equal(m.rows[1].file, null);
   assert.equal(m.rows[1].playing, false);
   assert.equal(narrationModel(n, null).rows[0].playing, false);
+});
+
+test("results from the old checks show as Old check; OK by Jon holds only for that take", async () => {
+  const { narrationStatus, countsLine } = await import("../js/narration.js");
+  const h = new FakeHost();
+  const base = "C:\\A\\Recordings\\skara";
+  await h.fs.mkdir(`${base}\\checks`);
+  for (const id of ["01.1", "01.2", "01.3"]) await h.fs.write(`${base}\\skara_${id}.wav`, "RIFF");
+  const stat = h.fs.stat.bind(h.fs);
+  h.fs.stat = async (p) => ({ ...(await stat(p)), isFile: true, mtimeMs: 100000 });
+  const res = (o) => JSON.stringify({ take_mtime: 100, ...o });
+  await h.fs.write(`${base}\\checks\\skara_01.1.json`, res({ ok: false, version: 1, flags: [{ kind: "misread", text: "old" }] }));
+  await h.fs.write(`${base}\\checks\\skara_01.2.json`, res({ ok: false, version: 2, flags: [{ kind: "misread", text: "may have added \"A\"" }] }));
+  await h.fs.write(`${base}\\checks\\skara_01.3.json`, res({ ok: false, version: 2, flags: [{ kind: "cut_off", text: "cut" }] }));
+  const ls = { name: "skara", lines: ["01.1", "01.2", "01.3"].map((id) => ({ id, section: "", text: id })) };
+  const st = await narrationStatus(h, { autocueRecordings: "C:\\A\\Recordings" }, ls,
+    { "01.2": { take_mtime: 100 }, "01.3": { take_mtime: 99 } });   // 01.3 approved for an older take
+  assert.deepEqual(st.rows.map((r) => r.status), ["outdated", "jon", "flagged"]);
+  assert.equal(st.rows[1].checkedStatus, "flagged");
+  assert.deepEqual(st.rows[1].flags, ['may have added "A"']);
+  assert.equal(st.counts.jon, 1);
+  assert.match(countsLine(st.counts), /1 OK by Jon/);
+});
+
+test("Sounds OK is offered on recorded takes that aren't already OK", async () => {
+  const { narrationModel } = await import("../js/ui/review.js");
+  const row = (status, extra = {}) => ({ id: status, text: "x", status, flags: [], notes: [], file: status === "missing" ? undefined : "f.wav", takeS: 1, ...extra });
+  const n = { counts: { total: 5, recorded: 4, ok: 1, flagged: 1, unchecked: 1, jon: 1 },
+    rows: [row("ok"), row("flagged"), row("outdated"), row("jon"), row("missing")] };
+  const m = narrationModel(n).rows;
+  assert.deepEqual(m.map((r) => r.canOk), [false, true, true, false, false]);
+  assert.deepEqual(m.map((r) => r.canUndoOk), [false, false, false, true, false]);
+  assert.deepEqual(m.map((r) => r.chip), ["OK", "Flagged", "Old check", "OK by Jon", "Missing"]);
 });

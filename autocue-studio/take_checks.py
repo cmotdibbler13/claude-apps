@@ -417,6 +417,8 @@ def _expand(token):
         return _ordinal(int(m.group(1)))
     if _DECADE_RE.match(token):
         return _decade(token)
+    if token.endswith("'s") and _DECADE_RE.match(token[:-2] + "s"):   # 1920's
+        return _decade(token[:-2] + "s")
     if _INT_RE.match(token):
         n = int(token)
         if len(token) == 4 and token[0] != "0":

@@ -981,3 +981,11 @@ class SpokenNumberForms(unittest.TestCase):
         ]:
             with self.subTest(heard=heard):
                 self.assertTrue(any("misread" in f for f in self.flags(line, heard)))
+
+
+class DecadeWithApostrophe(unittest.TestCase):
+    def test_1920s_with_apostrophe(self):
+        line = "Then, in the nineteen twenties, another storm damaged it."
+        heard = "Then, in the 1920's, another storm damaged it."
+        words = [(w, i * 0.4, i * 0.4 + 0.3) for i, w in enumerate(heard.split())]
+        self.assertEqual([f["text"] for f in take_checks.word_flags(line, words, len(words) * 0.4 + 1.0)], [])

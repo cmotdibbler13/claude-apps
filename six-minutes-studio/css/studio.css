@@ -121,7 +121,7 @@ textarea{width:100%;background:var(--s0);color:var(--ink);border:1px solid var(-
 .tool-switch button:disabled{opacity:.5;cursor:default}
 
 .narr{list-style:none;margin:0 0 8px;padding:0;display:grid;gap:2px}
-.narr li{display:grid;grid-template-columns:28px 3.2em minmax(0,1fr) auto;gap:0 12px;align-items:baseline;background:var(--s1);border:1px solid var(--rule);padding:5px 12px;font-size:13px}
+.narr li{display:grid;grid-template-columns:28px 3.2em minmax(0,1fr) auto auto;gap:0 12px;align-items:baseline;background:var(--s1);border:1px solid var(--rule);padding:5px 12px;font-size:13px}
 .narr .nid{color:var(--mut);font-variant-numeric:tabular-nums}
 .narr .ntx{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .narr .chip{font-size:11px;font-weight:500;letter-spacing:.14em;text-transform:uppercase;color:var(--fnt)}
@@ -136,3 +136,9 @@ textarea{width:100%;background:var(--s0);color:var(--ink);border:1px solid var(-
 .narr .nplay{width:24px;height:22px;padding:0;background:none;border:1px solid var(--rule);color:var(--tide);font-size:10px;line-height:1;cursor:pointer}
 .narr .nplay:hover{border-color:var(--tide)}
 .narr .nplay.on{color:var(--brass);border-color:var(--brass)}
+.narr .chip.jon{color:var(--lw)}
+.narr .chip.outdated{color:var(--tide)}
+.narr .nok{grid-column:5;grid-row:1;font-size:11px;padding:2px 8px;background:none;border:1px solid var(--rule);color:var(--ink);cursor:pointer;white-space:nowrap}
+.narr .nok:hover{border-color:var(--lw);color:var(--lw)}
+.narr .nok.undo{color:var(--mut)}
+.narr .n-jon .nflag{color:var(--fnt);text-decoration:line-through}
