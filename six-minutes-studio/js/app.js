@@ -25,7 +25,7 @@ const LAYOUT_KEY = "six-minutes-studio.reviewLayout";
 
 const app = {
   host: null, root: null, jobs: null, films: [], view: "films",
-  film: null, store: null, session: null, retried: new Set(), movedAside: null, stateError: null, bootError: null, openError: null,
+  film: null, store: null, session: null, playing: null, retried: new Set(), movedAside: null, stateError: null, bootError: null, openError: null,
   review: { making: false, listError: null, cardErrors: new Map(), pending: new Set(), noteFor: null, draft: "" },
   previews: new Map(),
   layout: (() => { try { return localStorage.getItem(LAYOUT_KEY) || "script"; } catch { return "script"; } })(),
@@ -148,7 +148,7 @@ async function renderNow() {
     const r = app.review;
     const model = reviewView.reviewModel({
       film: app.film, state: app.store?.state, layout: app.layout, making: r.making, listError: r.listError,
-      cardErrors: r.cardErrors, pending: r.pending, noteFor: r.noteFor, openError: app.openError, prefError: r.prefError ?? null, narration: r.narration ?? null,
+      cardErrors: r.cardErrors, pending: r.pending, noteFor: r.noteFor, openError: app.openError, prefError: r.prefError ?? null, narration: r.narration ?? null, playing: app.playing,
     });
     paint("review", $("view-review"), model, reviewView, reviewActions);
   }
@@ -196,6 +196,7 @@ const filmsActions = {
 };
 
 function resetReview() {
+  stopTake();
   app.previews.clear();
   revokeAll();
   app.review = { making: false, listError: null, cardErrors: new Map(), pending: new Set(), noteFor: null, draft: "" };
@@ -273,6 +274,32 @@ function pollNarration() {
   };
   tick();
   narrTimer = setInterval(() => { if (app.view === "review") tick(); }, 10_000);
+}
+
+// ---- listening to a narration take: one player, pressing again (or another line) stops it ----
+let player = null;
+function stopTake() {
+  if (player) { player.pause(); player.onended = player.onerror = null; player = null; }
+  app.playing = null;
+}
+async function playTake(file) {
+  const again = app.playing === file;
+  stopTake();
+  render();
+  if (again) return;
+  app.playing = file;
+  render();
+  try {
+    const url = await toBlobUrl(app.host, file); // cached until the take changes
+    if (app.playing !== file) return;            // another press came first
+    player = new Audio(url);
+    player.onended = () => { if (app.playing === file) { stopTake(); render(); } };
+    player.onerror = player.onended;
+    await player.play();
+  } catch (e) {
+    console.error(e);
+    if (app.playing === file) { stopTake(); render(); }
+  }
 }
 
 // ---- review ----
@@ -361,6 +388,7 @@ const reviewActions = {
   draft: () => app.review.draft,
   setDraft(v) { app.review.draft = v; },
   openFull: (file) => { openFull(app.host, file).catch((e) => console.error(e)); },
+  playTake,
   reopen: (dir) => { openReview(dir); },
   preview,
 };

@@ -174,3 +174,29 @@ test("render never passes null/undefined to replaceChildren when narration is ab
     }
   } finally { delete globalThis.document; delete globalThis.Node; }
 });
+
+test("recorded lines carry their take file for the play button; missing ones don't", async () => {
+  const { FakeHost } = await import("./fake-host.mjs");
+  const { narrationStatus } = await import("../js/narration.js");
+  const h = new FakeHost();
+  const base = "C:\\A\\Recordings\\skara";
+  await h.fs.mkdir(base);
+  await h.fs.write(`${base}\\skara_01.1.wav`, "RIFF");
+  const st = await narrationStatus(h, { autocueRecordings: "C:\\A\\Recordings" },
+    { name: "skara", lines: [{ id: "01.1", section: "", text: "One." }, { id: "01.2", section: "", text: "Two." }] });
+  assert.equal(st.rows[0].file, `${base}\\skara_01.1.wav`);
+  assert.equal(st.rows[1].file, undefined);
+});
+
+test("narration rows show which take is playing", async () => {
+  const { narrationModel } = await import("../js/ui/review.js");
+  const n = { counts: { total: 2, recorded: 1, ok: 1, flagged: 0, unchecked: 0 },
+    rows: [{ id: "01.1", text: "One.", status: "ok", flags: [], notes: [], file: "C:\\t\\a_01.1.wav" },
+           { id: "01.2", text: "Two.", status: "missing", flags: [], notes: [] }] };
+  const m = narrationModel(n, "C:\\t\\a_01.1.wav");
+  assert.equal(m.rows[0].playing, true);
+  assert.equal(m.rows[0].file, "C:\\t\\a_01.1.wav");
+  assert.equal(m.rows[1].file, null);
+  assert.equal(m.rows[1].playing, false);
+  assert.equal(narrationModel(n, null).rows[0].playing, false);
+});

@@ -614,7 +614,7 @@ def _parse_number(t):
     v = _parse_cardinal(t)
     if v is None:
         v = _parse_year(t)
-    if v is None:
+    if v is None and ("half" in t or "point" in t):   # only these runs can be fractions
         v = _parse_fraction(t)
     if isinstance(v, float):
         v = int(v) if v.is_integer() else round(v, 6)

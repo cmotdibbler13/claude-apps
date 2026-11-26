@@ -5,7 +5,7 @@ import { runProcess } from "./proc.js";
 const VIDEO = new Set(["mp4", "mov", "webm", "mkv"]);
 const IMAGE = new Set(["png", "jpg", "jpeg", "webp", "gif"]);
 const MIME = {
-  mp4: "video/mp4", webm: "video/webm",
+  mp4: "video/mp4", webm: "video/webm", wav: "audio/wav",
   png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif",
 };
 const TEN_MIN = 10 * 60 * 1000;

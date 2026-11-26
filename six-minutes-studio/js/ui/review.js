@@ -65,22 +65,25 @@ const SNIP = 60;
 const snip = (t) => (t.length > SNIP ? `${t.slice(0, SNIP).trimEnd()}\u2026` : t);
 
 // narration: null (not looked yet), {missingScript:true}, or narrationStatus() output.
-export function narrationModel(n) {
+export function narrationModel(n, playing = null) {
   if (!n) return null;
   if (n.missingScript) return { message: NO_LINE_SCRIPT, counts: null, rows: [] };
   return {
     message: null,
     counts: countsLine(n.counts),
-    rows: n.rows.map((r) => ({ id: r.id, text: snip(r.text), full: r.text, status: r.status, chip: STATUS_LABEL[r.status], flag: r.flags.join("; "), notes: r.notes.join("; ") })),
+    rows: n.rows.map((r) => ({ id: r.id, text: snip(r.text), full: r.text, status: r.status, chip: STATUS_LABEL[r.status], flag: r.flags.join("; "), notes: r.notes.join("; "), file: r.file ?? null, playing: !!r.file && r.file === playing })),
   };
 }
 
-function narrationSection(n) {
+function narrationSection(n, actions) {
   const kids = [h("div", { class: "h2row" }, h("h2", { text: "Narration" }))];
   if (n.message) kids.push(h("p", { class: "note", text: n.message }));
   else {
     kids.push(h("p", { class: "note", text: n.counts }));
     kids.push(h("ul", { class: "narr" }, n.rows.map((r) => h("li", { class: `n-${r.status}` },
+      r.file
+        ? h("button", { type: "button", class: `nplay${r.playing ? " on" : ""}`, "aria-label": `${r.playing ? "Stop" : "Play"} ${r.id}`, title: r.playing ? "Stop" : "Play this take", onclick: () => actions.playTake(r.file) }, r.playing ? "\u25A0" : "\u25B6")
+        : h("span", { class: "nplay-gap" }),
       h("span", { class: "nid", text: r.id }),
       h("span", { class: "ntx", title: r.full, text: r.text }),
       h("span", { class: `chip ${r.status}`, text: r.chip }),
@@ -90,7 +93,7 @@ function narrationSection(n) {
   return h("section", { class: "narration", "aria-label": "Narration" }, kids);
 }
 
-export function reviewModel({ film, state, layout = "script", making = false, listError = null, cardErrors = new Map(), pending = new Set(), noteFor = null, openError = null, prefError = null, narration = null }) {
+export function reviewModel({ film, state, layout = "script", making = false, listError = null, cardErrors = new Map(), pending = new Set(), noteFor = null, openError = null, prefError = null, narration = null, playing = null }) {
   if (openError) return { openFailed: true, dir: openError.dir, title: openError.title, message: `Couldn't open ${openError.title}: ${openError.message}` };
   if (!film) return { noFilm: true };
   const assets = state?.assets ?? [];
@@ -106,7 +109,7 @@ export function reviewModel({ film, state, layout = "script", making = false, li
     prefError,
     making,
     listError,
-    narration: narrationModel(narration),
+    narration: narrationModel(narration, playing),
     summary: summarize(assets),
     noteFor,
     cards: ordered.map((a) => cardModel(a, assets, { pending: pending.has(a.id), error: cardErrors.get(a.id) ?? null })),
@@ -216,7 +219,7 @@ export function render(el, model, actions) {
     model.prefError ? h("p", { class: "err", text: model.prefError }) : null,
   ].filter(Boolean);
   if (model.needsShotList) {
-    el.replaceChildren(...head, ...(model.narration ? [narrationSection(model.narration)] : []), h("div", { class: "panel" },
+    el.replaceChildren(...head, ...(model.narration ? [narrationSection(model.narration, actions)] : []), h("div", { class: "panel" },
       h("p", { text: "This film has no shot list yet. Claude reads the script and part1_handover.md and plans the b-roll." }),
       btn(model.making ? "Making the shot list\u2026" : "Make shot list", () => actions.makeShotList(), { disabled: model.making }),
       model.listError ? h("p", { class: "err", text: model.listError }) : null));
@@ -231,5 +234,5 @@ export function render(el, model, actions) {
   const body = model.layout === "grid"
     ? h("div", { class: "cards" }, model.cards.map((c) => card(c, model, actions)))
     : h("div", { class: "script" }, model.cards.map((c) => h("div", { class: "shot" }, h("blockquote", { class: "line", text: c.line }), card(c, model, actions))));
-  el.replaceChildren(...head, ...(model.narration ? [narrationSection(model.narration)] : []), sum, h("div", { class: "h2row" }, h("h2", { text: "B-roll" }), toggle), body);
+  el.replaceChildren(...head, ...(model.narration ? [narrationSection(model.narration, actions)] : []), sum, h("div", { class: "h2row" }, h("h2", { text: "B-roll" }), toggle), body);
 }

@@ -121,7 +121,7 @@ textarea{width:100%;background:var(--s0);color:var(--ink);border:1px solid var(-
 .tool-switch button:disabled{opacity:.5;cursor:default}
 
 .narr{list-style:none;margin:0 0 8px;padding:0;display:grid;gap:2px}
-.narr li{display:grid;grid-template-columns:3.2em minmax(0,1fr) auto;gap:0 12px;align-items:baseline;background:var(--s1);border:1px solid var(--rule);padding:5px 12px;font-size:13px}
+.narr li{display:grid;grid-template-columns:28px 3.2em minmax(0,1fr) auto;gap:0 12px;align-items:baseline;background:var(--s1);border:1px solid var(--rule);padding:5px 12px;font-size:13px}
 .narr .nid{color:var(--mut);font-variant-numeric:tabular-nums}
 .narr .ntx{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .narr .chip{font-size:11px;font-weight:500;letter-spacing:.14em;text-transform:uppercase;color:var(--fnt)}
@@ -130,6 +130,9 @@ textarea{width:100%;background:var(--s0);color:var(--ink);border:1px solid var(-
 .narr .chip.checking{color:var(--tide)}
 .narr .chip.flagged{color:var(--brass)}
 .narr .chip.error{color:var(--eng)}
-.narr .nflag{grid-column:2/-1;color:var(--brass);overflow-wrap:anywhere}
-.narr .nnote{grid-column:2/-1;color:var(--fnt);overflow-wrap:anywhere}
+.narr .nflag{grid-column:3/-1;color:var(--brass);overflow-wrap:anywhere}
+.narr .nnote{grid-column:3/-1;color:var(--fnt);overflow-wrap:anywhere}
 .narr .n-error .nflag{color:var(--eng)}
+.narr .nplay{width:24px;height:22px;padding:0;background:none;border:1px solid var(--rule);color:var(--tide);font-size:10px;line-height:1;cursor:pointer}
+.narr .nplay:hover{border-color:var(--tide)}
+.narr .nplay.on{color:var(--brass);border-color:var(--brass)}

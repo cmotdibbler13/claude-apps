@@ -115,6 +115,7 @@ async function rowFor(host, base, project, ln) {
   let take;
   try { take = await host.fs.stat(join(base, `${project}_${ln.id}.wav`)); } catch { return row; }
   if (!take?.isFile) return row;
+  row.file = join(base, `${project}_${ln.id}.wav`); // the take, for the play button
   const res = await readJson(host, join(base, "checks", `${project}_${ln.id}.json`));
   const takeS = take.mtimeMs / 1000;
   if (!res) return { ...row, status: "unchecked" }; // never checked: Check all in Autocue Studio
