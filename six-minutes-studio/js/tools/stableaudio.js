@@ -9,6 +9,11 @@ export const MSG_MUSIC = "Stable Audio Music is running. Stop it in Pinokio, the
 export const MSG_PINOKIO = "Open Pinokio first, then press Start Stable Audio.";
 export const MSG_DIDNT_START = "Stable Audio didn't start. Look at its Terminal in Pinokio, or switch this cue to ElevenLabs.";
 
+export const MSG_STOPPED = "Stable Audio was stopped.";
+
+// With shell:true Node does not quote arguments, so quote any that cmd.exe would split or interpret.
+const quote = (a) => (/[\s&()^]/.test(a) && !/^".*"$/.test(a) ? `"${a}"` : a);
+
 const base = (sa) => String(sa.url).replace(/\/+$/, "");
 
 async function curlGet(host, url) {
@@ -33,7 +38,7 @@ export async function stableAudioState(host, sa) {
 }
 
 export function makeStableAudioStarter({ sleep, settings }) {
-  let state = "off", message = null, proc = null, running = null;
+  let state = "off", message = null, proc = null, running = null, gen = 0;
   const subs = new Set();
   const set = (s, m = null) => {
     if (s === state && m === message) return;
@@ -43,12 +48,13 @@ export function makeStableAudioStarter({ sleep, settings }) {
   const sa = () => settings.stableAudio;
 
   async function start(host) {
+    const myGen = gen;
     const live = await stableAudioState(host, sa());
     if (live === "ready") { set("ready"); return; }
     if (live === "music") { set("music", MSG_MUSIC); throw new Error(MSG_MUSIC); }
     set("starting");
     let output = "", exited = false;
-    const p = host.spawn(sa().pterm, ["run", sa().app, "--default", "start.js?model=small-sfx"], { shell: true });
+    const p = host.spawn(quote(sa().pterm), ["run", sa().app, "--default", "start.js?model=small-sfx"].map(quote), { shell: true });
     proc = p;
     const add = (c) => { output = (output + String(c)).slice(-KEEP); };
     p.onOut(add); p.onErr(add);
@@ -56,12 +62,15 @@ export function makeStableAudioStarter({ sleep, settings }) {
       exited = true;
       if (proc === p) { proc = null; if (state === "ready") set("off"); }
     });
-    const fail = (msg) => { set("failed", msg); try { Promise.resolve(p.kill()).catch(() => {}); } catch { /* gone */ } if (proc === p) proc = null; throw new Error(msg); };
+    const kill = () => { try { Promise.resolve(p.kill()).catch(() => {}); } catch { /* gone */ } if (proc === p) proc = null; };
+    const fail = (msg, st = "failed") => { set(st, msg); kill(); throw new Error(msg); };
     for (let i = 1; i <= MAX_POLLS; i++) {
       await sleep(POLL_MS);
+      if (gen !== myGen) throw new Error(MSG_STOPPED);
       const s = await stableAudioState(host, sa());
+      if (gen !== myGen) throw new Error(MSG_STOPPED);
       if (s === "ready") { set("ready"); return; }
-      if (s === "music") return fail(MSG_MUSIC);
+      if (s === "music") return fail(MSG_MUSIC, "music");
       if (exited) return fail(i === 1 || /42000|ECONNREFUSED|connect/i.test(output) ? MSG_PINOKIO : MSG_DIDNT_START);
     }
     return fail(MSG_DIDNT_START);
@@ -72,12 +81,15 @@ export function makeStableAudioStarter({ sleep, settings }) {
     message: () => message,
     onChange(fn) { subs.add(fn); return () => subs.delete(fn); },
     ensure(host) {
-      if (!running) running = start(host).finally(() => { running = null; });
+      if (!running) {
+        const r = start(host).finally(() => { if (running === r) running = null; });
+        running = r;
+      }
       return running;
     },
     async stop() {
       const p = proc;
-      proc = null;
+      proc = null; gen++; running = null;
       if (p) { try { await p.kill(); } catch { /* already gone */ } }
       if (state === "ready" || state === "starting") set("off");
     },

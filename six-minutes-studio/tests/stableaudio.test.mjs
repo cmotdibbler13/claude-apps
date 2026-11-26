@@ -152,3 +152,63 @@ test("stop kills the kept pterm process; a later exit does not break state", asy
   assert.equal(s.starter.state(), "off");
   await s.starter.stop(); // no process: harmless
 });
+
+test("stop during starting ends the poll without ready or failed, and ensure rejects", async () => {
+  const s = setup({ curlCode: () => 7 });
+  let polls = 0;
+  const starter = makeStableAudioStarter({
+    settings: { stableAudio: SA },
+    sleep: async () => { if (++polls === 2) await starter.stop(); },
+  });
+  const states = [];
+  starter.onChange(() => states.push(starter.state()));
+  await assert.rejects(starter.ensure(s.host), { message: "Stable Audio was stopped." });
+  assert.equal(polls, 2);
+  assert.equal(starter.state(), "off");
+  assert.deepEqual(states, ["starting", "off"]);
+});
+
+test("music appearing mid-poll sets music, kills pterm and rejects", async () => {
+  let calls = 0, killed = false;
+  const s = setup();
+  s.host.spawnScript((cmd, args, opts, p) => {
+    s.spawns.push({ cmd, args, opts });
+    if (cmd === "curl") {
+      calls++;
+      if (calls === 1) { p.err("refused"); return p.exit(7); }
+      p.out(musicPage); return p.exit(0);
+    }
+    const orig = p.exit; p.exit = (c) => { killed = true; orig(c); };
+    s.ptermProcs.push(p);
+  });
+  await assert.rejects(s.starter.ensure(s.host), { message: MUSIC_MSG });
+  assert.equal(s.starter.state(), "music");
+  assert.equal(killed, true);
+});
+
+test("a path with a space or ampersand reaches the shell quoted", async () => {
+  const s = setup({ curlCode: () => 7 });
+  const settings = { stableAudio: { ...SA, pterm: "C:\\Program Files\\pterm.cmd", app: "C:\\my apps\\a&b.git" } };
+  const starter = makeStableAudioStarter({ settings, sleep: async () => {} });
+  await assert.rejects(starter.ensure(s.host));
+  const pt = s.pterms()[0];
+  assert.equal(pt.cmd, '"C:\\Program Files\\pterm.cmd"');
+  assert.deepEqual(pt.args, ["run", '"C:\\my apps\\a&b.git"', "--default", "start.js?model=small-sfx"]);
+});
+
+test("pterm exiting after ready sets state off", async () => {
+  let calls = 0;
+  const s = setup();
+  s.host.spawnScript((cmd, args, opts, p) => {
+    if (cmd === "curl") {
+      if (args.at(-1).endsWith("/gradio_api/info")) { p.out(info); return p.exit(0); }
+      if (++calls <= 2) { p.err("refused"); return p.exit(7); }
+      p.out(sfxPage); return p.exit(0);
+    }
+    s.ptermProcs.push(p);
+  });
+  await s.starter.ensure(s.host);
+  assert.equal(s.starter.state(), "ready");
+  s.ptermProcs[0].exit(1);
+  assert.equal(s.starter.state(), "off");
+});
