@@ -151,6 +151,7 @@ export async function editItem(store, id, patch = {}) {
     const x = need(d, id);
     notBusy(store, x);
     for (const k of changes) x[k] = next[k];
+    if (changes.includes("prompt")) delete x.pendingNote; // the note was for the rewritten prompt
     if (changes.some((k) => k === "prompt" || k === "durationS" || k === "loop")) x.est = null;
   });
   const what = changes.map((k) => (k === "source" ? `now uses ${SOURCE_LABEL[next.source]}` : k === "durationS" ? "length changed" : k === "loop" ? `loop ${next.loop ? "on" : "off"}` : "prompt edited"));
@@ -173,7 +174,17 @@ async function flowFor(host, store) {
 }
 
 // Credits for ONE take of exactly the item's current prompt, length and loop.
-export async function getEstimate(ctx, id) {
+// A second call while one is running for the same item shares it, so a double click adds one node.
+const estimating = new WeakMap();
+export function getEstimate(ctx, id) {
+  const { store } = ctx;
+  if (!estimating.has(store)) estimating.set(store, new Map());
+  const running = estimating.get(store);
+  if (!running.has(id)) running.set(id, estimateOnce(ctx, id).finally(() => running.delete(id)));
+  return running.get(id);
+}
+
+async function estimateOnce(ctx, id) {
   const { host, store } = ctx;
   const item = need(store.state, id);
   if (sourceOf(item) !== "elevenlabs") throw new Error(`${labelOf(item)} uses Stable Audio, which is free.`);
@@ -242,6 +253,7 @@ export async function startAudioTake(ctx, id, { note, count = 1 } = {}) {
     if (source === "elevenlabs") throw new Error("Get the cost first.");
     takeNote = note;
     item = need(store.state, id);
+    notBusy(store, item); // another take may have started while the prompt was rewritten
   } else if (filled(item.pendingNote)) takeNote = item.pendingNote;
 
   const flowId = store.state.audio.flowId;
@@ -288,7 +300,7 @@ export async function startAudioTake(ctx, id, { note, count = 1 } = {}) {
       ids.set(n, jobs.add({
         film: store.dir, assetId: id, take: n, tool: source,
         what: `${labelOf(item)} take ${n}`,
-        why: takeNote ? `Take ${n}, from your note "${takeNote}"` : "First take",
+        why: takeNote ? `Take ${n}, from your note "${takeNote}"` : n === 1 ? "First take" : `Take ${n}`,
         input: inputFor(n),
       }));
     }

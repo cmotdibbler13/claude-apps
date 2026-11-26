@@ -275,3 +275,43 @@ test("choose, approve and unapprove follow the b-roll rules", async () => {
   assert.equal(s.store.state.audio.sfx[0].approved, false);
   await assert.rejects(() => chooseAudio(s.ctx, "SFX-01", 9), /no take 9/);
 });
+
+test("two parallel getEstimate calls add one node", async () => {
+  const s = await planned();
+  const calls = eleven(s.host);
+  const [a, b] = await Promise.all([getEstimate(s.ctx, "SCORE"), getEstimate(s.ctx, "SCORE")]);
+  assert.equal(a, 6149);
+  assert.equal(b, 6149);
+  assert.equal(count(calls, "creative_create_flow"), 1);
+  assert.equal(count(calls, "creative_add_flow_node"), 1);
+  await getEstimate(s.ctx, "SCORE"); // a later call runs again
+  assert.equal(count(calls, "creative_run_flow_nodes"), 2);
+});
+
+test("a take started elsewhere during the note rewrite stops the redo", async () => {
+  const s = await planned();
+  s.host.claudeScript(() => ({ prompt: "a slower creak" }));
+  const log = s.store.log;
+  s.store.log = async (t) => { if (/rewritten/.test(t)) s.store.pending.add("SFX-01#1"); return log(t); };
+  await assert.rejects(() => startAudioTake(s.ctx, "SFX-01", { note: "slower" }), /in progress/);
+  assert.equal(s.jobs.list().length, 0);
+  assert.deepEqual(s.store.state.audio.sfx[0].takes, []);
+});
+
+test("editing the prompt drops a waiting note", async () => {
+  const s = await planned();
+  s.host.claudeScript(() => ({ prompt: "new" }));
+  await rewriteFromNote(s.ctx, "SFX-01", "heavier");
+  await editItem(s.store, "SFX-01", { durationS: 4 });
+  assert.equal(s.store.state.audio.sfx[0].pendingNote, "heavier");
+  await editItem(s.store, "SFX-01", { prompt: "my own prompt" });
+  assert.equal(s.store.state.audio.sfx[0].pendingNote, undefined);
+});
+
+test("takes without a note: First take, then Take n", async () => {
+  const s = await planned();
+  eleven(s.host);
+  await getEstimate(s.ctx, "SCORE");
+  await startAudioTake(s.ctx, "SCORE", { count: 2 });
+  assert.deepEqual(s.jobs.list().map((j) => j.why), ["First take", "Take 2"]);
+});
