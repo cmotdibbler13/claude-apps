@@ -45,5 +45,4 @@ export function mediaEl(file, video, preview, label) {
   return wrap;
 }
 
-export const TOOL_LABEL = { higgsfield: "Higgsfield", blender: "Blender", comfyui: "ComfyUI" };
-export const toolLabel = (t) => TOOL_LABEL[t] ?? (t ? t[0].toUpperCase() + t.slice(1) : "");
+export { TOOL_LABEL, toolLabel } from "../labels.js";

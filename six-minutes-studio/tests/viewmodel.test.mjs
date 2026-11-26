@@ -101,7 +101,7 @@ test("activity log needs an open film", () => {
 
 test("persist error banner text", () => {
   const m = jobsModel({ jobs: [], log: null, retried: new Set(), persistError: "EACCES" });
-  assert.equal(m.banner, "Couldn't save job progress to the drive: EACCES. If you close the app now, running Higgsfield jobs may not reconnect.");
+  assert.equal(m.banner, "Couldn't save job progress to the drive: EACCES. If you close the app now, running jobs may not reconnect.");
   assert.equal(jobsModel({ jobs: [], log: null, retried: new Set() }).banner, null);
 });
 
@@ -284,6 +284,19 @@ test("comfyui overlay text; other tools keep Regenerating in", () => {
   assert.equal(cardModel(q, [q]).overlay, "Queued for ComfyUI");
   const hf = broll({ takes: [take(1, "running")], chosen: 1 });
   assert.equal(cardModel(hf, [hf]).overlay, "Regenerating in Higgsfield");
+});
+
+test("the tag and overlay follow the running take's tool, falling back to the shot's tool", () => {
+  const a = broll({ tool: "higgsfield", takes: [take(1, "running", { tool: "comfyui" })], chosen: 1 });
+  const c = cardModel(a, [a]);
+  assert.equal(c.overlay, "Rendering in ComfyUI");
+  assert.equal(c.tag, "HF-05 \u00B7 ComfyUI \u00B7 take 1/1");
+  const old = broll({ tool: "comfyui", takes: [take(1, "queued")], chosen: 1 });
+  const o = cardModel(old, [old]);
+  assert.equal(o.overlay, "Queued for ComfyUI");
+  assert.match(o.tag, /ComfyUI/);
+  const idle = broll({ tool: "higgsfield", takes: [take(1, "done", { tool: "comfyui", file: "a.mp4" })], chosen: 1 });
+  assert.match(cardModel(idle, [idle]).tag, /Higgsfield/);
 });
 
 test("review model carries the prefer ComfyUI preference, before and after a shot list", () => {

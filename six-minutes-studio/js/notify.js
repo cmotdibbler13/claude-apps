@@ -1,9 +1,9 @@
 // Pure rules for desktop notifications: compare two job snapshots, return the messages to show.
 import { filmKey } from "./paths.js";
+import { toolLabel } from "./labels.js";
 
 const MAX = 300;
 const cap = (s) => (s.length > MAX ? s.slice(0, MAX - 1) + "…" : s);
-const cap1 = (s) => String(s ?? "").charAt(0).toUpperCase() + String(s ?? "").slice(1);
 const live = (j) => j.status === "queued" || j.status === "running";
 const folder = (p) => String(p ?? "").split(/[\\/]/).filter(Boolean).pop() ?? "";
 
@@ -14,7 +14,7 @@ export function notifyRules(prev = [], next = []) {
     const old = before.get(j.id);
     if (!old || old.status === j.status) continue;
     if (j.status === "done") out.push(`${j.assetId} take ${j.take} is ready to review`);
-    else if (j.status === "failed") out.push(`${j.assetId} take ${j.take} failed in ${cap1(j.tool)}`);
+    else if (j.status === "failed") out.push(`${j.assetId} take ${j.take} failed in ${toolLabel(j.tool)}`);
   }
   for (const key of new Set(prev.filter(live).map((j) => filmKey(j.film)))) {
     if (next.some((j) => filmKey(j.film) === key && live(j))) continue;

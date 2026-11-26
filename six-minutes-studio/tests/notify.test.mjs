@@ -41,6 +41,11 @@ test("failed names Blender capitalised and no film message while others are acti
   assert.deepEqual(notifyRules(prev, next), ["BR-07 take 3 failed in Blender"]);
 });
 
+test("failed names ComfyUI with its proper label", () => {
+  const prev = [job({ tool: "comfyui" })];
+  assert.deepEqual(notifyRules(prev, [job({ tool: "comfyui", status: "failed" })]).slice(0, 1), ["BR-07 take 3 failed in ComfyUI"]);
+});
+
 test("no duplicate on repeated identical states", () => {
   const prev = [job({ status: "done" })];
   assert.deepEqual(notifyRules(prev, [job({ status: "done" })]), []);

@@ -60,7 +60,7 @@ export function jobsModel({ jobs = [], log = null, retried = new Set(), persistE
     logEmpty: log ? (log.length ? null : "Nothing logged yet") : "Open a film to see its activity",
     keepOpen: jobs.some(active),
     banner: persistError
-      ? `Couldn't save job progress to the drive: ${persistError}. If you close the app now, running Higgsfield jobs may not reconnect.`
+      ? `Couldn't save job progress to the drive: ${persistError}. If you close the app now, running jobs may not reconnect.`
       : null,
   };
 }

@@ -16,11 +16,12 @@ export function summarize(assets = []) {
 }
 
 export function cardModel(asset, assets, { pending = false, error = null } = {}) {
-  const tool = toolLabel(asset.tool);
   const chosen = chosenOf(asset);
   const busy = isBusy(asset);
   const locked = !canStart(asset, assets);
   const running = asset.takes.find(busyTake);
+  const runTool = running?.tool ?? asset.tool;
+  const tool = toolLabel(running ? runTool : asset.tool);
   const free = !busy && !pending;
   let status = null;
   if (!asset.takes.length) status = locked ? null : "No take yet";
@@ -36,7 +37,7 @@ export function cardModel(asset, assets, { pending = false, error = null } = {})
     approved: !!asset.approved,
     busy,
     pending,
-    overlay: running ? (running.status === "running" ? (asset.tool === "comfyui" ? "Rendering in ComfyUI" : `Regenerating in ${tool}`) : `Queued for ${tool}`) : null,
+    overlay: running ? (running.status === "running" ? (runTool === "comfyui" ? "Rendering in ComfyUI" : `Regenerating in ${tool}`) : `Queued for ${tool}`) : null,
     toolSwitch: asset.kind === "broll" ? {
       options: BROLL_TOOLS.map((t) => ({ tool: t, label: toolLabel(t), pressed: asset.tool === t })),
       disabled: !free,

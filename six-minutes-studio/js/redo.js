@@ -69,6 +69,7 @@ export async function startTake(ctx, assetId, { note } = {}) {
     input = { kind: asset.kind, prompt, out: asset.tool === "comfyui" ? base + ".mp4" : base };
   }
   if (hasNote) take.note = note;
+  take.tool = asset.tool;
   take.status = "queued";
   take.at = host.now();
 

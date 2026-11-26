@@ -314,6 +314,7 @@ test("startTake on a comfyui shot adds a comfyui job with an .mp4 out", async ()
   assert.equal(t.prompt, "draft prompt");
   const [j] = jobs.list();
   assert.equal(j.tool, "comfyui");
+  assert.equal(store.state.assets[0].takes[0].tool, "comfyui");
   assert.deepEqual(j.input, { kind: "broll", prompt: "draft prompt", out: DIR + "\\studio\\media\\HF-03_t1.mp4" });
   host.claudeScript(() => ({ prompt: "again" }));
   store.state.assets[0].takes[0].status = "done";
