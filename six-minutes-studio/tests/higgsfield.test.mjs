@@ -175,3 +175,45 @@ test("resume without jobRef rejects", async () => {
   const t = setup({ mcp: () => done() });
   await assert.rejects(t.runner.resume(job(), t.ctx), /jobRef/);
 });
+
+test("start survives 4 thrown jobs_wait calls and succeeds; generate called once", async () => {
+  let n = 0;
+  const t = setup({ mcp: (tool) => { if (tool === "generate_video") return { job_id: UUID }; if (++n <= 4) throw new Error("blip"); return done(); } });
+  const r = await t.runner.start(job(), t.ctx);
+  assert.equal(r.file, OUT + ".mp4");
+  assert.equal(t.calls.filter((c) => c.t === "generate_video").length, 1);
+  assert.deepEqual(t.sleeps, [20000, 20000, 20000, 20000]);
+});
+
+test("start rejects with the unreachable message after 5 consecutive jobs_wait errors, keeping jobRef", async () => {
+  const t = setup({ mcp: (tool) => { if (tool === "generate_video") return { job_id: UUID }; throw new Error("offline"); } });
+  await assert.rejects(t.runner.start(job(), t.ctx), /Couldn't reach Higgsfield to check this job; it may still be running\. Run again only if you're sure it failed\./);
+  assert.deepEqual(t.refs, [UUID]);
+  assert.equal(t.calls.filter((c) => c.t === "generate_video").length, 1);
+});
+
+test("unsafe result URL characters are rejected without running curl", async () => {
+  for (const bad of ["https://cdn.example.com/a.mp4?x=%41", "https://cdn.example.com/a'b.mp4", "https://cdn.example.com/a`b.mp4", "https://cdn.example.com/a$b.mp4", "https://cdn.example.com/a!b.mp4", "https://cdn.example.com/a^b.mp4"]) {
+    let execs = 0;
+    const t = setup({ mcp: (tool) => (tool === "generate_video" ? { job_id: UUID } : done(bad)), exec: async () => { execs++; return { code: 0 }; } });
+    await assert.rejects(t.runner.start(job(), t.ctx), /unsafe/, bad);
+    assert.equal(execs, 0);
+  }
+});
+
+test("a URL with an apostrophe is not silently truncated", async () => {
+  let cmd = "";
+  const t = setup({ mcp: (tool) => (tool === "generate_video" ? { job_id: UUID } : done("https://cdn.example.com/a'b.mp4")), exec: async (c) => { cmd = c; return { code: 0 }; } });
+  await assert.rejects(t.runner.start(job(), t.ctx), /unsafe/);
+  assert.equal(cmd, "");
+});
+
+test("unsafe output path characters are rejected without running curl", async () => {
+  for (const ch of ['"', "%", "&", "|", "<", ">", "^", "`", "$", "!"]) {
+    let execs = 0;
+    const t = setup({ mcp: (tool) => (tool === "generate_video" ? { job_id: UUID } : done()), exec: async () => { execs++; return { code: 0 }; } });
+    const j = job(); j.input.out = OUT + ch + "x";
+    await assert.rejects(t.runner.start(j, t.ctx), /unsafe/, ch);
+    assert.equal(execs, 0);
+  }
+});

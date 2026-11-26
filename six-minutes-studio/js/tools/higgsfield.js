@@ -26,8 +26,8 @@ function parseEntry(p) {
   const e = p?.jobs?.[0] ?? p?.results?.[0] ?? p ?? {};
   const status = String(e.status ?? e.state ?? "").toLowerCase();
   let s = ""; try { s = JSON.stringify(e) ?? ""; } catch { /* ignore */ }
-  const url = s.match(/https:\/\/[^\s"'\\<>]+/)?.[0] ?? null;
-  const httpUrl = url ? null : s.match(/http:\/\/[^\s"'\\<>]+/)?.[0] ?? null;
+  const url = s.match(/https:\/\/[^\s"\\<>]+/)?.[0] ?? null;
+  const httpUrl = url ? null : s.match(/http:\/\/[^\s"\\<>]+/)?.[0] ?? null;
   return { status, error: typeof e.error === "string" ? e.error : e.error?.message, url, httpUrl };
 }
 
@@ -41,6 +41,8 @@ export function makeHiggsfieldRunner({ settings = DEFAULT_SETTINGS, sleep = real
 
   async function download(host, url, input) {
     if (!/^https:\/\//i.test(url)) throw new Error("Higgsfield returned a non-https result URL; refusing to download it.");
+    if (/["%`$!^'\s]/.test(url)) throw new Error("Higgsfield returned a result URL with characters that are unsafe to pass to curl; refusing to download it.");
+    if (/["%&|<>^`$!]/.test(input.out)) throw new Error("The output path contains characters that are unsafe for the shell (\" % & | < > ^ ` $ !); refusing to download.");
     const file = `${input.out}.${extOf(url, input.kind)}`;
     const dir = file.replace(/[\\/][^\\/]*$/, "");
     await host.fs.mkdir(dir);
@@ -100,7 +102,7 @@ export function makeHiggsfieldRunner({ settings = DEFAULT_SETTINGS, sleep = real
       const jobId = parseJobId(payload);
       if (!jobId) throw new Error(`Higgsfield did not return a job id (not generating again). Response: ${excerpt(payload)}`);
       ctx.setRef(jobId);
-      return waitAndDownload(job, ctx, jobId, { tolerateErrors: false });
+      return waitAndDownload(job, ctx, jobId, { tolerateErrors: true });
     },
 
     async resume(job, ctx) {
