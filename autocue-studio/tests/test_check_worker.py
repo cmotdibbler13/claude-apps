@@ -124,6 +124,8 @@ class StaleResultDropped(WorkerTestCase):
             json.dump({"id": "05.2", "marker": "new take"}, f)
         w.submit(self.job())
         self.assertEqual(self.next_result(), (None, {"status": "loading"}))
+        self.assertEqual(self.next_result(),
+                         ("05.2", {"status": "dropped", "file": "film_05.2.wav"}))
         self.assert_no_more_results()
         with open(self.result_file(), encoding="utf-8") as f:
             self.assertEqual(json.load(f)["marker"], "new take")
@@ -136,6 +138,7 @@ class StaleResultDropped(WorkerTestCase):
         w = self.start(check=check_that_deletes)
         w.submit(self.job())
         self.assertEqual(self.next_result(), (None, {"status": "loading"}))
+        self.assertEqual(self.next_result()[1]["status"], "dropped")
         self.assert_no_more_results()
         self.assertFalse(os.path.exists(self.result_file()))
 
@@ -143,8 +146,13 @@ class StaleResultDropped(WorkerTestCase):
         calls = []
         w = self.start(check=lambda *a: calls.append(a) or ok_body())
         w.submit(self.job(path=os.path.join(self.dir, "nope.wav")))
+        self.assertEqual(self.next_result(),
+                         ("05.2", {"status": "dropped", "file": "nope.wav"}))
         self.assert_no_more_results()
         self.assertEqual(calls, [])
+
+    def test_drop_shows_nothing(self):
+        self.assertIsNone(check_worker.status_message("05.2", {"status": "dropped"}))
 
 
 class TranscriberUnavailable(WorkerTestCase):
@@ -295,6 +303,15 @@ class ReadResult(WorkerTestCase):
             f.write("[1, 2]")
         self.assertIsNone(check_worker.read_result(self.checks_dir, "film", "05.2"))
 
+    def test_needs_check(self):
+        self.assertTrue(check_worker.needs_check(None, 100.0))
+        self.assertTrue(check_worker.needs_check({"take_mtime": 90.0, "ok": True}, 100.0))
+        self.assertFalse(check_worker.needs_check({"take_mtime": 100.0, "ok": True}, 100.0))
+        # An error is retried by Check all even when it is for this very take.
+        self.assertTrue(check_worker.needs_check(
+            {"take_mtime": 100.0, "error": "Checks unavailable: no model"}, 100.0))
+        self.assertTrue(check_worker.needs_check({}, 100.0))
+
     def test_is_current(self):
         path = self.make_take()
         mtime = os.stat(path).st_mtime
@@ -330,6 +347,23 @@ class Copy(unittest.TestCase):
         self.assertEqual(
             check_worker.status_message("05.2", self.flagged("room noise at -50 dBFS", ok=True)),
             ("05.2 ✓ OK", "ok"))
+
+    def test_check_all_nothing_to_do(self):
+        self.assertEqual(check_worker.check_all_message(0), "All takes checked")
+        self.assertEqual(check_worker.check_all_message(1), "Checking 1 take…")
+        self.assertEqual(check_worker.check_all_message(3), "Checking 3 takes…")
+
+    def test_append_after_saved(self):
+        join = check_worker.join_status
+        self.assertEqual(join("Saved  a.wav", "05.2 ✓ OK", None), "Saved  a.wav  ·  05.2 ✓ OK")
+        warn = "Saved  a.wav  ·  server copy failed, will retry after the next take"
+        self.assertEqual(join(warn, "05.2 ✓ OK", None), warn + "  ·  05.2 ✓ OK")
+        # A later check replaces the earlier one rather than piling up.
+        self.assertEqual(join("Saved  a.wav  ·  05.2 ✓ OK  ·  copied to server ✓",
+                              "05.3 ✓ OK", "05.2 ✓ OK"),
+                         "Saved  a.wav  ·  05.3 ✓ OK  ·  copied to server ✓")
+        self.assertEqual(join("Ready", "05.2 ✓ OK", None), "05.2 ✓ OK")
+        self.assertEqual(join("Checking 3 takes…", "05.2 ✓ OK", None), "05.2 ✓ OK")
 
     def test_status_loading_and_error(self):
         self.assertEqual(

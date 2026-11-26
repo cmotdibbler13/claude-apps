@@ -12,6 +12,7 @@ Two ways to work:
 import colorsys
 import math
 import os
+import queue
 import re
 import shutil
 import time
@@ -285,13 +286,19 @@ class AutocueApp(ctk.CTk):
         self.auto_advance = ctk.BooleanVar(value=True)
         self.line_countdown = ctk.StringVar(value=LINE_COUNTDOWN_DEFAULT)
 
-        # Take checks run on a worker thread (see check_worker.py); results
-        # come back to the UI thread through after().
-        self._held_check = None        # a result that arrived mid-take
-        self._last_check_error = None  # show a repeating error only once
+        # Take checks run on a worker thread (see check_worker.py). Results
+        # come back through a thread-safe queue that _poll_checks drains on
+        # the UI thread.
+        self._check_inbox: queue.Queue = queue.Queue()
+        self._check_poll_job = None
+        self._closing = False
+        self._queued_checks: set[str] = set()  # take file names awaiting a check
+        self._held_check = None         # a result that arrived mid-take
+        self._last_check_error = None   # show a repeating error only once
+        self._shown_check_text = None   # the check text last put on the status line
         self.checker = check_worker.CheckWorker(
             self._make_transcriber,
-            lambda line_id, result: self.after(0, self._show_check, line_id, result),
+            lambda line_id, result: self._check_inbox.put((line_id, result)),
         )
 
         self.grid_columnconfigure(0, weight=1)
@@ -306,6 +313,7 @@ class AutocueApp(ctk.CTk):
         self._bind_keys()
         self.backup.request()  # catch up anything not yet on the server
         self._poll_backup()
+        self._poll_checks()
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -1037,7 +1045,7 @@ class AutocueApp(ctk.CTk):
                 text=f"Saved  {os.path.basename(path)}", text_color=ACCENT_GREEN
             )
             self.backup.request()
-        self._show_held_check(after_saved=bool(path))
+        self._show_held_check()
         if path and self.line_mode and self.auto_advance.get():
             if self.line_index < len(self.script_lines) - 1:
                 self.line_index += 1
@@ -1074,35 +1082,59 @@ class AutocueApp(ctk.CTk):
         return os.path.join(self._recordings_dir(), "checks")
 
     def _submit_check(self, index: int) -> None:
+        """Queue a check of a line's take, unless that take is already queued."""
+        path = self._take_path(index)
+        name = os.path.basename(path)
+        if name in self._queued_checks:
+            return
+        self._queued_checks.add(name)
         self.checker.submit({
             "id": self.script_lines[index]["id"],
-            "path": self._take_path(index),
+            "path": path,
             "line_text": self.script_lines[index]["text"],
             "checks_dir": self._checks_dir(),
             "project": self.script_name,
         })
 
     def _check_all(self) -> None:
-        """Check every saved take that has no result, or an out-of-date one."""
+        """Check every saved take with no result, an out-of-date one or an error."""
         if not self.line_mode or self.recorder.is_recording or self._counting_down:
             return
         self.checker.reset_transcriber()  # retry a model that failed to load
         self._last_check_error = None
         count = 0
         for i, line in enumerate(self.script_lines):
-            take = self._take_path(i)
-            if not os.path.exists(take):
-                continue
+            try:
+                mtime = os.stat(self._take_path(i)).st_mtime
+            except OSError:
+                continue  # no take yet
             result = check_worker.read_result(self._checks_dir(), self.script_name, line["id"])
-            if not check_worker.is_current(result, take):
+            if check_worker.needs_check(result, mtime):
                 self._submit_check(i)
                 count += 1
         self.status_label.configure(
-            text=f"Checking {count} take{'' if count == 1 else 's'}…", text_color=INK_MUTED
+            text=check_worker.check_all_message(count), text_color=INK_MUTED
         )
+        self._shown_check_text = None
+
+    def _poll_checks(self) -> None:
+        """Hand the worker's results to _show_check (runs on the UI thread)."""
+        try:
+            while not self._closing:
+                try:
+                    line_id, result = self._check_inbox.get_nowait()
+                except queue.Empty:
+                    break
+                self._show_check(line_id, result)
+        finally:
+            if not self._closing:
+                self._check_poll_job = self.after(200, self._poll_checks)
 
     def _show_check(self, line_id, result) -> None:
-        """A check result (or the loading notice) from the worker, on the UI thread."""
+        """A check result, drop or loading notice from the worker."""
+        self._settle_queued_check(result)
+        if result.get("status") == "dropped":
+            return  # nothing to show
         if self.recorder.is_recording or self._counting_down:
             self._held_check = (line_id, result)  # never distract mid-take
             return
@@ -1111,7 +1143,28 @@ class AutocueApp(ctk.CTk):
                 and result.get("file") == os.path.basename(self._take_path(self.line_index))):
             self._show_check_mark()
 
-    def _set_check_status(self, line_id, result, prefix: str = "") -> None:
+    def _settle_queued_check(self, result) -> None:
+        """A queued take is done. If it was re-recorded meanwhile (the result
+        or drop is for an older file), check the new take."""
+        name = result.get("file")
+        if not name:
+            return
+        self._queued_checks.discard(name)
+        if not self.line_mode:
+            return
+        for i in range(len(self.script_lines)):
+            path = self._take_path(i)
+            if os.path.basename(path) == name:
+                try:
+                    mtime = os.stat(path).st_mtime
+                except OSError:
+                    return  # deleted: nothing to check
+                checked = result.get("take_mtime")
+                if checked is None or abs(mtime - checked) > check_worker.MTIME_TOLERANCE_S:
+                    self._submit_check(i)
+                return
+
+    def _set_check_status(self, line_id, result) -> None:
         text, kind = check_worker.status_message(line_id, result)
         if kind == "error":
             if text == self._last_check_error:
@@ -1119,15 +1172,19 @@ class AutocueApp(ctk.CTk):
             self._last_check_error = text
         elif kind in ("ok", "flag"):
             self._last_check_error = None
-        self.status_label.configure(text=prefix + text, text_color=CHECK_COLOURS[kind])
+        current = self.status_label.cget("text")
+        new = check_worker.join_status(current, text, self._shown_check_text)
+        colour = CHECK_COLOURS[kind]
+        if new != text and "failed" in current:
+            colour = BRASS  # keep a server-copy warning looking like one
+        self._shown_check_text = text
+        self.status_label.configure(text=new, text_color=colour)
 
-    def _show_held_check(self, after_saved: bool) -> None:
-        if self._held_check is None:
-            return
-        line_id, result = self._held_check
-        self._held_check = None
-        prefix = self.status_label.cget("text") + "  ·  " if after_saved else ""
-        self._set_check_status(line_id, result, prefix)
+    def _show_held_check(self) -> None:
+        if self._held_check is not None:
+            line_id, result = self._held_check
+            self._held_check = None
+            self._set_check_status(line_id, result)
 
     def _show_check_mark(self) -> None:
         line = self.script_lines[self.line_index]
@@ -1246,7 +1303,13 @@ class AutocueApp(ctk.CTk):
     # ------------------------------------------------------------ close
 
     def _on_close(self) -> None:
+        self._closing = True
         self.checker.stop()  # returns at once; the check thread is a daemon
+        if self._check_poll_job is not None:
+            try:
+                self.after_cancel(self._check_poll_job)
+            except Exception:
+                pass
         if self.recorder.is_recording:
             self._stop_scrolling()
             path = self.recorder.stop()  # finish writing the file before exiting

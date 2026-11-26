@@ -41,8 +41,8 @@ normal while a check runs.
   `05.2 flagged: last word "Skaill" cut off. Press ← to redo.` A result that
   arrives mid-take waits until you stop. Stepping back to a line shows its
   check under the text. **Check all** (beside *Folder*, line mode only) checks
-  every take with no result or an out-of-date one, e.g. takes made before this
-  feature.
+  every take with no result, an out-of-date one or an error, e.g. takes made
+  before this feature; it says "All takes checked" when there is nothing to do.
 - **Results** are small JSON files in `Recordings/<name>/checks/` (they stay
   local; the server backup only copies `.wav` files).
 - **Settings:** `autocue_settings.json` next to `app.py` (not committed).
@@ -52,7 +52,10 @@ normal while a check runs.
   {"check_model": "medium.en", "check_device": "auto"}
   ```
 
-  `auto` tries CUDA, then the CPU (int8). `small.en` is quicker if checks lag.
+  `auto` first test-runs CUDA in a separate process (once per session) and
+  uses it only if that works, otherwise the CPU (int8). `small.en` is quicker
+  if checks lag. If Autocue Studio closes by itself when checks start, set
+  `"check_device": "cpu"` in `autocue_settings.json`.
 - **First run** downloads the speech model (about 1.5 GB for `medium.en`); the
   status says "Checks are getting ready (downloading the speech model)…" until
   then. Checks need `faster-whisper` (in `requirements.txt`) and `ffmpeg` on

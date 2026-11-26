@@ -8,12 +8,14 @@ thread (Tk: self.after(0, ...)).
 
 * A take that changes or disappears while it is being checked is dropped
   silently: its result would describe audio that is no longer the take.
+  It is reported as on_result(id, {"status": "dropped", "file": ...}) so the
+  UI can stop tracking it (and check the new take); nothing is shown for it.
 * Any exception becomes an error result; the worker never dies.
 * The transcriber is made on the first job. If it is not loaded yet,
   on_result(None, {"status": "loading"}) is called once before that job.
 
-Also here, so the app stays thin: read_result, is_current and the status-line
-and line-mark copy.
+Also here, so the app stays thin: read_result, is_current, needs_check and the
+status-line and line-mark copy.
 """
 
 import json
@@ -30,6 +32,8 @@ load_settings = take_checks.load_settings  # autocue_settings.json, with default
 LOADING = {"status": "loading"}
 LOADING_TEXT = "Checks are getting ready (downloading the speech model)…"
 UNAVAILABLE = "Checks unavailable: "
+ALL_CHECKED = "All takes checked"
+STATUS_SEP = "  ·  "
 MTIME_TOLERANCE_S = 0.001
 
 _STOP = object()
@@ -61,8 +65,40 @@ def is_current(result, take_path):
     return abs(mtime - result["take_mtime"]) <= MTIME_TOLERANCE_S
 
 
+def needs_check(result, take_mtime):
+    """True when Check all should (re)check a take: no result, a result for an
+    older take, or an error (the cause may have been fixed since)."""
+    if not result or "error" in result:
+        return True
+    saved = result.get("take_mtime")
+    if not isinstance(saved, (int, float)):
+        return True
+    return abs(take_mtime - saved) > MTIME_TOLERANCE_S
+
+
+def check_all_message(count):
+    if count == 0:
+        return ALL_CHECKED
+    return f"Checking {count} take{'' if count == 1 else 's'}…"
+
+
+def join_status(current, text, previous_check=None):
+    """The status line after a check result arrives. After a "Saved …" line
+    (with or without the backup's suffix) the check is appended, replacing the
+    check appended before it, so a "server copy failed" warning stays put.
+    Anything else is simply replaced."""
+    if not current.startswith("Saved"):
+        return text
+    if previous_check and STATUS_SEP + previous_check in current:
+        return current.replace(STATUS_SEP + previous_check, STATUS_SEP + text, 1)
+    return current + STATUS_SEP + text
+
+
 def status_message(line_id, result):
-    """(text, kind) for the status line; kind is ok, flag, error or loading."""
+    """(text, kind) for the status line; kind is ok, flag, error or loading.
+    None for a dropped check, which shows nothing."""
+    if result.get("status") == "dropped":
+        return None
     if result.get("status") == "loading":
         return LOADING_TEXT, "loading"
     if "error" in result:
@@ -186,18 +222,22 @@ class CheckWorker:
 
     def _handle(self, job):
         path = job["path"]
+        dropped = {"status": "dropped", "file": os.path.basename(path)}
         try:
             mtime = os.stat(path).st_mtime
         except OSError:
-            return  # the take is gone already
+            self._emit(job["id"], dropped)  # the take is gone already
+            return
         try:
             body = self._check(path, job["line_text"], self._get_transcriber())
         except Exception as e:
             body = {"error": str(e) or type(e).__name__, "version": take_checks.VERSION}
         try:
-            if os.stat(path).st_mtime != mtime:
-                return  # re-recorded while checking: this result is stale
+            stale = os.stat(path).st_mtime != mtime  # re-recorded while checking
         except OSError:
+            stale = True                              # deleted while checking
+        if stale:
+            self._emit(job["id"], dropped)
             return
         result = {
             "id": job["id"],

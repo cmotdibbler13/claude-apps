@@ -660,13 +660,49 @@ class Transcriber:
         raise NotImplementedError
 
 
+CUDA_PROBE_TIMEOUT_S = 180
+CUDA_PROBE_MODEL = "tiny.en"
+
+
+def probe_cuda(run=None, timeout=CUDA_PROBE_TIMEOUT_S):
+    """True if faster-whisper can load and run a model on CUDA, tried in a
+    child process: a broken CUDA/cuDNN install can crash the process inside
+    ctranslate2, and that must not be Autocue Studio. Any failure, crash or
+    timeout is False."""
+    run = run or subprocess.run
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)  # Windows only
+    try:
+        done = run([sys.executable, os.path.abspath(__file__), "--probe-cuda"],
+                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL, timeout=timeout, creationflags=flags)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False
+    return done.returncode == 0
+
+
+def _probe_cuda_main():
+    """The child side of probe_cuda: exit 0 only if CUDA really works."""
+    try:
+        from faster_whisper import WhisperModel
+        model = WhisperModel(CUDA_PROBE_MODEL, device="cuda", compute_type="float16")
+        segments, _info = model.transcribe(np.zeros(RATE, dtype=np.float32), language="en")
+        list(segments)
+    except Exception:
+        return 1
+    return 0
+
+
 class WhisperTranscriber(Transcriber):
     """faster-whisper, loaded on first use. device "auto" tries CUDA, then CPU
-    int8. Any import or load failure is a CheckError("Checks unavailable: …")."""
+    int8. Any import or load failure is a CheckError("Checks unavailable: …").
+    In "auto", CUDA is only tried if probe() (a child-process trial run,
+    once per session) says it works; otherwise it goes straight to the CPU."""
 
-    def __init__(self, model="medium.en", device="auto"):
+    def __init__(self, model="medium.en", device="auto", probe=None):
         self.model_name = model or DEFAULT_SETTINGS["check_model"]
         self.device = (device or "auto").lower()
+        self._probe = probe or probe_cuda
+        self._cuda_works = None  # unknown until probed
         self._model = None
         self._on_cuda = False
         self._load_error = None
@@ -686,7 +722,11 @@ class WhisperTranscriber(Transcriber):
             return [("cuda", "float16")]
         if self.device == "cpu":
             return [("cpu", "int8")]
-        return [("cuda", "float16"), ("cpu", "int8")]
+        if self._cuda_works is None:
+            self._cuda_works = bool(self._probe())
+        if self._cuda_works:
+            return [("cuda", "float16"), ("cpu", "int8")]
+        return [("cpu", "int8")]
 
     def load(self):
         if self._model is not None:
@@ -801,6 +841,8 @@ def load_settings(app_dir):
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
+    if argv == ["--probe-cuda"]:
+        return _probe_cuda_main()
     if len(argv) != 2:
         print('usage: python take_checks.py <wav> "<line text>"', file=sys.stderr)
         return 2

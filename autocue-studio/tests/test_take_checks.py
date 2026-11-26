@@ -411,7 +411,7 @@ class Transcriber(unittest.TestCase):
 
         fake = mock.Mock(WhisperModel=FakeModel)
         with mock.patch.dict("sys.modules", {"faster_whisper": fake}):
-            t = take_checks.WhisperTranscriber("small.en", "auto")
+            t = take_checks.WhisperTranscriber("small.en", "auto", probe=lambda: True)
             t.load()
         self.assertEqual(calls, [("small.en", "cuda", "float16"), ("small.en", "cpu", "int8")])
 
@@ -589,7 +589,7 @@ class WhisperFallbacks(unittest.TestCase):
     def test_cuda_fails_at_transcribe_time(self):
         fake, made = self._fake({("run", "cuda"): self._raise("cudnn missing")})
         with mock.patch.dict("sys.modules", {"faster_whisper": fake}):
-            t = take_checks.WhisperTranscriber("medium.en", "auto")
+            t = take_checks.WhisperTranscriber("medium.en", "auto", probe=lambda: True)
             text, words = t.transcribe(np.zeros(1600, np.float32), 16000)
         self.assertEqual(made, ["cuda", "cpu"])
         self.assertEqual(text, "Hello there.")
@@ -599,7 +599,7 @@ class WhisperFallbacks(unittest.TestCase):
         fake, _ = self._fake({("run", "cuda"): self._raise("cudnn missing"),
                               ("run", "cpu"): self._raise("out of memory")})
         with mock.patch.dict("sys.modules", {"faster_whisper": fake}):
-            t = take_checks.WhisperTranscriber("medium.en", "auto")
+            t = take_checks.WhisperTranscriber("medium.en", "auto", probe=lambda: True)
             with self.assertRaises(CheckError) as cm:
                 t.transcribe(np.zeros(1600, np.float32), 16000)
         self.assertIn("out of memory", str(cm.exception))
@@ -613,7 +613,7 @@ class WhisperFallbacks(unittest.TestCase):
 
         fake, made = self._fake({("init", "cuda"): maybe, ("init", "cpu"): maybe})
         with mock.patch.dict("sys.modules", {"faster_whisper": fake}):
-            t = take_checks.WhisperTranscriber("medium.en", "auto")
+            t = take_checks.WhisperTranscriber("medium.en", "auto", probe=lambda: True)
             with self.assertRaises(CheckError) as first:
                 t.load()
             with self.assertRaises(CheckError) as second:
@@ -625,6 +625,84 @@ class WhisperFallbacks(unittest.TestCase):
             t.reset()
             t.load()
             self.assertTrue(t.loaded)
+
+
+class CudaProbe(unittest.TestCase):
+    """device "auto" probes CUDA in a subprocess first: a broken CUDA/cuDNN
+    install can kill the process inside ctranslate2, which must not be the app."""
+
+    def _load(self, device, probe):
+        made = []
+
+        class FakeModel:
+            def __init__(self, name, device, compute_type):
+                made.append((device, compute_type))
+
+        with mock.patch.dict("sys.modules", {"faster_whisper": mock.Mock(WhisperModel=FakeModel)}):
+            t = take_checks.WhisperTranscriber("medium.en", device, probe=probe)
+            t.load()
+        return t, made
+
+    def test_probe_success_tries_cuda(self):
+        _, made = self._load("auto", lambda: True)
+        self.assertEqual(made, [("cuda", "float16")])
+
+    def test_probe_failure_uses_cpu_only(self):
+        _, made = self._load("auto", lambda: False)
+        self.assertEqual(made, [("cpu", "int8")])
+
+    def test_cpu_setting_does_not_probe(self):
+        probe = mock.Mock(return_value=True)
+        _, made = self._load("cpu", probe)
+        probe.assert_not_called()
+        self.assertEqual(made, [("cpu", "int8")])
+
+    def test_probe_once_per_session(self):
+        probe = mock.Mock(return_value=False)
+        t, _ = self._load("auto", probe)
+        with mock.patch.dict("sys.modules", {"faster_whisper": mock.Mock()}):
+            t.reset()
+            t.load()
+        self.assertEqual(probe.call_count, 1)
+
+    def test_no_probe_without_faster_whisper(self):
+        probe = mock.Mock(return_value=True)
+        t = take_checks.WhisperTranscriber("medium.en", "auto", probe=probe)
+        with mock.patch.dict("sys.modules", {"faster_whisper": None}):
+            with self.assertRaises(CheckError):
+                t.load()
+        probe.assert_not_called()
+
+    def test_probe_cuda_subprocess(self):
+        import subprocess
+        seen = {}
+
+        def run(cmd, **kw):
+            seen["cmd"], seen["kw"] = cmd, kw
+            return subprocess.CompletedProcess(cmd, 0)
+
+        self.assertTrue(take_checks.probe_cuda(run=run))
+        self.assertEqual(seen["cmd"][-1], "--probe-cuda")
+        self.assertTrue(seen["cmd"][-2].endswith("take_checks.py"))
+        self.assertEqual(seen["kw"]["timeout"], 180)
+
+    def test_probe_cuda_failures(self):
+        import subprocess
+
+        def exits_1(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 1)
+
+        def crashes(cmd, **kw):  # e.g. 0xC0000005 from a bad cuDNN
+            return subprocess.CompletedProcess(cmd, 3221225477)
+
+        def times_out(cmd, **kw):
+            raise subprocess.TimeoutExpired(cmd, kw["timeout"])
+
+        def cannot_start(cmd, **kw):
+            raise OSError("no python")
+
+        for run in (exits_1, crashes, times_out, cannot_start):
+            self.assertFalse(take_checks.probe_cuda(run=run), run.__name__)
 
 
 class FfmpegTimeout(TakeTestCase):
