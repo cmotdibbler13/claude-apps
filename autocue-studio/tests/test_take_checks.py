@@ -495,6 +495,14 @@ class BritishSpellingsMatch(unittest.TestCase):
     def test_near_spelling_one_to_one(self):
         self.assertEqual(same("The Thames at Wapping.", "the thames at whapping"), [])
 
+    def test_short_word_swaps_are_misreads(self):
+        for meant, said in [("the", "them"), ("an", "and"), ("to", "too"),
+                            ("no", "not"), ("he", "her")]:
+            with self.subTest(meant=meant, said=said):
+                flags = same(f"We saw {meant} boat.", f"we saw {said} boat")
+                self.assertEqual([f["text"] for f in flags],
+                                 [f'may have misread: "{said}" for "{meant}"'])
+
     def test_real_differences_still_flagged(self):
         for line, heard in [("It let it.", "he let it"), ("The road.", "the rode"),
                             ("In 1854.", "in 1845")]:

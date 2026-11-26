@@ -43,7 +43,8 @@ TRANSIENT_MAX_S = 0.040
 CUT_OFF_TAIL_S = 0.1
 DROP_RULE_MAX_TAIL_S = 0.3   # the 18 dB drop rule only applies this close to the end
 HALLUCINATION_AFTER_S = 0.25 # transcript words starting this long after the voice
-SAME_WORD_RATIO = 0.8        # one-for-one words this similar count as the same
+SAME_WORD_RATIO = 0.8        # one-for-one words this similar count as the same,
+SAME_WORD_MIN_LEN = 5        # ...when both have at least this many letters
 FFMPEG_TIMEOUT_S = 60
 DROP_FRAME_S = 0.005
 DROP_DB = 18.0
@@ -590,10 +591,12 @@ def _quote(items):
 
 def _same_words(a, b):
     """A replacement that is really the same words: joined differently
-    ("co operate" / "cooperate") or one near-identical word (ratio >= 0.8)."""
+    ("co operate" / "cooperate") or one near-identical word of 5+ letters
+    (ratio >= 0.8); short swaps (the/them, to/too) stay misreads."""
     if "".join(a) == "".join(b):
         return True
-    if len(a) == 1 and len(b) == 1 and not (a[0].startswith("#") or b[0].startswith("#")):
+    if (len(a) == 1 and len(b) == 1 and not (a[0].startswith("#") or b[0].startswith("#"))
+            and min(len(a[0]), len(b[0])) >= SAME_WORD_MIN_LEN):
         return difflib.SequenceMatcher(None, a[0], b[0]).ratio() >= SAME_WORD_RATIO
     return False
 
