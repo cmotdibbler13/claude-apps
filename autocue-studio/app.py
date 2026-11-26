@@ -27,7 +27,7 @@ import customtkinter as ctk
 import check_worker
 import take_checks
 from audio_recorder import AudioRecorder
-from line_script import parse_line_script  # noqa: F401 (app.parse_line_script)
+from line_script import parse_line_script
 from server_backup import ServerBackup
 
 try:

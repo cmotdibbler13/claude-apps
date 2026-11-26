@@ -6,9 +6,14 @@ the transcript sit on top of them.
 
 Values (the voicestudio-narration skill's own-voice values, verbatim):
   * head trim: keep 0.05 s before the first voiced frame. A voiced frame is a
-    10 ms frame above -24 dBFS with a zero-crossing rate below 0.12;
+    10 ms frame above -24 dBFS with a zero-crossing rate below 0.12 (at
+    16 kHz; the threshold scales with the rate). First walk back over
+    contiguous frames above -40 dBFS, to keep a soft first consonant; a 5 ms
+    fade-in at the cut;
   * tail trim: cut 0.15 s after the last voiced frame, ignoring a broadband
-    transient under about 40 ms after it, with a 30 ms fade-out;
+    transient under about 40 ms after it, with a 30 ms fade-out. First walk
+    forward over contiguous frames above max(-45 dBFS, noise + 12 dB)
+    (take_checks' voice rule), to keep a soft last consonant;
   * high-pass: 80 Hz;
   * stalls: a mid-sentence gap quieter than -30 dBFS longer than 0.6 s is
     shortened to 0.3 s;
@@ -29,13 +34,18 @@ import re
 import numpy as np
 
 import take_checks
-from take_checks import (FLOOR_DBFS, FRAME_S, PAUSE_DBFS, PAUSE_MIN_S,
-                         VOICED_DBFS, VOICED_MAX_ZCR, _frame_db, _frames,
-                         _runs, _speech_end, _zcr)
+from take_checks import (FLOOR_DBFS, FRAME_S, NOISE_FRACTION, NOISE_FRAME_S,
+                         PAUSE_DBFS, PAUSE_MIN_S, TRANSIENT_MAX_S,
+                         VOICE_MIN_DBFS, VOICE_OVER_NOISE_DB, VOICED_DBFS,
+                         VOICED_MAX_ZCR, _frame_db, _frames, _runs,
+                         _speech_end, _zcr)
 
 RATE = 48000
 
 HEAD_KEEP_S = 0.05
+HEAD_WALK_DBFS = -40.0     # soft first consonant: walk back over frames above this
+FADE_IN_S = 0.005
+ZCR_RATE = take_checks.RATE   # the rate VOICED_MAX_ZCR was tuned at
 TAIL_KEEP_S = 0.15
 FADE_OUT_S = 0.030
 HIGHPASS_HZ = 80.0
@@ -65,12 +75,25 @@ def decode48(path):
 # ------------------------------------------------------------ voiced frames ----
 
 def _voiced(x, rate):
-    """(frame length, frame dB, loud, voiced) for 10 ms frames."""
+    """(frame length, frame dB, loud, voiced) for 10 ms frames. The ZCR
+    threshold was tuned at 16 kHz; crossings per sample fall as the rate
+    rises, so it is scaled by 16000 / rate to mean the same thing."""
     n = max(1, int(round(FRAME_S * rate)))
     f = _frames(x, n)
     db = _frame_db(f)
     loud = db > VOICED_DBFS
-    return n, db, loud, loud & (_zcr(f) < VOICED_MAX_ZCR)
+    return n, db, loud, loud & (_zcr(f) < VOICED_MAX_ZCR * ZCR_RATE / rate)
+
+
+def _noise_dbfs(x, rate):
+    """The room's noise floor, as in take_checks: the quietest 10 % of
+    50 ms frames."""
+    f50 = _frames(x, max(1, int(round(NOISE_FRAME_S * rate))))
+    if not len(f50):
+        return FLOOR_DBFS
+    power = np.sort(np.mean(f50 ** 2, axis=1))
+    p = float(np.mean(power[:max(1, int(len(power) * NOISE_FRACTION))]))
+    return max(10 * math.log10(p), FLOOR_DBFS) if p > 0 else FLOOR_DBFS
 
 
 def _as_float(x):
@@ -83,16 +106,42 @@ def trim_take(x, rate=RATE):
     """Trim a take's head and tail. Returns (y, info) with
     info = {head_s, tail_s, speech}: the seconds cut from the start and the
     end, and whether any voiced frame was found. A take with no voiced frame
-    comes back unchanged."""
+    comes back unchanged.
+
+    The head walks back from the first voiced frame over contiguous frames
+    above -40 dBFS (a soft first consonant), then keeps 0.05 s more. The
+    tail walks forward from the end of speech over contiguous frames above
+    max(-45 dBFS, noise + 12 dB) (a soft last consonant), stopping short of
+    a trailing broadband transient under 40 ms, then keeps 0.15 s more."""
     x = _as_float(x)
-    n, _, loud, voiced = _voiced(x, rate)
+    n, db, loud, voiced = _voiced(x, rate)
     end_idx = _speech_end(voiced, loud, FRAME_S) if voiced.any() else None
     if end_idx is None:
         return x, {"head_s": 0.0, "tail_s": 0.0, "speech": False}
+
     first = int(np.argmax(voiced))
+    while first > 0 and db[first - 1] > HEAD_WALK_DBFS:
+        first -= 1
+
+    voice = db > max(VOICE_MIN_DBFS, _noise_dbfs(x, rate) + VOICE_OVER_NOISE_DB)
+    last = end_idx
+    while last < len(voice) and voice[last]:
+        last += 1
+    # A click right after the soft tail: a short loud, unvoiced run at the
+    # end of the walked stretch, after softer frames, is not the voice.
+    if last > end_idx and loud[last - 1] and not voiced[last - 1]:
+        run = last
+        while run > end_idx and loud[run - 1] and not voiced[run - 1]:
+            run -= 1
+        if run > end_idx and (last - run) * FRAME_S < TRANSIENT_MAX_S:
+            last = run
+
     start = max(0, first * n - int(round(HEAD_KEEP_S * rate)))
-    stop = min(len(x), end_idx * n + int(round(TAIL_KEEP_S * rate)))
+    stop = min(len(x), last * n + int(round(TAIL_KEEP_S * rate)))
     y = x[start:stop].copy()
+    fade_in = min(len(y), int(round(FADE_IN_S * rate))) if start > 0 else 0
+    if fade_in:
+        y[:fade_in] *= np.linspace(0.0, 1.0, fade_in)
     fade = min(len(y), int(round(FADE_OUT_S * rate)))
     if fade:
         y[len(y) - fade:] *= np.linspace(1.0, 0.0, fade)
@@ -223,8 +272,7 @@ def limit(x, rate=RATE, ceiling=LIMIT, attack_ms=LIMIT_ATTACK_MS,
     front = np.concatenate([np.full(att - 1, gain[0]), gain])
     sums = np.concatenate([[0.0], np.cumsum(front)])
     smooth = (sums[att:] - sums[:-att]) / att
-    y = x * np.minimum(smooth, need)
-    return np.clip(y, -ceiling, ceiling)
+    return x * np.minimum(smooth, need)
 
 
 def build_clip(parts, rate=RATE):
@@ -301,8 +349,10 @@ def plan_join(script_lines, take_files, project=None):
     anything that is not a .wav are ignored.
 
     Returns {clips: [{clip, section, ids}], missing: [ids], extra: [names],
-    files: {id: path}}. clips and missing follow script order; extra are the
-    names of .wav takes that match no id (sorted)."""
+    files: {id: path}, duplicates: [{id, files}]}. clips and missing follow
+    script order; extra are the names of .wav takes that match no id
+    (sorted). When two files match one id (say the same name in two
+    folders), files keeps the first and duplicates lists every match."""
     if isinstance(script_lines, tuple):
         project, script_lines = (project or script_lines[0]), script_lines[1]
     ids, clips, by_clip = [], [], {}
@@ -322,7 +372,7 @@ def plan_join(script_lines, take_files, project=None):
         key = (f"{project}_{line_id}.wav" if project is not None
                else f"_{line_id}.wav").casefold()
         wanted[key] = line_id
-    files, extra = {}, []
+    files, extra, matches = {}, [], {}
     for path in take_files:
         parts = [p for p in re.split(r"[\\/]", str(path)) if p]
         if not parts:
@@ -338,7 +388,10 @@ def plan_join(script_lines, take_files, project=None):
             line_id = next((v for k, v in wanted.items() if low.endswith(k)), None)
         if line_id is None:
             extra.append(name)
-        elif line_id not in files:
-            files[line_id] = path
+        else:
+            files.setdefault(line_id, path)
+            matches.setdefault(line_id, []).append(path)
+    duplicates = [{"id": i, "files": matches[i]} for i in ids
+                  if len(matches.get(i, ())) > 1]
     return {"clips": clips, "missing": [i for i in ids if i not in files],
-            "extra": sorted(extra), "files": files}
+            "extra": sorted(extra), "files": files, "duplicates": duplicates}

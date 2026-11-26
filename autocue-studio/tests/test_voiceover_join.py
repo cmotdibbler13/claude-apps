@@ -67,10 +67,14 @@ class TrimTakeTest(unittest.TestCase):
         self.assertAlmostEqual(len(self.y) / RATE - end, 0.15, delta=0.010)
         self.assertAlmostEqual(end - start, 1.0, delta=0.005)
         self.assertLess(abs(self.y[-1]), 1e-4)
-        # the fade only touches the last 30 ms; the rest is the take itself
-        fade = int(0.03 * RATE)
+        # the fades only touch the first 5 ms and the last 30 ms
+        fade, fade_in = int(0.03 * RATE), int(0.005 * RATE)
         head = int(round(self.info["head_s"] * RATE))
-        np.testing.assert_array_equal(self.y[:-fade], self.x[head:head + len(self.y) - fade])
+        np.testing.assert_array_equal(self.y[fade_in:-fade],
+                                      self.x[head + fade_in:head + len(self.y) - fade])
+        np.testing.assert_allclose(self.y[:fade_in],
+                                   self.x[head:head + fade_in] * np.linspace(0, 1, fade_in))
+        self.assertEqual(self.y[0], 0.0)
 
     def test_click_is_gone(self):
         tail = self.y[-int(0.15 * RATE):]
@@ -85,6 +89,37 @@ class TrimTakeTest(unittest.TestCase):
         start, end = voiced_span(y)
         self.assertAlmostEqual(end - start, 1.0, delta=0.005)
         self.assertAlmostEqual(len(y) / RATE - end, 0.15, delta=0.010)
+
+    def test_soft_consonants_either_side_are_kept(self):
+        # hiss stands in for an "s" or "f": broadband, so never voiced
+        x = np.concatenate([noise(0.5), noise(0.15, -26.0), tone(1.0, -12.0, 120.0),
+                            noise(0.25, -28.0), noise(0.5)])
+        y, info = vj.trim_take(x, RATE)
+        hiss_start, hiss_end = 0.5, 0.5 + 0.15 + 1.0 + 0.25
+        self.assertAlmostEqual(info["head_s"], hiss_start - 0.05, delta=0.010)
+        self.assertAlmostEqual(len(x) / RATE - info["tail_s"], hiss_end + 0.15, delta=0.010)
+        self.assertTrue(info["speech"])
+
+    def test_a_click_right_after_the_soft_tail_does_not_extend_it(self):
+        x = np.concatenate([noise(0.5), tone(1.0), noise(0.25, -28.0), click(0.030),
+                            noise(0.5)])
+        y, info = vj.trim_take(x, RATE)
+        hiss_end = 0.5 + 1.0 + 0.25
+        self.assertAlmostEqual(len(x) / RATE - info["tail_s"], hiss_end + 0.15, delta=0.005)
+
+    def test_voiced_zcr_threshold_means_the_same_as_at_16k(self):
+        # ZCR 0.12 at 16 kHz is 1920 crossings a second (a 960 Hz tone).
+        # 1.5 kHz is unvoiced in take_checks; 600 Hz is voiced.
+        for freq, voiced in ((1500.0, False), (600.0, True)):
+            x = np.concatenate([noise(0.3), tone(0.5, -12.0, freq), noise(0.3)])
+            _, info = vj.trim_take(x, RATE)
+            self.assertEqual(info["speech"], voiced, freq)
+            # the same answer as take_checks' own rule on a 16 kHz copy
+            x16 = x[::3]
+            f = take_checks._frames(x16, 160)
+            tc = (take_checks._frame_db(f) > take_checks.VOICED_DBFS) & (
+                take_checks._zcr(f) < take_checks.VOICED_MAX_ZCR)
+            self.assertEqual(bool(tc.any()), voiced, freq)
 
     def test_no_speech_is_returned_unchanged(self):
         x = noise(0.5)
@@ -237,12 +272,21 @@ class PlanJoinTest(unittest.TestCase):
         self.assertEqual(plan["missing"], ["01.2"])
         self.assertEqual(plan["files"], {"01.1": "demo_01.1.wav", "02.1": "demo_02.1.wav"})
 
+    def test_a_second_file_for_one_id_is_reported(self):
+        files = [os.path.join("a", "demo_01.1.wav"), "demo_01.2.wav",
+                 os.path.join("b", "DEMO_01.1.wav"), "demo_02.1.wav"]
+        plan = vj.plan_join(self.lines, files, project="demo")
+        self.assertEqual(plan["duplicates"], [{"id": "01.1", "files": [files[0], files[2]]}])
+        self.assertEqual(plan["files"]["01.1"], files[0])
+        self.assertEqual(plan["missing"], [])
+
     def test_complete_takes_give_files_in_script_order(self):
         files = [os.path.join("rec", "demo_02.1.wav"), os.path.join("rec", "demo_01.2.wav"),
                  os.path.join("rec", "demo_01.1.wav")]
         plan = vj.plan_join(self.lines, files, project="demo")
         self.assertEqual(plan["missing"], [])
         self.assertEqual(plan["extra"], [])
+        self.assertEqual(plan["duplicates"], [])
         self.assertEqual(plan["files"], {
             "01.1": files[2], "01.2": files[1], "02.1": files[0]})
 
