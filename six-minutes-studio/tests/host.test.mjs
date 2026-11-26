@@ -209,3 +209,19 @@ test("host.open calls shell.openPath; FakeHost records opened paths", async () =
   await fh.open("S:\\b.mp4");
   assert.deepEqual(fh.opened, ["S:\\b.mp4"]);
 });
+
+test("makeHost reads and requests full access through desktop.permissions", async () => {
+  const f = fakeClaude();
+  const d = await f.claude.use("desktop");
+  d.permissions.request = async (names) => (f.log.push(["request", names]), { "full-access": "granted" });
+  d.permissions.manage = async () => f.log.push(["manage"]);
+  const h = await makeHost(f.claude);
+  assert.equal(await h.permissionState("full-access"), "granted");
+  assert.ok(f.log.includes("state:full-access"));
+  assert.equal(await h.requestPermission("full-access"), "granted");
+  assert.deepEqual(f.log.find((e) => e[0] === "request"), ["request", ["full-access"]]);
+  await h.managePermissions();
+  assert.ok(f.log.some((e) => e[0] === "manage"));
+  d.permissions.state = async () => { throw new Error("EPERM"); };
+  assert.equal(await h.permissionState("full-access"), "unavailable");
+});

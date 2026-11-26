@@ -1,5 +1,6 @@
 // Boot: host, install gate, project root, jobs, routing and re-rendering of the three screens.
 import { makeHost } from "./host.js";
+import { accessGate } from "./gate.js";
 import { resolveRoot, join } from "./paths.js";
 import { loadSettings } from "./settings.js";
 import { scanFilms } from "./films.js";
@@ -22,7 +23,7 @@ const LAYOUT_KEY = "six-minutes-studio.reviewLayout";
 
 const app = {
   host: null, root: null, jobs: null, films: [], view: "films",
-  film: null, store: null, session: null, retried: new Set(), movedAside: null, stateError: null,
+  film: null, store: null, session: null, retried: new Set(), movedAside: null, stateError: null, bootError: null, openError: null,
   review: { making: false, listError: null, cardErrors: new Map(), pending: new Set(), noteFor: null, draft: "" },
   previews: new Map(),
   layout: (() => { try { return localStorage.getItem(LAYOUT_KEY) || "script"; } catch { return "script"; } })(),
@@ -134,7 +135,7 @@ async function renderNow() {
   $("state-banner").textContent = se ? jobsView.stateErrorBanner(se.film, se.message) : "";
 
   if (app.view === "films") {
-    paint("films", $("view-films"), filmsView.filmsModel({ root: app.root, films: app.films, jobs: list }), filmsView, filmsActions);
+    paint("films", $("view-films"), filmsView.filmsModel({ root: app.root, films: app.films, jobs: list, error: app.bootError }), filmsView, filmsActions);
   } else if (app.view === "jobs") {
     const log = app.store ? await app.store.readLog(50) : null;
     const model = jobsView.jobsModel({ jobs: list, log, retried: app.retried, persistError: null });
@@ -143,7 +144,7 @@ async function renderNow() {
     const r = app.review;
     const model = reviewView.reviewModel({
       film: app.film, state: app.store?.state, layout: app.layout, making: r.making, listError: r.listError,
-      cardErrors: r.cardErrors, pending: r.pending, noteFor: r.noteFor,
+      cardErrors: r.cardErrors, pending: r.pending, noteFor: r.noteFor, openError: app.openError,
     });
     paint("review", $("view-review"), model, reviewView, reviewActions);
   }
@@ -156,6 +157,7 @@ async function loadRoot() {
   if (!app.root) { app.films = []; render(); return; }
   if (!app.jobs) {
     const settings = await loadSettings(host, app.root);
+    app.settings = settings;
     const file = join(app.root, ".studio-jobs.json");
     app.jobs = makeJobs(host, {
       runners: { higgsfield: makeHiggsfieldRunner({ settings }), blender: makeBlenderRunner({ settings }) },
@@ -174,9 +176,15 @@ async function loadRoot() {
   render();
 }
 
+// Boot (and Try again): a failure shows on the Films screen with its message, not only in the console.
+function startRoot() {
+  if (app.bootError) { app.bootError = null; render(); }
+  return loadRoot().catch((e) => { console.error(e); app.bootError = msg(e); render(); });
+}
+
 const filmsActions = {
-  retryRoot: () => { loadRoot().catch((e) => console.error(e)); },
-  openReview: (dir) => { openReview(dir).catch((e) => console.error(e)); },
+  retryRoot: () => { startRoot(); },
+  openReview: (dir) => { openReview(dir); },
 };
 
 function resetReview() {
@@ -186,11 +194,21 @@ function resetReview() {
 }
 
 // The session keeps one store and one watcher; a superseded open resolves to null and is ignored.
+// A failed open shows on the review screen with Try again.
 async function openReview(dir) {
   const film = app.films.find((f) => f.dir === dir);
   if (!film) return;
-  const store = await app.session.open(dir);
+  let store;
+  try {
+    store = await app.session.open(dir);
+  } catch (e) {
+    console.error(e);
+    app.openError = { dir, title: film.title, message: msg(e) };
+    showView("review");
+    return;
+  }
   if (!store || app.session.current?.store !== store) return;
+  app.openError = null;
   if (app.store !== store) {
     resetReview();
     app.film = film;
@@ -291,6 +309,7 @@ const reviewActions = {
   draft: () => app.review.draft,
   setDraft(v) { app.review.draft = v; },
   openFull: (file) => { openFull(app.host, file).catch((e) => console.error(e)); },
+  reopen: (dir) => { openReview(dir); },
   preview,
 };
 
@@ -315,8 +334,39 @@ async function boot() {
   app.host = host;
   const desktop = await window.claude.use("desktop");
   desktop.app?.dock?.setIcon(drawIcon()).catch(() => {});
-  mountProbe(host, $("run-probe"), $("probe-results"));
-  await loadRoot().catch((e) => { console.error(e); render(); });
+  mountProbe(host, $("run-probe"), $("probe-results"), () => app.settings);
+  await startWithAccess();
+}
+
+// Read the full-access state without asking; anything but "granted" waits for a click before any fs call.
+async function startWithAccess(fromClick = false) {
+  let state = await app.host.permissionState("full-access");
+  if (fromClick && state === "prompt") state = await app.host.requestPermission("full-access");
+  const g = accessGate(state);
+  const sections = document.querySelectorAll("main > section[data-view]");
+  if (!g.boot) {
+    for (const s of sections) s.hidden = true;
+    $("nav").hidden = true;
+    $("gate").hidden = false;
+    $("gate-title").textContent = g.title;
+    $("gate-msg").textContent = g.message;
+    const b = $("install");
+    b.textContent = g.button;
+    b.hidden = false;
+    b.disabled = false;
+    b.onclick = () => {
+      b.disabled = true;
+      const next = g.action === "manage"
+        ? app.host.managePermissions().catch(() => {}).then(() => startWithAccess())
+        : startWithAccess(g.action === "request");
+      next.catch((e) => console.error(e)).finally(() => { b.disabled = false; });
+    };
+    return;
+  }
+  $("gate").hidden = true;
+  $("nav").hidden = false;
+  for (const s of sections) s.hidden = s.dataset.view !== app.view;
+  await startRoot();
 }
 
 boot();

@@ -20,6 +20,14 @@ export async function makeHost(claude = globalThis.claude) {
 
   return {
     platform,
+    // Read without asking (safe at load); request and manage need a click.
+    async permissionState(name) {
+      try { return await desktop.permissions.state(name); } catch { return "unavailable"; }
+    },
+    async requestPermission(name) {
+      try { return (await desktop.permissions.request([name]))?.[name] ?? "unavailable"; } catch { return "unavailable"; }
+    },
+    managePermissions: () => desktop.permissions.manage(),
     fs: {
       read: (p, enc) => (enc ? fs.readFile(p, enc) : fs.readFile(p)),
       write: (p, data, enc) => fs.writeFile(p, data, enc),

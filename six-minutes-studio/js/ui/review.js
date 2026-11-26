@@ -54,7 +54,8 @@ export function cardModel(asset, assets, { pending = false, error = null } = {})
   };
 }
 
-export function reviewModel({ film, state, layout = "script", making = false, listError = null, cardErrors = new Map(), pending = new Set(), noteFor = null }) {
+export function reviewModel({ film, state, layout = "script", making = false, listError = null, cardErrors = new Map(), pending = new Set(), noteFor = null, openError = null }) {
+  if (openError) return { openFailed: true, dir: openError.dir, title: openError.title, message: `Couldn't open ${openError.title}: ${openError.message}` };
   if (!film) return { noFilm: true };
   const assets = state?.assets ?? [];
   const ordered = orderByScript(assets);
@@ -149,6 +150,11 @@ function card(c, model, actions) {
 }
 
 export function render(el, model, actions) {
+  if (model.openFailed) {
+    el.replaceChildren(h("h1", { text: model.title }), h("div", { class: "panel warn" },
+      h("p", { text: model.message }), btn("Try again", () => actions.reopen(model.dir))));
+    return;
+  }
   if (model.noFilm) {
     el.replaceChildren(h("h1", { text: "Review" }), h("p", { class: "lede", text: "Open a film's review from Films." }));
     return;

@@ -234,3 +234,17 @@ test("connector jobs: check again, run again warns about credits and ambiguous f
   assert.equal(by.d.retryLabel, "Run again");
   assert.equal(by.d.warning, null);
 });
+
+test("a failed boot shows its message with Try again", () => {
+  const m = filmsModel({ root: null, films: [], jobs: [], error: "EIO: i/o error" });
+  assert.equal(m.failed, true);
+  assert.equal(m.message, "Couldn't load your films: EIO: i/o error");
+});
+
+test("a film that fails to open shows its message on the review screen", () => {
+  const m = reviewModel({ film: null, openError: { dir: DIR, title: "Skara Brae", message: "EACCES" } });
+  assert.equal(m.openFailed, true);
+  assert.equal(m.title, "Skara Brae");
+  assert.equal(m.message, "Couldn't open Skara Brae: EACCES");
+  assert.equal(m.dir, DIR);
+});
