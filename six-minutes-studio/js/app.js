@@ -3,6 +3,7 @@ import { makeHost } from "./host.js";
 import { accessGate } from "./gate.js";
 import { resolveRoot, join } from "./paths.js";
 import { loadSettings } from "./settings.js";
+import { findLineScript, loadLineScript, narrationStatus } from "./narration.js";
 import { scanFilms } from "./films.js";
 import { makeFilmSession, readSavedJobs } from "./session.js";
 import { makeJobs } from "./jobs.js";
@@ -34,6 +35,7 @@ function showView(name) {
   app.view = name;
   for (const s of document.querySelectorAll("main > section[data-view]")) s.hidden = s.dataset.view !== name;
   for (const b of document.querySelectorAll("#nav button")) b.setAttribute("aria-selected", String(b.dataset.view === name));
+  if (name === "review") pollNarration();
   render();
   // Coming back to Films re-reads the folders so parts and waiting lines are current.
   if (name === "films" && app.root && app.host) scanFilms(app.host, app.root).then((f) => { app.films = f; render(); }, () => {});
@@ -146,7 +148,7 @@ async function renderNow() {
     const r = app.review;
     const model = reviewView.reviewModel({
       film: app.film, state: app.store?.state, layout: app.layout, making: r.making, listError: r.listError,
-      cardErrors: r.cardErrors, pending: r.pending, noteFor: r.noteFor, openError: app.openError, prefError: r.prefError ?? null,
+      cardErrors: r.cardErrors, pending: r.pending, noteFor: r.noteFor, openError: app.openError, prefError: r.prefError ?? null, narration: r.narration ?? null,
     });
     paint("review", $("view-review"), model, reviewView, reviewActions);
   }
@@ -239,6 +241,33 @@ const jobsActions = {
     render();
   },
 };
+
+// ---- narration (reads only; refreshed every 10 s while Review is open) ----
+async function refreshNarration() {
+  const film = app.film, r = app.review;
+  if (app.view !== "review" || !film || !app.store || app.host?.fs?.stat === undefined) return;
+  try {
+    if (!r.lineScript) {
+      const handover = await readText(join(film.dir, "handover", "part1_handover.md"));
+      const path = await findLineScript(app.host, film.dir, handover ?? "", app.settings ?? {});
+      if (!path) { if (app.review === r) r.narration = { missingScript: true }; return; }
+      r.lineScript = await loadLineScript(app.host, path);
+    }
+    const st = await narrationStatus(app.host, app.settings ?? {}, r.lineScript);
+    if (app.review === r) r.narration = st;
+  } catch (e) { console.error(e); }
+}
+let narrTimer = null;
+function pollNarration() {
+  if (narrTimer) return;
+  const tick = async () => {
+    const before = JSON.stringify(app.review?.narration ?? null);
+    await refreshNarration();
+    if (JSON.stringify(app.review?.narration ?? null) !== before) render();
+  };
+  tick();
+  narrTimer = setInterval(() => { if (app.view === "review") tick(); }, 10_000);
+}
 
 // ---- review ----
 async function readText(p) { try { return await app.host.fs.read(p, "utf8"); } catch { return null; } }
