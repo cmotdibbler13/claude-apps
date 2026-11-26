@@ -68,7 +68,7 @@ Another program (Six Minutes Studio does this to let you adjust a score it has f
 start the app with a file to open:
 
 ```
-pythonw.exe main.py --open <file> [--plan <plan.json>]
+pythonw.exe main.py --open <file> [--plan <plan.json>] [--export-dir <folder>]
 ```
 
 `--open` opens the file as a single lane, without splitting it. `--plan` also gives it a fit
@@ -85,7 +85,9 @@ in order. They replace the sections and chain saved for that file, and the song'
 pitch, master and loop go back to plain, so the chain sounds just as the plan renders it.
 The chain is on when the window opens: press Play to hear it, adjust sections by ear, then
 **Export mix** saves the chain once through. If the file or the plan can't be read, the app
-says why and starts as normal. Anything else on the command line is ignored.
+says why and starts as normal. `--export-dir` makes **Export mix**'s Save dialog start in that
+folder (Six Minutes Studio passes the film's own folder, so it can find the export). Anything
+else on the command line is ignored.
 
 If Stem Remixer is already open on the same score, close that window before opening it with
 a plan. The app saves its mix when it closes, so an old window closed later would write its

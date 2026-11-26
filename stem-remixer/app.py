@@ -388,9 +388,11 @@ class StemLane:
 
 
 class StemRemixerApp(ctk.CTk):
-    def __init__(self, store_python: bool = False):
+    def __init__(self, store_python: bool = False, export_dir=None):
         super().__init__()
         self._store_python = store_python
+        # Where Export mix's Save dialog starts (given by Six Minutes Studio); None keeps the usual folder.
+        self._export_dir = export_dir if export_dir and os.path.isdir(export_dir) else None
         ctk.set_appearance_mode("dark")
         self.title(f"Stem Remixer {updater.local_version()}")
         self.geometry("1180x760")
@@ -1255,6 +1257,7 @@ class StemRemixerApp(ctk.CTk):
                 section = (self.mixer.loop_start, self.mixer.loop_end)
         path = filedialog.asksaveasfilename(
             title="Export mix", defaultextension=".wav",
+            **({"initialdir": self._export_dir} if self._export_dir else {}),
             initialfile=f"{self.song_name} ({'chain' if chain else 'loop' if section else 'remix'})",
             filetypes=[("WAV, full quality", "*.wav"), ("MP3, 320 kbps", "*.mp3")])
         if not path:

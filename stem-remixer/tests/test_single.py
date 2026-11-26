@@ -198,6 +198,14 @@ def test_main_parses_open_and_plan_and_ignores_the_rest():
     assert main.parse_args(["--open"]).open is None   # a broken call still starts the app
 
 
+def test_main_parses_export_dir_and_leaves_it_off_by_default():
+    import main
+    args = main.parse_args(["--open", "s.wav", "--export-dir", r"C:\film\studio\mix\stem-remixer"])
+    assert args.export_dir == r"C:\film\studio\mix\stem-remixer"
+    assert main.parse_args(["--open", "s.wav"]).export_dir is None
+    assert main.parse_args(["--export-dir"]).export_dir is None   # broken: still starts
+
+
 # ------------------------------------------------- app.py, with Tk stubbed
 
 def test_app_parses():
