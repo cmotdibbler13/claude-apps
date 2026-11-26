@@ -1,0 +1,120 @@
+// Job queue: gpu lane runs one at a time, connector lane up to three. Persisted after every change.
+// A failed or interrupted job is never retried automatically; retry(id) adds a fresh job on request.
+const CAPS = { gpu: 1, connector: 3 };
+
+export function makeJobs(host, { runners = {}, file } = {}) {
+  let jobs = [];
+  let counter = 0;
+  const listeners = new Set();
+  let chain = Promise.resolve();
+
+  const snap = () => jobs.map((j) => structuredClone(j));
+  const changed = () => {
+    persist();
+    const s = snap();
+    for (const fn of [...listeners]) { try { fn(s); } catch { /* a bad listener must not stop the queue */ } }
+  };
+  function persist() {
+    if (!file) return;
+    chain = chain.then(async () => {
+      try {
+        const tmp = file + ".tmp";
+        await host.fs.write(tmp, JSON.stringify(jobs, null, 2));
+        await host.fs.rename(tmp, file);
+      } catch { /* keep the queue running; the next change writes again */ }
+    });
+  }
+
+  const newId = () => {
+    let id;
+    do { id = `j${host.now()}-${++counter}`; } while (jobs.some((j) => j.id === id));
+    return id;
+  };
+  const laneOf = (j) => j.lane ?? runners[j.tool]?.lane ?? "connector";
+
+  function ctxFor(job) {
+    return {
+      host,
+      progress(p, eta) {
+        job.progress = p ?? null;
+        if (eta !== undefined) job.eta = eta ?? null;
+        changed();
+      },
+      setRef(ref) { job.jobRef = ref; changed(); },
+    };
+  }
+
+  async function run(job, how) {
+    job.status = "running";
+    job.startedAt = host.now();
+    changed();
+    try {
+      const runner = runners[job.tool];
+      if (!runner) throw new Error(`No runner for ${job.tool}`);
+      const fn = runner[how];
+      if (!fn) throw new Error(`${job.tool} cannot ${how}`);
+      const res = await fn.call(runner, job, ctxFor(job));
+      if (res && res.file !== undefined) job.file = res.file;
+      job.status = "done";
+      job.progress = 1;
+      job.eta = null;
+    } catch (e) {
+      job.status = "failed";
+      job.error = String(e?.message ?? e);
+    }
+    job.endedAt = host.now();
+    changed();
+    pump();
+  }
+
+  function pump() {
+    for (const lane of Object.keys(CAPS)) {
+      let running = jobs.filter((j) => j.status === "running" && laneOf(j) === lane).length;
+      for (const j of jobs) {
+        if (running >= CAPS[lane]) break;
+        if (j.status === "queued" && laneOf(j) === lane) { running++; run(j, "start"); }
+      }
+    }
+  }
+
+  const api = {
+    add(spec) {
+      const job = {
+        ...structuredClone(spec),
+        id: newId(),
+        lane: spec.lane ?? runners[spec.tool]?.lane ?? "connector",
+        status: "queued", progress: null, eta: null,
+      };
+      delete job.file; delete job.error; delete job.startedAt; delete job.endedAt;
+      jobs.push(job);
+      changed();
+      pump();
+      return job.id;
+    },
+    retry(id) {
+      const old = jobs.find((j) => j.id === id);
+      if (!old) throw new Error(`Unknown job ${id}`);
+      if (old.status !== "failed" && old.status !== "interrupted") throw new Error(`Job ${id} is ${old.status}, not failed or interrupted`);
+      const { film, assetId, take, tool, what, why, lane } = old;
+      return api.add({ film, assetId, take, tool, what, why, lane });
+    },
+    list: snap,
+    toJSON: snap,
+    onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); },
+    restore(saved) {
+      jobs = (saved ?? []).map((j) => structuredClone(j));
+      const resumable = [];
+      for (const j of jobs) {
+        if (j.status !== "running") continue;
+        if (laneOf(j) === "connector" && j.jobRef && runners[j.tool]?.resume) resumable.push(j);
+        else { j.status = "interrupted"; j.endedAt = host.now(); }
+      }
+      changed();
+      for (const j of resumable) run(j, "resume");
+      pump();
+    },
+    // Resolves once every change so far is written. Mainly for tests and clean shutdown.
+    flush: () => chain,
+  };
+  return api;
+}
