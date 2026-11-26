@@ -6,10 +6,12 @@ import { join, filmKey } from "./paths.js";
 import { projectOf } from "./audio.js";
 import { filmTargets, planFit, fitSheet } from "./fitplan.js";
 import { NO_LINE_SCRIPT } from "./narration.js";
-import { MSG_NO_STEM_REMIXER, measureFileFor } from "./tools/stemfit.js";
+import { measureFileFor, needStemRemixer, openInStemRemixer } from "./tools/stemfit.js";
 import { musicRide, MUSIC_DB, SFX_DB } from "./tools/mixdown.js";
 
 export const OUT_OF_DATE = "Out of date: run again";
+export const REJOIN = "Waits for the voiceover join to be run again.";
+const EXPORT_SLACK_S = 1;
 const SLOTS = { VOICEOVER: "voiceover", FIT: "fit", MIX: "mix" };
 const LABEL = { VOICEOVER: "Voiceover join", FIT: "Score fit", MIX: "Mix preview" };
 const TOOL = { VOICEOVER: "voicejoin", FIT: "stemfit", MIX: "mixdown" };
@@ -27,7 +29,7 @@ export function mixJobDone(h, j) {
   const copy = (keys) => { for (const k of keys) if (m[k] !== undefined) h[k] = m[k]; };
   h.at = j.endedAt ?? null;
   h.startedAt = j.startedAt ?? null; // a take saved after this is not in the run
-  if (h.id === "VOICEOVER") copy(["wav", "csv", "transcript", "lengthS", "tightened", "extra", "silent"]);
+  if (h.id === "VOICEOVER") copy(["wav", "csv", "transcript", "lengthS", "tightened", "extra", "silent", "duplicates"]);
   else if (h.id === "FIT") { if (j.file) h.file = j.file; copy(["lengthS", "measureFile", "turnedDown"]); }
   else if (h.id === "MIX") { copy(["files", "unplaced", "lengthS", "sfx"]); h.approved = false; }
 }
@@ -45,6 +47,19 @@ export function syncMixHolder(h) {
 }
 
 // ---- out of date (Review Focus 3) ----
+// A take saved after the join started (or re-recorded since) is not in the voiceover.
+export function joinStale(vo, narration) {
+  if (vo?.status !== "done") return false;
+  const since = vo.startedAt ?? vo.at;
+  if (since == null) return false;
+  return (narration?.rows ?? []).some((r) => Number.isFinite(r.takeS) && r.takeS * 1000 > since);
+}
+
+// ctx.joinStale when the caller worked it out, else from ctx.narration (the Narration list's rows).
+function refuseIfJoinStale(ctx) {
+  const stale = ctx.joinStale ?? joinStale(ctx.store.state.mix?.voiceover, ctx.narration);
+  if (stale) throw new Error(REJOIN);
+}
 export function fitStale(state) {
   const f = state?.mix?.fit;
   if (!f || f.status !== "done") return false;
@@ -211,7 +226,7 @@ export async function startJoin(ctx, { allowFlagged = false } = {}) {
   if (busy(store, "VOICEOVER")) throw new Error("The voiceover join is already running.");
   const input = { script: ls.path, takes: join(settings.autocueRecordings, ls.name), out: join(store.dir, "studio", "voiceover"), allowFlagged: !!allowFlagged };
   return startRun(ctx, "VOICEOVER", {
-    allowFlagged: !!allowFlagged, wav: null, csv: null, transcript: null, lengthS: null, tightened: [], extra: [], silent: [], at: null,
+    allowFlagged: !!allowFlagged, wav: null, csv: null, transcript: null, lengthS: null, tightened: [], extra: [], silent: [], duplicates: [], at: null,
   }, { why: allowFlagged ? "Flagged lines allowed" : undefined, input });
 }
 
@@ -228,8 +243,9 @@ function needScore(state) {
 
 export async function startFit(ctx, { note } = {}) {
   const { host, store, settings = {} } = ctx;
-  if (!settings.stemRemixerDir) throw new Error(MSG_NO_STEM_REMIXER);
+  await needStemRemixer(host, settings);
   const vo = needVoiceover(store.state);
+  refuseIfJoinStale(ctx);
   const sc = needScore(store.state);
   return preparing(store, "FIT", async () => {
     const targets = filmTargets(await readTimings(host, vo.csv), settings.endCardS ?? 12);
@@ -247,19 +263,38 @@ export async function startFit(ctx, { note } = {}) {
   });
 }
 
+// A path pasted into "Use another file…": Explorer's Copy as path wraps it in double quotes.
+export const pastedPath = (v) => String(v ?? "").trim().replace(/^"+|"+$/g, "").trim();
+
+// The last export measured for each film, kept while Jon decides on a length warning.
+const lastExport = new WeakMap();
+
 // Jon fixed the fit by ear in Stem Remixer and exported it: measure the export (its moves are in film time),
-// rebuild the sheet, and use it as the fitted score.
-export async function useStemRemixerExport(ctx, file) {
+// rebuild the sheet, and use it as the fitted score. An export more than 1 s off the film's length is not used
+// yet: this resolves with {confirm: question}, and Jon's yes calls again with {confirmed: true}.
+// pasted: the path came from "Use another file…".
+export async function useStemRemixerExport(ctx, file, { pasted = false, confirmed = false } = {}) {
   const { host, store, settings = {} } = ctx;
-  if (!settings.stemRemixerDir) throw new Error(MSG_NO_STEM_REMIXER);
-  if (!filled(file) || !(await host.fs.exists(file))) throw new Error("That export isn't there any more. Export it again in Stem Remixer.");
+  await needStemRemixer(host, settings);
+  if (pasted) file = pastedPath(file);
+  if (!filled(file) || !(await host.fs.exists(file))) {
+    throw new Error(pasted ? "Couldn't find that file." : "That export isn't there any more. Export it again in Stem Remixer.");
+  }
   const vo = needVoiceover(store.state);
+  refuseIfJoinStale(ctx);
   const sc = needScore(store.state);
   return preparing(store, "FIT", async () => {
     const targets = filmTargets(await readTimings(host, vo.csv), settings.endCardS ?? 12);
     const cacheFile = join(mixDir(store), `${projectOf(store.dir)}_score_export.measure.json`);
     await host.fs.mkdir(mixDir(store));
-    const measure = await measured(ctx, file, { cacheFile, force: true, why: "Stem Remixer export" });
+    const kept = lastExport.get(store);
+    const measure = confirmed && kept?.file === file ? kept.measure
+      : await measured(ctx, file, { cacheFile, force: true, why: "Stem Remixer export" });
+    lastExport.set(store, { file, measure });
+    const off = Number(measure.duration_s) - targets.filmS;
+    if (!confirmed && Math.abs(off) > EXPORT_SLACK_S) {
+      return { confirm: `This export is ${Math.abs(off).toFixed(1)} s ${off > 0 ? "longer" : "shorter"} than the film. Use it anyway?` };
+    }
     const sheet = fitSheet([{ from_s: 0, to_s: Number(measure.duration_s), tempo: 1, xfade_s: 0 }], measure, targets);
     const prev = store.state.mix?.fit;
     const n = runOf(prev) + 1;
@@ -273,9 +308,33 @@ export async function useStemRemixerExport(ctx, file) {
         status: "done", takes: [{ n, status: "done", file, at: now }],
       };
     });
+    lastExport.delete(store);
     await store.log(`Score fit run ${n}: using the Stem Remixer export`);
     return n;
   });
+}
+
+// Stem Remixer's Export mix dialog starts here (the film's own folder), so "Use this export" finds the file.
+export const stemExportDir = (store) => join(mixDir(store), "stem-remixer");
+
+// Open the score in Stem Remixer. The app's plan goes in (--plan) only on the first open after an app fit:
+// Stem Remixer keeps Jon's hand tweaks itself, and a later --plan would replace them.
+export async function openFitInStemRemixer(ctx, { open = openInStemRemixer } = {}) {
+  const { host, store, settings = {} } = ctx;
+  await needStemRemixer(host, settings, { windowed: true });
+  const fit = store.state.mix?.fit;
+  const score = fit?.scoreFile ?? approvedScore(store.state)?.file ?? null;
+  const planFile = join(mixDir(store), "plan.json");
+  const withPlan = fit?.status === "done" && fit.source === "app" && fit.openedAt == null && (await host.fs.exists(planFile));
+  const exportDir = stemExportDir(store);
+  await host.fs.mkdir(exportDir);
+  const run = runOf(fit);
+  const text = await open(host, settings, { score, plan: withPlan ? planFile : null, exportDir });
+  if (fit) {
+    const now = host.now();
+    await store.update((d) => { const f = d.mix?.fit; if (f && runOf(f) === run && f.openedAt == null) f.openedAt = now; });
+  }
+  return text;
 }
 
 function loopEnd(startS, targets) {
@@ -289,6 +348,7 @@ export async function startMix(ctx) {
   const vo = needVoiceover(state);
   const fit = state.mix?.fit;
   if (!fit || fit.status !== "done" || !fit.file) throw new Error("Fit the score first.");
+  refuseIfJoinStale(ctx);
   if (fitStale(state)) throw new Error("The score fit is out of date. Fit it again first.");
   return preparing(store, "MIX", async () => {
     const rows = await readTimings(host, vo.csv);
@@ -313,6 +373,7 @@ export async function approveMix(ctx) {
   const state = store.state;
   const m = state.mix?.mix;
   if (!m || m.status !== "done") throw new Error("There is no finished mix to approve.");
+  refuseIfJoinStale(ctx);
   if (mixStale(state)) throw new Error("The mix is out of date. Make it again first.");
   const now = host.now();
   await store.update((d) => {

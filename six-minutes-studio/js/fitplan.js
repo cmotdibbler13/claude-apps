@@ -47,7 +47,7 @@ export function filmTargets(timings, endCardS = 12) {
     const key = String(r.section);
     if (seen.has(key)) continue;
     seen.add(key);
-    sections.push({ name: r.name, startS: num(r.start_s) + HOLD_S });
+    sections.push({ name: r.section || r.name, startS: num(r.start_s) + HOLD_S });
   }
   const lastEnd = num(rows[rows.length - 1].end_s);
   return { filmS: lastEnd + TAIL_S + HOLD_S + num(endCardS), sections };
@@ -101,6 +101,18 @@ export function snapToBeats(steps, beats, { keep = [], bpm = null } = {}) {
   return out;
 }
 
+// An on-beat (0.03 s) join is a click unless both its ends sit on a beat: one with no beat within the snap
+// window at either end (always so without beats) becomes an ambient 2.5 s crossfade. Run after snapToBeats.
+export function offBeatToAmbient(steps, beats, { bpm = null } = {}) {
+  const list = Array.isArray(beats) ? beats : [];
+  const window = bpm > 0 ? 30 / bpm : NO_BPM_WINDOW_S;
+  const onBeat = (t) => list.length > 0 && Math.abs(nearest(list, t) - t) <= window;
+  return steps.map((s, i) => {
+    if (i === steps.length - 1 || s.xfade_s !== XFADES[0]) return s;
+    return onBeat(s.to_s) && onBeat(steps[i + 1].from_s) ? s : { ...s, xfade_s: XFADES[1] };
+  });
+}
+
 function validatePlan(r) {
   if (!r || typeof r !== "object" || !Array.isArray(r.steps) || !r.steps.length) throw new Error("The fit plan has no steps.");
   r.steps.forEach((s, i) => {
@@ -146,7 +158,8 @@ export async function planFit(host, { measure, targets, note = "", previous = nu
     tempo: Math.min(TEMPO[1], Math.max(TEMPO[0], s.tempo)),
     xfade_s: Math.abs(s.xfade_s - XFADES[0]) <= Math.abs(s.xfade_s - XFADES[1]) ? XFADES[0] : XFADES[1],
   }));
-  const steps = snapToBeats(clamped, measure.beats, { keep: [0, end], bpm: measure.bpm });
+  const snapped = snapToBeats(clamped, measure.beats, { keep: [0, end], bpm: measure.bpm });
+  const steps = offBeatToAmbient(snapped, measure.beats, { bpm: measure.bpm });
   steps.forEach((s, i) => {
     if (s.from_s >= end - MIN_STEP_S) throw new Error(`Step ${i + 1} starts at the end of the score or after it; try again or add a note.`);
     if (s.to_s - s.from_s < MIN_STEP_S) throw new Error(`Step ${i + 1} is shorter than 0.1 s; try again or add a note.`);

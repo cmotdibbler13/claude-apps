@@ -151,7 +151,7 @@ test("ElevenLabs tools check lists the flow tools it needs", async () => {
 // ---- Stem Remixer and Autocue join ----
 const SRD = "C:\\Apps\\Stem Remixer";
 const ACD = "C:\\Users\\Jon\\desktop autocue";
-async function srHost({ files = [".venv\\Scripts\\python.exe", "fit.py", "measure.py"], version = "1.9.0", join = true } = {}) {
+async function srHost({ files = [".venv\\Scripts\\python.exe", "fit.py", "measure.py"], version = "1.9.0", join = true, lineScript = true } = {}) {
   const host = new FakeHost();
   host.spawnScript((cmd, args, o, p) => { p.out("ok"); p.exit(0); });
   host.fs.list = async () => [];
@@ -160,6 +160,7 @@ async function srHost({ files = [".venv\\Scripts\\python.exe", "fit.py", "measur
   for (const f of files) await host.fs.write(`${SRD}\\${f}`, "x");
   if (version !== null) await host.fs.write(SRD + "\\VERSION", version + "\n");
   if (join) await host.fs.write(ACD + "\\voiceover_join.py", "x");
+  if (lineScript) await host.fs.write(ACD + "\\line_script.py", "x");
   return host;
 }
 const srSettings = (o = {}) => ({ ...settings, stemRemixerDir: SRD, autocueDir: ACD, ...o });
@@ -196,4 +197,10 @@ test("Autocue join check passes when voiceover_join.py is in autocueDir", async 
   const no = named(await runChecks(await srHost({ join: false }), () => {}, srSettings()), "Autocue join");
   assert.equal(no.ok, false);
   assert.match(no.detail, /voiceover_join\.py/);
+});
+
+test("Autocue join check also needs line_script.py, which voiceover_join.py imports", async () => {
+  const no = named(await runChecks(await srHost({ lineScript: false }), () => {}, srSettings()), "Autocue join");
+  assert.equal(no.ok, false);
+  assert.match(no.detail, /line_script\.py/);
 });

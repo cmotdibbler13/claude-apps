@@ -32,7 +32,7 @@ export function makeVoiceJoinRunner({ settings = DEFAULT_SETTINGS } = {}) {
         file: r.wav,
         meta: {
           wav: r.wav, csv: r.csv, transcript: r.transcript, lengthS: r.length_s,
-          tightened: r.tightened ?? [], extra: r.extra ?? [], silent: r.silent ?? [],
+          tightened: r.tightened ?? [], extra: r.extra ?? [], silent: r.silent ?? [], duplicates: r.duplicates ?? [],
         },
       };
     },

@@ -9,7 +9,8 @@ const settings = { autocueDir: AUTOCUE, autocuePython: "C:\\Python\\python.exe" 
 const input = { script: "S:\\Film A\\line_script.txt", takes: "C:\\rec\\film_a", out: "S:\\Film A\\studio\\voiceover", allowFlagged: false };
 const DONE = { done: true, wav: "S:\\Film A\\studio\\voiceover\\film_a_voiceover.wav", csv: "S:\\Film A\\studio\\voiceover\\film_a_voiceover_timings.csv",
   transcript: "S:\\Film A\\studio\\voiceover\\film_a_voiceover_transcript.json", length_s: 361.25,
-  tightened: [{ id: "03.2", at_s: 1.2, from_s: 0.9, to_s: 0.3 }], extra: ["film_a_09.9.wav"], clips: 12, silent: [], duplicates: [], moved_aside: [] };
+  tightened: [{ id: "03.2", at_s: 1.2, from_s: 0.9, to_s: 0.3 }], extra: ["film_a_09.9.wav"], clips: 12, silent: [],
+  duplicates: [{ id: "05.2", files: ["C:\\rec\\film_a\\film_a_05.2.wav", "C:\\rec\\film_a\\old\\film_a_05.2.wav"] }], moved_aside: [] };
 
 function run(script, inp = input) {
   const host = new FakeHost();
@@ -47,7 +48,7 @@ test("progress lines reach ctx.progress, split across chunks, and the done line 
   const res = await r.promise;
   assert.deepEqual(r.progress, [0.1, 0.5]);
   assert.equal(res.file, DONE.wav);
-  assert.deepEqual(res.meta, { wav: DONE.wav, csv: DONE.csv, transcript: DONE.transcript, lengthS: 361.25, tightened: DONE.tightened, extra: DONE.extra, silent: [] });
+  assert.deepEqual(res.meta, { wav: DONE.wav, csv: DONE.csv, transcript: DONE.transcript, lengthS: 361.25, tightened: DONE.tightened, extra: DONE.extra, silent: [], duplicates: DONE.duplicates });
 });
 
 test("an error line becomes the error, whatever the exit code", async () => {

@@ -1,10 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FakeHost } from "./fake-host.mjs";
-import { makeStemFitRunner, MSG_NO_STEM_REMIXER } from "../js/tools/stemfit.js";
+import { makeStemFitRunner, MSG_NO_STEM_REMIXER, MSG_SET_STEM_REMIXER } from "../js/tools/stemfit.js";
 
 const SR = "C:\\Apps\\Stem Remixer";
 const PY = SR + "\\.venv\\Scripts\\python.exe";
+const PYW = SR + "\\.venv\\Scripts\\pythonw.exe";
+async function withPython(host, files = [PY, PYW]) {
+  await host.fs.mkdir(SR + "\\.venv\\Scripts");
+  for (const f of files) await host.fs.write(f, "exe");
+  return host;
+}
 const MEDIA = "S:\\Film A\\studio\\media";
 const MIX = "S:\\Film A\\studio\\mix";
 const SCORE = MEDIA + "\\film_a_score_t2.wav";
@@ -12,8 +18,9 @@ const OUT = MIX + "\\film_a_score_fitted.wav";
 const MEASURE = { done: true, duration_s: 200, loud: [-20, -19], beats: [0.5, 1], bpm: 120, moves: [] };
 const PLAN = { steps: [{ from_s: 0, to_s: 100, tempo: 1, xfade_s: 0.03 }, { from_s: 120, to_s: 200, tempo: 1.05, xfade_s: 2.5 }] };
 
-async function setup(script, settings = { stemRemixerDir: SR }) {
+async function setup(script, settings = { stemRemixerDir: SR }, { python = true } = {}) {
   const host = new FakeHost();
+  if (python) await withPython(host);
   await host.fs.mkdir(MEDIA);
   await host.fs.write(SCORE, "score");
   const spawns = [], progress = [];
@@ -27,6 +34,14 @@ test("no stemRemixerDir gives the exact message", async () => {
   const s = await setup(() => {}, { stemRemixerDir: null });
   await assert.rejects(s.runner.start({ input: { score: SCORE, measureOnly: true } }, s.ctx), { message: MSG_NO_STEM_REMIXER });
   assert.equal(MSG_NO_STEM_REMIXER, "Set where Stem Remixer is (stemRemixerDir in .studio-settings.json, or the Probe screen).");
+  assert.equal(s.spawns.length, 0);
+});
+
+test("Review Focus 5: stemRemixerDir set but no .venv python: says what to set and spawns nothing", async () => {
+  assert.equal(MSG_SET_STEM_REMIXER, "Set stemRemixerDir in .studio-settings.json to your Stem Remixer folder (1.9.0 or newer).");
+  const s = await setup(() => {}, { stemRemixerDir: SR }, { python: false });
+  await assert.rejects(s.runner.start({ input: { score: SCORE, measureOnly: true } }, s.ctx), { message: MSG_SET_STEM_REMIXER });
+  await assert.rejects(s.runner.start({ input: { score: SCORE, plan: PLAN, out: OUT } }, s.ctx), { message: MSG_SET_STEM_REMIXER });
   assert.equal(s.spawns.length, 0);
 });
 
@@ -95,7 +110,7 @@ test("resume asks for a fresh run", async () => {
 import { openInStemRemixer, listExports } from "../js/tools/stemfit.js";
 
 test("Open in Stem Remixer spawns pythonw main.py --open --plan in its folder, detached, without waiting", async () => {
-  const host = new FakeHost();
+  const host = await withPython(new FakeHost());
   const spawns = [];
   host.spawnScript((cmd, args, opts) => { spawns.push({ cmd, args, opts }); }); // never exits: the app stays open
   const t0 = Date.now();
@@ -106,14 +121,22 @@ test("Open in Stem Remixer spawns pythonw main.py --open --plan in its folder, d
 });
 
 test("Open in Stem Remixer reports a spawn that fails straight away", async () => {
-  const host = new FakeHost();
+  const host = await withPython(new FakeHost());
   host.spawnScript((cmd, args, opts, p) => { p.err("spawn ENOENT"); p.exit(null); });
   await assert.rejects(openInStemRemixer(host, { stemRemixerDir: SR }, { score: SCORE, plan: null }, { graceMs: 50 }), /Stem Remixer didn't open: spawn ENOENT/);
   await assert.rejects(openInStemRemixer(host, { stemRemixerDir: null }, { score: SCORE }), { message: MSG_NO_STEM_REMIXER });
 });
 
+test("Review Focus 5: Open in Stem Remixer with no pythonw.exe says what to set and spawns nothing", async () => {
+  const host = await withPython(new FakeHost(), [PY]);
+  const spawns = [];
+  host.spawnScript((cmd) => { spawns.push(cmd); });
+  await assert.rejects(openInStemRemixer(host, { stemRemixerDir: SR }, { score: SCORE }, { graceMs: 5 }), { message: MSG_SET_STEM_REMIXER });
+  assert.equal(spawns.length, 0);
+});
+
 test("Open in Stem Remixer passes --export-dir when given", async () => {
-  const host = new FakeHost();
+  const host = await withPython(new FakeHost());
   const spawns = [];
   host.spawnScript((cmd, args) => { spawns.push(args); });
   await openInStemRemixer(host, { stemRemixerDir: SR }, { score: SCORE, plan: null, exportDir: MIX + "\\stem-remixer" }, { graceMs: 5 });

@@ -4,8 +4,9 @@ import { FakeHost } from "./fake-host.mjs";
 import { openFilm } from "../js/store.js";
 import { makeJobs } from "../js/jobs.js";
 import { watchJobs, holders } from "../js/redo.js";
-import { startJoin, startFit, startMix, useStemRemixerExport, approveMix, fitStale, mixStale, OUT_OF_DATE, parseCsv } from "../js/mixplan.js";
-import { MSG_NO_STEM_REMIXER } from "../js/tools/stemfit.js";
+import { startJoin, startFit, startMix, useStemRemixerExport, approveMix, fitStale, mixStale, OUT_OF_DATE, parseCsv,
+  openFitInStemRemixer, REJOIN, pastedPath } from "../js/mixplan.js";
+import { MSG_NO_STEM_REMIXER, MSG_SET_STEM_REMIXER } from "../js/tools/stemfit.js";
 
 const DIR = "S:\\Youtube video ideas\\Film A";
 const MEDIA = DIR + "\\studio\\media";
@@ -26,10 +27,14 @@ function score(chosen = 1, approved = true) {
 const sfx = (o = {}) => ({ id: "SFX-01", cue: "door", prompt: "p", durationS: 3, loop: false, source: "stableaudio", lineId: "01", startS: 8,
   approved: true, chosen: 1, takes: [{ n: 1, status: "done", file: SFX1, meanDb: -25 }], ...o });
 
-async function setup({ settings = {}, audio, csv = CSV } = {}) {
+async function setup({ settings = {}, audio, csv = CSV, python = true, exportS = 48.5 } = {}) {
   const host = new FakeHost();
   await host.fs.mkdir(DIR);
   await host.fs.mkdir(MEDIA);
+  if (python) {
+    await host.fs.mkdir("C:\\sr\\.venv\\Scripts");
+    for (const f of ["python.exe", "pythonw.exe"]) await host.fs.write("C:\\sr\\.venv\\Scripts\\" + f, "exe");
+  }
   for (const f of [SCORE1, SCORE2, SFX1]) await host.fs.write(f, "audio");
   const store = await openFilm(host, DIR);
   await store.update((d) => { d.audio = audio ?? { flowId: null, score: score(), sfx: [sfx(), sfx({ id: "SFX-02", startS: null, approved: true })] }; });
@@ -42,14 +47,16 @@ async function setup({ settings = {}, audio, csv = CSV } = {}) {
       const wav = VO + "\\film_a_voiceover.wav", csv = VO + "\\film_a_voiceover_timings.csv";
       await host.fs.mkdir(VO);
       await host.fs.write(csv, csvText);
-      return { file: wav, meta: { wav, csv, transcript: VO + "\\t.json", lengthS: 30.5, tightened: [{ id: "01.1", at_s: 1, from_s: 0.9, to_s: 0.3 }], extra: [], silent: [] } };
+      return { file: wav, meta: { wav, csv, transcript: VO + "\\t.json", lengthS: 30.5, tightened: [{ id: "01.1", at_s: 1, from_s: 0.9, to_s: 0.3 }], extra: [], silent: [],
+        duplicates: [{ id: "01.1", files: [REC + "\\film_a\\film_a_01.1.wav", REC + "\\old\\film_a_01.1.wav"] }] } };
     } },
     stemfit: { lane: "gpu", async start(job) {
       const i = job.input;
       if (i.measureOnly) {
         calls.measure.push(i);
         const f = i.measureOut ?? i.score + ".measure.json";
-        await host.fs.write(f, JSON.stringify(MEASURE));
+        // an export (measured into Studio's mix folder) runs exportS; a score take runs 60 s
+        await host.fs.write(f, JSON.stringify(i.measureOut ? { ...MEASURE, duration_s: exportS } : MEASURE));
         return { file: f, meta: { measureFile: f, lengthS: 60 } };
       }
       calls.fit.push(i);
@@ -98,6 +105,7 @@ test("startJoin queues a Voiceover join job and mirrors the result onto state.mi
   assert.equal(v.csv, VO + "\\film_a_voiceover_timings.csv");
   assert.equal(v.lengthS, 30.5);
   assert.equal(v.tightened.length, 1);
+  assert.deepEqual(v.duplicates, [{ id: "01.1", files: [REC + "\\film_a\\film_a_01.1.wav", REC + "\\old\\film_a_01.1.wav"] }]);
   assert.equal(v.at, s.host.now());
   assert.equal(v.startedAt, s.host.now(), "the join keeps when it started, for takes saved during it");
   assert.equal(v.jobId, j.id);
@@ -128,6 +136,8 @@ test("startFit measures the score once, plans with Claude and queues a Score fit
   assert.equal(f.fromVoiceoverAt, st(s).voiceover.at);
   assert.equal(f.fromScoreTake, 1);
   assert.equal(f.sheet.rows.length, 1);
+  assert.equal(f.sheet.rows[0].section, "Opening", "the sheet shows the ## title, not the file name");
+  assert.deepEqual(f.targets.sections, [{ name: "Opening", startS: 6 }], "the mix marks and Claude's targets do too");
   assert.equal(f.sheet.rows[0].targetS, 6);
   assert.ok(Math.abs(f.sheet.rows[0].landsS - 6.5) < 1e-9);
   assert.equal(f.plan.notes, "Kept the opening.");
@@ -265,6 +275,105 @@ test("useStemRemixerExport re-measures the export, rebuilds the sheet and the mi
   assert.equal(fitStale(s.store.state), false);
   await mixed(s);
   assert.equal(s.calls.mix[0].music, EXP);
+});
+
+test("Review Focus 5: stemRemixerDir set but no Stem Remixer Python: fit and export say what to set, nothing starts", async () => {
+  const s = await setup({ python: false });
+  await joined(s);
+  const before = s.jobs.list().length;
+  await assert.rejects(startFit(s.ctx), { message: MSG_SET_STEM_REMIXER });
+  const EXP = "C:\\sr\\export.wav";
+  await s.host.fs.mkdir("C:\\sr");
+  await s.host.fs.write(EXP, "x");
+  await assert.rejects(useStemRemixerExport(s.ctx, EXP), { message: MSG_SET_STEM_REMIXER });
+  await assert.rejects(openFitInStemRemixer(s.ctx, { open: async () => "Opened" }), { message: MSG_SET_STEM_REMIXER });
+  assert.equal(s.jobs.list().length, before);
+  assert.equal(s.plans(), 0);
+});
+
+test("Open in Stem Remixer passes --plan only on the first open after an app fit, so later opens keep Jon's tweaks", async () => {
+  const s = await setup();
+  await joined(s);
+  await fitted(s);
+  await s.host.fs.write(MIXD + "\\plan.json", "{}");
+  const opens = [];
+  const open = async (host, settings, args) => { opens.push(args); return "Opened in Stem Remixer"; };
+  assert.equal(await openFitInStemRemixer(s.ctx, { open }), "Opened in Stem Remixer");
+  assert.deepEqual(opens[0], { score: SCORE1, plan: MIXD + "\\plan.json", exportDir: MIXD + "\\stem-remixer" });
+  assert.equal(st(s).fit.openedAt, s.host.now());
+  await openFitInStemRemixer(s.ctx, { open });
+  assert.equal(opens[1].plan, null, "the second open leaves Stem Remixer's own state alone");
+  await fitted(s); // a new app fit: its plan goes in once more
+  assert.equal(st(s).fit.openedAt, undefined);
+  await openFitInStemRemixer(s.ctx, { open });
+  assert.equal(opens[2].plan, MIXD + "\\plan.json");
+  const EXP = MIXD + "\\stem-remixer\\export.wav";
+  await s.host.fs.write(EXP, "x");
+  await useStemRemixerExport(s.ctx, EXP);
+  await openFitInStemRemixer(s.ctx, { open });
+  assert.equal(opens[3].plan, null, "a Stem Remixer export is never overwritten by the app's plan");
+});
+
+test("a take saved after the join: fit, export, mix and approval wait for the join to be run again", async () => {
+  const s = await setup();
+  await joined(s);
+  await fitted(s);
+  await mixed(s);
+  const later = { rows: [{ id: "01.1", status: "ok", takeS: (st(s).voiceover.startedAt + 1000) / 1000 }] };
+  const ctx = { ...s.ctx, narration: later };
+  assert.equal(REJOIN, "Waits for the voiceover join to be run again.");
+  await assert.rejects(startFit(ctx), { message: REJOIN });
+  await assert.rejects(startMix(ctx), { message: REJOIN });
+  await assert.rejects(approveMix(ctx), { message: REJOIN });
+  await assert.rejects(approveMix({ ...s.ctx, joinStale: true }), { message: REJOIN });
+  const EXP = MIXD + "\\e.wav";
+  await s.host.fs.write(EXP, "x");
+  await assert.rejects(useStemRemixerExport(ctx, EXP), { message: REJOIN });
+  const earlier = { rows: [{ id: "01.1", status: "ok", takeS: (st(s).voiceover.startedAt - 1000) / 1000 }] };
+  await approveMix({ ...s.ctx, narration: earlier });
+  assert.equal(st(s).mix.approved, true);
+});
+
+test("Use another file: Explorer's quotes and spaces are stripped; a path that isn't there says so", async () => {
+  assert.equal(pastedPath('  "C:\\sr\\my export.wav"  '), "C:\\sr\\my export.wav");
+  assert.equal(pastedPath("\tC:\\sr\\e.wav\n"), "C:\\sr\\e.wav");
+  const s = await setup();
+  await joined(s);
+  await fitted(s);
+  await assert.rejects(useStemRemixerExport(s.ctx, '"C:\\sr\\nothing.wav"', { pasted: true }), { message: "Couldn't find that file." });
+  const EXP = "C:\\sr\\my export.wav";
+  await s.host.fs.mkdir("C:\\sr");
+  await s.host.fs.write(EXP, "x");
+  await useStemRemixerExport(s.ctx, ` "${EXP}" `, { pasted: true });
+  assert.equal(st(s).fit.file, EXP);
+});
+
+test("an export more than 1 s off the film's length asks first; confirmed, it is used without measuring again", async () => {
+  const s = await setup({ exportS: 50.3 });
+  await joined(s);
+  await fitted(s);
+  const EXP = MIXD + "\\long.wav";
+  await s.host.fs.write(EXP, "x");
+  const fitAt = st(s).fit.at;
+  const r = await useStemRemixerExport(s.ctx, EXP);
+  assert.deepEqual(r, { confirm: "This export is 1.8 s longer than the film. Use it anyway?" });
+  assert.equal(st(s).fit.at, fitAt, "nothing is used until Jon confirms");
+  assert.equal(st(s).fit.source, "app");
+  const measures = s.calls.measure.length;
+  await useStemRemixerExport(s.ctx, EXP, { confirmed: true });
+  assert.equal(s.calls.measure.length, measures);
+  assert.equal(st(s).fit.file, EXP);
+  assert.equal(st(s).fit.source, "stemremixer");
+  const t = await setup({ exportS: 46 });
+  await joined(t);
+  await fitted(t);
+  await t.host.fs.write(EXP, "x");
+  assert.deepEqual(await useStemRemixerExport(t.ctx, EXP), { confirm: "This export is 2.5 s shorter than the film. Use it anyway?" });
+  const u = await setup({ exportS: 49.2 });
+  await joined(u);
+  await fitted(u);
+  await u.host.fs.write(EXP, "x");
+  assert.equal(typeof (await useStemRemixerExport(u.ctx, EXP)), "number", "within 1 s: used straight away");
 });
 
 test("parseCsv reads the timings, quoted fields too", () => {

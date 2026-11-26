@@ -208,13 +208,16 @@ export async function editItem(store, id, patch = {}) {
   await store.log(`${labelOf(item)}: ${what.join(", ")}`);
 }
 
+// "5" and "05" are the same clip: each dot part that is all digits is compared as a number.
+const idKey = (v) => String(v ?? "").trim().split(".").map((p) => (/^\d+$/.test(p) ? String(Number(p)) : p)).join(".");
+
 // Fill start times from the voiceover timings: the cue's clip start plus the 6 second hold.
 // Only cues with a line id whose clip is in the timings, and never one Jon set himself. Returns the ids filled.
 export async function proposeStarts(store, timingsRows, lineScript) {
   void lineScript; // the line id alone names the clip; the script is accepted for callers that hold it
   const starts = new Map();
   for (const r of timingsRows ?? []) {
-    const clip = String(r?.clip ?? "");
+    const clip = idKey(r?.clip);
     const t = Number(r?.start_s);
     if (!clip || !Number.isFinite(t)) continue;
     if (!starts.has(clip) || t < starts.get(clip)) starts.set(clip, t);
@@ -223,7 +226,7 @@ export async function proposeStarts(store, timingsRows, lineScript) {
   await store.update((d) => {
     for (const x of d.audio?.sfx ?? []) {
       if (!x.lineId || x.startSBy === "jon") continue;
-      const t = starts.get(String(x.lineId).split(".")[0]);
+      const t = starts.get(idKey(String(x.lineId).split(".")[0]));
       if (t === undefined) continue;
       x.startS = Math.round((t + FILM_OFFSET_S) * 1000) / 1000;
       done.push(x.id);

@@ -3,6 +3,7 @@ import { runProcess } from "../proc.js";
 import { DEFAULT_SETTINGS } from "../settings.js";
 import { stableAudioState, MSG_MUSIC } from "../tools/stableaudio.js";
 import { join } from "../paths.js";
+import { MSG_SET_STEM_REMIXER, stemPython } from "../tools/stemfit.js";
 
 const ROOT = "S:\\Youtube video ideas\\";
 const UNC = "\\\\192.168.1.171\\jon\\Youtube video ideas\\";
@@ -40,7 +41,7 @@ const stableAudioCheck = (sa) => async (host) => {
 };
 
 // Stem Remixer: its own Python plus fit.py and measure.py (1.9.0 or newer). Never starts it.
-export const MSG_SET_STEM_REMIXER = "Set stemRemixerDir in .studio-settings.json to your Stem Remixer folder (1.9.0 or newer).";
+export { MSG_SET_STEM_REMIXER };
 const NEED_VERSION = [1, 9, 0];
 const older = (v, want) => {
   const a = String(v).split(".").map((x) => parseInt(x, 10) || 0);
@@ -49,7 +50,7 @@ const older = (v, want) => {
 };
 const stemRemixerCheck = (dir) => async (host) => {
   if (!dir) throw new Error(MSG_SET_STEM_REMIXER);
-  for (const f of [join(dir, ".venv", "Scripts", "python.exe"), join(dir, "fit.py"), join(dir, "measure.py")]) {
+  for (const f of [stemPython(dir), join(dir, "fit.py"), join(dir, "measure.py")]) {
     if (!(await host.fs.exists(f))) throw new Error(MSG_SET_STEM_REMIXER);
   }
   let v = null;
@@ -58,9 +59,14 @@ const stemRemixerCheck = (dir) => async (host) => {
   return v ? `Stem Remixer ${v}` : "ready";
 };
 
+// voiceover_join.py imports line_script.py from the same folder, so both must be there.
 const autocueJoinCheck = (dir) => async (host) => {
-  if (dir && (await host.fs.exists(join(dir, "voiceover_join.py")))) return "voiceover_join.py found";
-  throw new Error(`voiceover_join.py isn't in ${dir || "autocueDir"}. Update Autocue Studio, or set autocueDir in .studio-settings.json.`);
+  for (const f of ["voiceover_join.py", "line_script.py"]) {
+    if (!dir || !(await host.fs.exists(join(dir, f)))) {
+      throw new Error(`${f} isn't in ${dir || "autocueDir"}. Update Autocue Studio, or set autocueDir in .studio-settings.json.`);
+    }
+  }
+  return "voiceover_join.py found";
 };
 
 const toolsCheck = (server, want) => async (host) => {

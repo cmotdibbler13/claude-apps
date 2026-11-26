@@ -1,7 +1,7 @@
 // Review view, Voiceover and mix: join the voiceover, fit the score, make the mix preview, approve it.
 // mixModel is pure; mixSection builds the DOM from it. Each step is ready only when the one before it is done.
 import { h, btn, basename } from "./dom.js";
-import { OUT_OF_DATE, fitStale, mixStale } from "../mixplan.js";
+import { OUT_OF_DATE, REJOIN, fitStale, mixStale, joinStale } from "../mixplan.js";
 import { countsLine, NO_LINE_SCRIPT } from "../narration.js";
 import { MSG_INTERRUPTED } from "../tools/voicejoin.js";
 import { MSG_NO_STEM_REMIXER } from "../tools/stemfit.js";
@@ -10,15 +10,10 @@ import { LOST } from "../redo.js";
 const WPM = 150;
 const live = (s) => s === "queued" || s === "running";
 const VERB = { VOICEOVER: "Joining…", FIT: "Fitting…", MIX: "Mixing…" };
-const REJOIN = "Waits for the voiceover join to be run again.";
-
-// A take saved after the join started (or re-recorded since) is not in the voiceover.
-export function joinStale(vo, narration) {
-  if (vo?.status !== "done") return false;
-  const since = vo.startedAt ?? vo.at;
-  if (since == null) return false;
-  return (narration?.rows ?? []).some((r) => Number.isFinite(r.takeS) && r.takeS * 1000 > since);
-}
+// Lines the join takes only when Jon presses Join anyway: their check found a problem, never ran, or is older than the checker.
+const NOT_OK = new Set(["flagged", "unchecked", "outdated"]);
+const COUNT_WORD = { 2: "Two", 3: "Three", 4: "Four", 5: "Five" };
+export { joinStale };
 
 // The mix player is kept across re-renders while it plays the same mix: the same file from the same run.
 export const playerKey = (file, at) => `${file ?? ""}#${at ?? ""}`;
@@ -69,21 +64,21 @@ function base(id, holder, { lock, stale, pending, jobs, error }) {
 
 function joinStep(state, narration, o) {
   const vo = state?.mix?.voiceover ?? null;
-  let lock = null, counts = null, flaggedIds = [];
+  let lock = null, counts = null, notOk = [];
   if (!narration) lock = "Waiting for the Narration list.";
   else if (narration.missingScript) lock = NO_LINE_SCRIPT;
   else {
     counts = countsLine(narration.counts);
     const missing = narration.rows.filter((r) => r.status === "missing").map((r) => r.id);
     if (missing.length) lock = `Record these first: ${missing.join(", ")}`;
-    flaggedIds = narration.rows.filter((r) => r.status === "flagged").map((r) => r.id);
+    notOk = narration.rows.filter((r) => NOT_OK.has(r.status));
   }
   const stale = o.joinStale;
   const s = base("VOICEOVER", vo, { lock, stale, pending: o.pending.has("VOICEOVER"), jobs: o.jobs, error: o.cardErrors.get("VOICEOVER") });
   const again = vo && vo.status !== "queued" && vo.status !== "running";
-  const label = flaggedIds.length ? `Join anyway (${flaggedIds.length} flagged)` : again ? "Join again" : "Join voiceover";
-  const out = { ...s, title: "Join voiceover", counts, flagged: flaggedIds.length ? `Flagged: ${flaggedIds.join(", ")}` : null,
-    run: { label, allowFlagged: flaggedIds.length > 0, enabled: s.free && !lock }, file: null, playing: false, lengthText: null, details: [] };
+  const label = notOk.length ? `Join anyway (${notOk.length} not OK)` : again ? "Join again" : "Join voiceover";
+  const out = { ...s, title: "Join voiceover", counts, flagged: notOk.length ? `Not OK: ${notOk.map((r) => `${r.id} ${r.status}`).join(", ")}` : null,
+    run: { label, allowFlagged: notOk.length > 0, enabled: s.free && !lock }, file: null, playing: false, lengthText: null, details: [] };
   if (vo?.status === "done") {
     const words = (narration?.rows ?? []).reduce((n, r) => n + String(r.text ?? "").split(/\s+/).filter(Boolean).length, 0);
     out.file = vo.wav ?? null;
@@ -92,6 +87,10 @@ function joinStep(state, narration, o) {
     for (const t of vo.tightened ?? []) out.details.push(`Stall tightened: ${t.id}, ${Number(t.from_s).toFixed(1)} s to ${Number(t.to_s).toFixed(1)} s`);
     if (vo.extra?.length) out.details.push(`Takes that match no line: ${vo.extra.join(", ")}`);
     if (vo.silent?.length) out.details.push(`No speech found, joined as silence: ${vo.silent.join(", ")}`);
+    for (const d of vo.duplicates ?? []) {
+      const n = d.files?.length ?? 0;
+      if (n > 1) out.details.push(`${COUNT_WORD[n] ?? n} takes for ${d.id}; used ${basename(d.files[0])}`);
+    }
   }
   return out;
 }
@@ -109,7 +108,7 @@ function fitStep(state, o) {
   const label = s.state === "done" ? "Fit again with a note" : fit && s.state !== "ready" && s.state !== "locked" ? "Fit again" : "Fit score";
   const out = { ...s, title: "Fit score", run: { label, enabled: s.free && !lock, note: s.state === "done" }, noteOpen: o.noteFor === "FIT",
     sheet: null, suggestion: null, notes: null, sourceText: null, file: null, playing: false, lengthText: null,
-    canOpen: false, canUseExport: false, exports: null, opened: o.ui.opened ?? null };
+    canOpen: false, canUseExport: false, exports: null, opened: o.ui.opened ?? null, confirm: o.ui.confirm ?? null };
   if (fit?.status === "done") {
     const sh = fit.sheet ?? { rows: [] };
     out.sheet = (sh.rows ?? []).map((r) => ({
@@ -156,7 +155,7 @@ function mixStep(state, o) {
   return out;
 }
 
-// settings: { stemRemixer: bool }. ui: { exports: {files, pick, error, loading}, opened }.
+// settings: { stemRemixer: bool }. ui: { exports: {files, pick, error, loading}, opened, confirm: {path, text, pasted} }.
 export function mixModel({ state, narration = null, settings = {}, pending = new Set(), cardErrors = new Map(), noteFor = null, playing = null, jobs = [], ui = {} } = {}) {
   const o = { settings, pending, cardErrors, noteFor, playing, jobs, ui, joinStale: joinStale(state?.mix?.voiceover, narration) };
   return { steps: [joinStep(state, narration, o), fitStep(state, o), mixStep(state, o)] };
@@ -191,14 +190,14 @@ function sheetTable(rows) {
       h("td", { class: r.lands === "no move found" ? "nomove" : "num", text: r.lands }), h("td", { class: "num", text: r.miss }))))));
 }
 
-// "Use another file…": a full path Jon pastes (useStemRemixerExport checks it is there).
+// "Use another file…": a full path Jon pastes, quoted or not (useStemRemixerExport cleans it and checks it is there).
 function otherFile(s, actions) {
   const key = "mix-other";
   const inp = h("input", { type: "text", id: key, class: "mother", placeholder: "Use another file… paste its full path", "aria-label": "Use another file: its full path" });
   inp.value = actions.field(key) ?? "";
   inp.addEventListener("input", () => actions.setField(key, inp.value));
   return h("div", { class: "mrow" }, inp,
-    btn("Use this file", () => { if (inp.value.trim()) actions.useExport(inp.value.trim()); }, { ghost: true, disabled: !s.canUseExport }));
+    btn("Use this file", () => { if (inp.value.trim()) actions.useExport(inp.value, { pasted: true }); }, { ghost: true, disabled: !s.canUseExport }));
 }
 
 function exportsBox(ex, s, actions) {
@@ -244,6 +243,13 @@ function fitBody(s, actions) {
     kids.push(h("div", { class: "row" }, row));
   }
   if (s.opened) kids.push(h("p", { class: "hist", text: s.opened }));
+  if (s.confirm) {
+    kids.push(h("div", { class: "mexports", role: "alertdialog", "aria-label": "Export length" },
+      h("p", { class: "mflag", text: s.confirm.text }),
+      h("div", { class: "row" },
+        btn("Use it anyway", () => actions.useExport(s.confirm.path, { confirmed: true }), { disabled: !s.canUseExport }),
+        btn("Cancel", () => actions.closeConfirm(), { ghost: true }))));
+  }
   kids.push(exportsBox(s.exports, s, actions));
   return kids;
 }

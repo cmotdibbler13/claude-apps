@@ -10,10 +10,21 @@ const FIT_MS = 30 * 60 * 1000;
 const FIT_SHARE = 0.85; // of the progress bar; measuring the fitted score is the rest
 
 export const MSG_NO_STEM_REMIXER = "Set where Stem Remixer is (stemRemixerDir in .studio-settings.json, or the Probe screen).";
+export const MSG_SET_STEM_REMIXER = "Set stemRemixerDir in .studio-settings.json to your Stem Remixer folder (1.9.0 or newer).";
 
 const parentOf = (p) => String(p).replace(/[\\/][^\\/]*$/, "");
 export const measureFileFor = (audio) => `${audio}.measure.json`;
 export const stemPython = (dir) => join(dir, ".venv", "Scripts", "python.exe");
+export const stemPythonw = (dir) => join(dir, ".venv", "Scripts", "pythonw.exe");
+
+// Review Focus 5: stemRemixerDir must be set and hold Stem Remixer's own Python (pythonw for Open) before
+// anything is spawned or prepared. Resolves with the folder.
+export async function needStemRemixer(host, settings, { windowed = false } = {}) {
+  const dir = settings?.stemRemixerDir;
+  if (!dir) throw new Error(MSG_NO_STEM_REMIXER);
+  if (!(await host.fs.exists((windowed ? stemPythonw : stemPython)(dir)))) throw new Error(MSG_SET_STEM_REMIXER);
+  return dir;
+}
 
 // The measure as cached: everything measure.py printed except "done".
 const strip = ({ done, ...rest }) => { void done; return rest; };
@@ -38,7 +49,7 @@ export function makeStemFitRunner({ settings = DEFAULT_SETTINGS } = {}) {
     lane: "gpu",
     async start(job, ctx) {
       const { host } = ctx;
-      if (!settings.stemRemixerDir) throw new Error(MSG_NO_STEM_REMIXER);
+      await needStemRemixer(host, settings);
       const { score, plan, out, measureOnly, measureOut } = job.input ?? {};
       if (typeof score !== "string" || !score) throw new Error("This job has no score.");
 
@@ -69,17 +80,15 @@ export function makeStemFitRunner({ settings = DEFAULT_SETTINGS } = {}) {
 }
 
 // ---- hand tweaks in Stem Remixer ----
-export const stemPythonw = (dir) => join(dir, ".venv", "Scripts", "pythonw.exe");
 export const MSG_OPENED = "Opened in Stem Remixer";
 const OPEN_GRACE_MS = 1500;
 
 // Starts Stem Remixer on the score with the fit plan, detached, and never waits for it to close.
-// Only a start that fails within graceMs (pythonw missing, refused) is reported.
+// Only a start that fails within graceMs (refused, crashed on start) is reported; a missing pythonw is refused first.
 // exportDir: where its Export mix dialog starts (the film's own folder), so "Use this export" finds the file.
-export function openInStemRemixer(host, settings, { score, plan = null, exportDir = null }, { graceMs = OPEN_GRACE_MS } = {}) {
-  const dir = settings?.stemRemixerDir;
-  if (!dir) return Promise.reject(new Error(MSG_NO_STEM_REMIXER));
-  if (typeof score !== "string" || !score) return Promise.reject(new Error("There is no score take to open."));
+export async function openInStemRemixer(host, settings, { score, plan = null, exportDir = null }, { graceMs = OPEN_GRACE_MS } = {}) {
+  const dir = await needStemRemixer(host, settings, { windowed: true });
+  if (typeof score !== "string" || !score) throw new Error("There is no score take to open.");
   const args = ["main.py", "--open", score, ...(plan ? ["--plan", plan] : []), ...(exportDir ? ["--export-dir", exportDir] : [])];
   return new Promise((resolve, reject) => {
     let settled = false, err = "";

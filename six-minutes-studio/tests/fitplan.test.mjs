@@ -8,9 +8,10 @@ import {
 const close = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) <= eps, `${a} != ${b}`);
 
 const TIMINGS = [
-  { clip: "01", section: "1", name: "Cold open", start_s: 0, end_s: 20 },
-  { clip: "02", section: "2", name: "The harbour", start_s: 21.2, end_s: 60 },
-  { clip: "03", section: "2", name: "The harbour", start_s: 60.6, end_s: 100 },
+  // As voiceover_join.py writes them: name is <project>_<clip>, section is the ## title.
+  { clip: "01", section: "Cold open", name: "film_a_01", start_s: 0, end_s: 20 },
+  { clip: "02", section: "The harbour", name: "film_a_02", start_s: 21.2, end_s: 60 },
+  { clip: "03", section: "The harbour", name: "film_a_03", start_s: 60.6, end_s: 100 },
 ];
 
 test("filmTargets: sections start at their first clip + 6, film = last end + 0.5 + 6 + end card", () => {
@@ -20,6 +21,11 @@ test("filmTargets: sections start at their first clip + 6, film = last end + 0.5
     { name: "Cold open", startS: 6 },
     { name: "The harbour", startS: 27.2 },
   ]);
+});
+
+test("filmTargets falls back to the file name when a clip has no section title", () => {
+  const t = filmTargets([{ clip: "01", section: "", name: "film_a_01", start_s: 0, end_s: 10 }]);
+  assert.deepEqual(t.sections, [{ name: "film_a_01", startS: 6 }]);
 });
 
 test("filmTargets reads CSV strings and defaults the end card to 12", () => {
@@ -125,7 +131,7 @@ test("planFit clamps tempo 1.2 to 1.10, coerces crossfades and passes the note t
     };
   });
   const prev = { steps: [{ from_s: 0, to_s: 118.5, tempo: 1, xfade_s: 2.5 }] };
-  const r = await planFit(h, { measure: { ...MEASURE, duration_s: 130 }, targets: TARGETS, note: "Keep the rise at the harbour.", previous: prev });
+  const r = await planFit(h, { measure: { ...MEASURE, duration_s: 130, beats: [60] }, targets: TARGETS, note: "Keep the rise at the harbour.", previous: prev });
   assert.equal(r.steps[1].tempo, 1.1);
   assert.equal(r.steps[0].xfade_s, 0.03);
   assert.equal(r.steps[1].xfade_s, 2.5);
@@ -138,9 +144,9 @@ test("planFit clamps tempo 1.2 to 1.10, coerces crossfades and passes the note t
   assert.equal(data.targets.filmS, 118.5);
   assert.equal(data.measure.loud.length, 120); // every 1 s, not every 0.1 s
   assert.equal(data.measure.duration_s, 130);
-  assert.equal(data.measure.beats, 0);
-  assert.equal(data.measure.beatSpan, null);
-  assert.deepEqual(data.measure.beatTimes, []);
+  assert.equal(data.measure.beats, 1);
+  assert.deepEqual(data.measure.beatSpan, [60, 60]);
+  assert.deepEqual(data.measure.beatTimes, [60]);
   assert.deepEqual(data.measure.moves, MEASURE.moves);
 });
 
@@ -160,12 +166,12 @@ test("planFit gives Claude the beat span and at most 400 beat times to 0.01 s", 
 
 test("planFit clamps a step that runs past the end of the score", async () => {
   const h = new FakeHost();
-  h.claudeScript(() => ({ steps: [{ from_s: 0, to_s: 58.53, tempo: 1, xfade_s: 0.03 }, { from_s: 60, to_s: 125, tempo: 1, xfade_s: 2.5 }], notes: "" }));
+  h.claudeScript(() => ({ steps: [{ from_s: 0, to_s: 61, tempo: 1, xfade_s: 2.5 }, { from_s: 60, to_s: 125, tempo: 1, xfade_s: 2.5 }], notes: "" }));
   const r = await planFit(h, { measure: MEASURE, targets: TARGETS });
   assert.equal(r.steps[1].to_s, 120);
   close(renderedLength(r.steps), 118.5, 1e-9);
-  // Unclamped this would be 118.47 and pass; clamped it is 5 s short.
-  h.claudeScript(() => ({ steps: [{ from_s: 0, to_s: 53.5, tempo: 1, xfade_s: 0.03 }, { from_s: 60, to_s: 125, tempo: 1, xfade_s: 2.5 }], notes: "" }));
+  // Unclamped this would be 118.5 and pass; clamped it is 5 s short.
+  h.claudeScript(() => ({ steps: [{ from_s: 0, to_s: 56, tempo: 1, xfade_s: 2.5 }, { from_s: 60, to_s: 125, tempo: 1, xfade_s: 2.5 }], notes: "" }));
   await assert.rejects(planFit(h, { measure: MEASURE, targets: TARGETS }),
     { message: "The fit came out 5.0 s too short; try again or add a note." });
 });
@@ -200,6 +206,23 @@ test("planFit snaps to beats before checking the length", async () => {
   assert.equal(r.steps[1].from_s, 60);
   assert.equal(r.steps[1].to_s, 128.4); // the last end is not a join
   close(renderedLength(r.steps), 50 + 68.4 - 0.03);
+});
+
+test("Review Focus 4: an on-beat join with no beat near it becomes a 2.5 s crossfade before the length check", async () => {
+  const h = new FakeHost();
+  // 60 + 61 - 2.5 = 118.5 (the 0.03 the reply asked for would make it 120.97, 2.5 s too long)
+  const reply = { steps: [{ from_s: 0, to_s: 60, tempo: 1, xfade_s: 0.03 }, { from_s: 59, to_s: 120, tempo: 1, xfade_s: 0.03 }], notes: "" };
+  h.claudeScript(() => reply);
+  const r = await planFit(h, { measure: { ...MEASURE, beats: [] }, targets: TARGETS });
+  assert.equal(r.steps[0].xfade_s, 2.5);
+  close(renderedLength(r.steps), 118.5, 1e-9);
+  // A beat too far from one end (no bpm: 0.25 s) makes it ambient too; a beat at both ends keeps it on the beat.
+  const far = await planFit(h, { measure: { ...MEASURE, beats: [60, 70] }, targets: TARGETS });
+  assert.equal(far.steps[0].xfade_s, 2.5);
+  h.claudeScript(() => ({ steps: [{ from_s: 0, to_s: 60, tempo: 1, xfade_s: 0.03 }, { from_s: 61.53, to_s: 120, tempo: 1, xfade_s: 0.03 }], notes: "" }));
+  const near = await planFit(h, { measure: { ...MEASURE, beats: [60, 61.5] }, targets: TARGETS });
+  assert.equal(near.steps[0].xfade_s, 0.03);
+  assert.equal(near.steps[1].from_s, 61.5);
 });
 
 test("landing maps a score time to its first use when a block repeats", () => {

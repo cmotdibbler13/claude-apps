@@ -18,9 +18,9 @@ import { makeStableAudioStarter, makeStableAudioRunner } from "./tools/stableaud
 import { makeElevenRunner } from "./tools/elevenlabs.js";
 import { planAudio, addCue, editItem, getEstimate, rewriteFromNote, startAudioTake, approveAudio, unapproveAudio, chooseAudio, proposeStarts } from "./audioplan.js";
 import { makeVoiceJoinRunner } from "./tools/voicejoin.js";
-import { makeStemFitRunner, openInStemRemixer, listExports } from "./tools/stemfit.js";
+import { makeStemFitRunner, listExports } from "./tools/stemfit.js";
 import { makeMixdownRunner } from "./tools/mixdown.js";
-import { startJoin, startFit, startMix, useStemRemixerExport, approveMix, parseCsv } from "./mixplan.js";
+import { startJoin, startFit, startMix, useStemRemixerExport, approveMix, parseCsv, openFitInStemRemixer, stemExportDir, pastedPath } from "./mixplan.js";
 import { mountProbe } from "./ui/probe.js";
 import * as filmsView from "./ui/films.js";
 import * as jobsView from "./ui/jobs.js";
@@ -170,7 +170,7 @@ async function renderNow() {
       audio: app.store?.state?.audio ?? null,
       sa: app.starter ? { state: app.starter.state(), message: app.starter.message() } : null,
       audioUi: { estimating: r.estimating, planning: !!r.planning, planError: r.planError ?? null, adding: !!r.adding, addError: r.addError ?? null },
-      mixUi: { settings: { stemRemixer: !!app.settings?.stemRemixerDir }, jobs: list, ui: { exports: r.exports ?? null, opened: r.opened ?? null } },
+      mixUi: { settings: { stemRemixer: !!app.settings?.stemRemixerDir }, jobs: list, ui: { exports: r.exports ?? null, opened: r.opened ?? null, confirm: r.exportConfirm ?? null } },
     });
     paint("review", $("view-review"), model, reviewView, reviewActions);
     proposeOnce();
@@ -482,7 +482,8 @@ function cardAction(fn) {
   };
 }
 const ctx = () => ({ host: app.host, store: app.store, jobs: app.jobs });
-const mixCtx = () => ({ ...ctx(), lineScript: app.review.lineScript ?? null, settings: app.settings ?? {} });
+// narration: the mix steps refuse to run from a join that misses a take saved since (joinStale).
+const mixCtx = () => ({ ...ctx(), lineScript: app.review.lineScript ?? null, settings: app.settings ?? {}, narration: app.review.narration ?? null });
 // A Voiceover and mix step's action, guarded like a card (VOICEOVER, FIT or MIX).
 const stepAction = (id, fn) => { const run = cardAction((_, ...a) => fn(...a)); return (...a) => run(id, ...a); };
 
@@ -502,18 +503,14 @@ async function findExports() {
   render();
 }
 
-const exportDirOf = (store) => join(store.dir, "studio", "mix", "stem-remixer");
+const exportDirOf = stemExportDir;
 
+// The fit's plan goes in only on the first open after an app fit (openFitInStemRemixer), so Jon's tweaks stay.
 async function openStemRemixer() {
-  const r = app.review, store = app.store;
-  const fit = store?.state?.mix?.fit;
+  const r = app.review;
   r.opened = "Opening Stem Remixer…"; r.cardErrors.delete("FIT"); render();
   try {
-    const plan = join(store.dir, "studio", "mix", "plan.json");
-    const score = fit?.scoreFile ?? null;
-    const exportDir = exportDirOf(store);
-    await app.host.fs.mkdir(exportDir);
-    const text = await openInStemRemixer(app.host, app.settings ?? {}, { score, plan: (await app.host.fs.exists(plan)) ? plan : null, exportDir });
+    const text = await openFitInStemRemixer(mixCtx());
     if (app.review === r) r.opened = text;
   } catch (e) {
     if (app.review === r) { r.opened = null; r.cardErrors.set("FIT", msg(e)); }
@@ -611,7 +608,7 @@ const reviewActions = {
   fitScore: stepAction("FIT", async (note) => {
     if (note !== undefined && !String(note).trim()) throw new Error("Write a note saying what should change.");
     userStarted();
-    app.review.opened = null;
+    app.review.opened = null; app.review.exportConfirm = null;
     await startFit(mixCtx(), note === undefined ? {} : { note: String(note).trim() });
     if (app.review.noteFor === "FIT") { app.review.noteFor = null; app.review.draft = ""; }
   }),
@@ -619,9 +616,16 @@ const reviewActions = {
   findExports: () => { findExports(); },
   pickExport(path) { if (app.review.exports) { app.review.exports.pick = path; render(); } },
   closeExports() { app.review.exports = null; render(); },
-  useExport: stepAction("FIT", async (path) => {
+  closeConfirm() { app.review.exportConfirm = null; render(); },
+  // An export more than 1 s off the film's length comes back as a question; "Use it anyway" sends confirmed.
+  useExport: stepAction("FIT", async (path, opts = {}) => {
     userStarted();
-    await useStemRemixerExport(mixCtx(), path);
+    app.review.exportConfirm = null;
+    const r = await useStemRemixerExport(mixCtx(), path, opts);
+    if (r && typeof r === "object" && r.confirm) {
+      app.review.exportConfirm = { path: opts.pasted ? pastedPath(path) : path, text: r.confirm };
+      return;
+    }
     app.review.exports = null;
     fields.delete("mix-other");
     // Free and local: the mix is made again from the export straight away (its errors show on the Mix step).

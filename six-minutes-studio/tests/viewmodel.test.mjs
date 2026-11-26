@@ -588,13 +588,22 @@ test("mix: before anything, join is ready and fit and mix say what they wait for
   assert.equal(x.statusText, "Waits for the score fit.");
 });
 
-test("mix: flagged lines make it Join anyway (N flagged) with the ids; OK by Jon counts as fine", () => {
-  const m = mm(mstate(), { narration: narr([nrow("01.1", "flagged"), nrow("01.2", "jon"), nrow("02.1", "flagged")]) });
+test("mix: flagged, unchecked and outdated lines make it Join anyway (N not OK) with each id's status; OK by Jon counts as fine", () => {
+  const m = mm(mstate(), { narration: narr([nrow("01.1", "flagged"), nrow("01.2", "jon"), nrow("02.1", "unchecked"), nrow("02.2", "outdated"), nrow("03.1", "ok")]) });
   const j = step(m, "VOICEOVER");
   assert.equal(j.state, "ready");
-  assert.equal(j.run.label, "Join anyway (2 flagged)");
+  assert.equal(j.run.label, "Join anyway (3 not OK)");
   assert.equal(j.run.allowFlagged, true);
-  assert.equal(j.flagged, "Flagged: 01.1, 02.1");
+  assert.equal(j.flagged, "Not OK: 01.1 flagged, 02.1 unchecked, 02.2 outdated");
+  const one = step(mm(mstate(), { narration: narr([nrow("01.1", "unchecked"), nrow("01.2", "ok")]) }), "VOICEOVER");
+  assert.equal(one.run.label, "Join anyway (1 not OK)");
+  assert.equal(one.flagged, "Not OK: 01.1 unchecked");
+});
+
+test("mix: a done join lists the lines that had two takes and which file it used", () => {
+  const dup = [{ id: "05.2", files: ["S:\\rec\\f_05.2.wav", "S:\\rec\\old\\f_05.2.wav"] }, { id: "06.1", files: ["S:\\rec\\a\\f_06.1.wav", "S:\\rec\\b\\f_06.1.wav", "S:\\rec\\c\\f_06.1.wav"] }];
+  const j = step(mm(mstate({ voiceover: vo({ duplicates: dup }) })), "VOICEOVER");
+  assert.deepEqual(j.details.slice(-2), ["Two takes for 05.2; used f_05.2.wav", "Three takes for 06.1; used f_06.1.wav"]);
 });
 
 test("mix: a missing take locks the join with Record these first", () => {
@@ -726,6 +735,9 @@ test("mix: card errors, the export list and the open message reach the model", (
   assert.equal(f.error, "boom");
   assert.deepEqual(f.exports.files.map((x) => [x.name, x.picked]), [["b.wav", true], ["a.mp3", false]]);
   assert.equal(f.opened, "Opened in Stem Remixer");
+  assert.equal(f.confirm, null);
+  const c = step(mm(mstate({ voiceover: vo(), fit: fitH() }), { ui: { confirm: { path: "C:\\sr\\b.wav", text: "This export is 1.8 s longer than the film. Use it anyway?" } } }), "FIT");
+  assert.deepEqual(c.confirm, { path: "C:\\sr\\b.wav", text: "This export is 1.8 s longer than the film. Use it anyway?" });
   assert.equal(reviewModel({ film: film(), state: mstate(), sa: sa(), narration: goodNarr() }).mix.steps.length, 3);
 });
 
