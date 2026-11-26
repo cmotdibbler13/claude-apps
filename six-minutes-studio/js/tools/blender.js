@@ -38,9 +38,11 @@ const FRA = /Fra:(\d+)/g;
 export function makeBlenderRunner({ settings = DEFAULT_SETTINGS } = {}) {
   return {
     lane: "gpu",
-    start(job, ctx) {
+    async start(job, ctx) {
       const { script, sourceFile, out, frames } = job.input;
       const { host } = ctx;
+      // A leftover file at out (earlier interrupted run) must not pass for this run's result. Move it aside, never delete.
+      if (await host.fs.exists(out)) await host.fs.rename(out, out.replace(/\.mp4$/i, "") + `.stale-${host.now()}.mp4`);
       return new Promise((resolve, reject) => {
         const tail = [];
         let partial = "", errText = "";
@@ -57,7 +59,7 @@ export function makeBlenderRunner({ settings = DEFAULT_SETTINGS } = {}) {
             }
           }
         };
-        const p = host.spawn(settings.blenderPath, ["-b", "-P", script, "--", sourceFile, out]);
+        const p = host.spawn(settings.blenderPath, ["-b", "--python-exit-code", "1", "-P", script, "--", sourceFile, out]);
         p.onOut((c) => feed(c));
         p.onErr((c) => { errText = String(c); feed(c); });
         p.onExit(async (code) => {

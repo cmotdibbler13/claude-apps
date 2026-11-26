@@ -53,7 +53,7 @@ test("script path and args are passed after --", async () => {
   const t = setup(async (p, host) => { await host.fs.mkdir(DIR + "\\studio\\media"); await host.fs.write(OUT, "x"); p.exit(0); });
   await t.runner.start(t.job, t.ctx);
   assert.equal(t.calls[0].cmd, settings.blenderPath);
-  assert.deepEqual(t.calls[0].args, ["-b", "-P", t.job.input.script, "--", SRC, OUT]);
+  assert.deepEqual(t.calls[0].args, ["-b", "--python-exit-code", "1", "-P", t.job.input.script, "--", SRC, OUT]);
 });
 
 test("non-zero exit marks take failed with log tail", async () => {
@@ -114,4 +114,14 @@ test("writeBlenderScript rejects bad replies and writes nothing", async () => {
     await assert.rejects(writeBlenderScript(host, store, asset, 1), (e) => e.code === "invalid");
     assert.equal(await host.fs.exists(DIR + "\\studio\\blender\\HF-03_t1.py"), false);
   }
+});
+
+test("a pre-existing output is moved aside and cannot make a failed run pass", async () => {
+  const t = setup(async (p) => { p.out("Traceback\n"); p.exit(0); });
+  await t.host.fs.mkdir(DIR + "\\studio\\media");
+  await t.host.fs.write(OUT, "partial");
+  await assert.rejects(t.runner.start(t.job, t.ctx), /didn't write an output file/);
+  assert.equal(await t.host.fs.exists(OUT), false);
+  const stale = DIR + "\\studio\\media\\HF-03_t2.stale-" + t.host.now() + ".mp4";
+  assert.equal(await t.host.fs.read(stale, "utf8"), "partial");
 });
