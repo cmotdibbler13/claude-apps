@@ -123,39 +123,71 @@ def _as_float(x):
 
 # ----------------------------------------------------------------- trimming ----
 
+def _voice_mask(x, rate, db):
+    """10 ms frames that are the voice (or a soft consonant): above
+    max(-45 dBFS, the room's noise + 12 dB), take_checks' voice rule."""
+    return db > max(VOICE_MIN_DBFS, _noise_dbfs(x, rate) + VOICE_OVER_NOISE_DB)
+
+
+CLICK_GAP_S = 0.10   # a key click stands apart from the speech by at least this
+
+
+def _voice_span(x, rate):
+    """(first, last) 10 ms frame indexes (last exclusive) of the voice, or
+    None. Every sound above the voice threshold counts, however soft or
+    short, so quiet last words and the gaps between words never shorten it.
+    The only thing left out is a key click: a burst under 40 ms at either end
+    that is not voiced (broadband) and stands at least 0.1 s clear of the
+    rest."""
+    n, db, loud, voiced = _voiced(x, rate)
+    runs = _runs(_voice_mask(x, rate, db))
+    if not runs:
+        return None
+    max_click = int(round(TRANSIENT_MAX_S / FRAME_S))
+    min_gap = int(round(CLICK_GAP_S / FRAME_S))
+
+    def click(run, gap):
+        # Under 40 ms is too short for any word, voiced or not.
+        a, b = run
+        return b - a < max_click and gap >= min_gap
+
+    for _ in range(2):   # a press and a release
+        if len(runs) > 1 and click(runs[-1], runs[-1][0] - runs[-2][1]):
+            runs.pop()
+        if len(runs) > 1 and click(runs[0], runs[1][0] - runs[0][1]):
+            runs.pop(0)
+    first, last = runs[0][0], runs[-1][1]
+    # A click pressed while the last sound was still dying away: a loud,
+    # unvoiced burst under 40 ms at the very end, at least 10 dB above the
+    # 100 ms before it. The voice ends where the burst starts.
+    a = last
+    while a > first and last - a < max_click and loud[a - 1] and not voiced[a - 1]:
+        a -= 1
+    if a < last and a - first >= min_gap:
+        before = db[max(first, a - min_gap):a]
+        if len(before) and db[a:last].max() >= np.median(before) + 10.0:
+            last = a
+    return first, last
+
+
 def trim_take(x, rate=RATE):
     """Trim a take's head and tail. Returns (y, info) with
     info = {head_s, tail_s, speech}: the seconds cut from the start and the
     end, and whether any voiced frame was found. A take with no voiced frame
     comes back unchanged.
 
-    The head walks back from the first voiced frame over contiguous frames
-    above -40 dBFS (a soft first consonant), then keeps 0.05 s more. The
-    tail walks forward from the end of speech over contiguous frames above
-    max(-45 dBFS, noise + 12 dB) (a soft last consonant), stopping short of
-    a trailing broadband transient under 40 ms, then keeps 0.15 s more."""
+    The voice runs from the first to the last 10 ms frame above
+    max(-45 dBFS, noise + 12 dB) (take_checks' voice rule), leaving out only
+    a key click (see _voice_span). The head keeps 0.05 s before it with a
+    5 ms fade-in; the tail keeps 0.15 s after it with a 30 ms fade-out.
+    Cutting is cautious on purpose: a little room tone is cheap, a lost word
+    is not."""
     x = _as_float(x)
     n, db, loud, voiced = _voiced(x, rate)
-    end_idx = _speech_end(voiced, loud, FRAME_S) if voiced.any() else None
-    if end_idx is None:
+    span = _voice_span(x, rate) if voiced.any() else None
+    if span is None:
         return x, {"head_s": 0.0, "tail_s": 0.0, "speech": False}
-
-    first = int(np.argmax(voiced))
-    while first > 0 and db[first - 1] > HEAD_WALK_DBFS:
-        first -= 1
-
-    voice = db > max(VOICE_MIN_DBFS, _noise_dbfs(x, rate) + VOICE_OVER_NOISE_DB)
-    last = end_idx
-    while last < len(voice) and voice[last]:
-        last += 1
-    # A click right after the soft tail: a short loud, unvoiced run at the
-    # end of the walked stretch, after softer frames, is not the voice.
-    if last > end_idx and loud[last - 1] and not voiced[last - 1]:
-        run = last
-        while run > end_idx and loud[run - 1] and not voiced[run - 1]:
-            run -= 1
-        if run > end_idx and (last - run) * FRAME_S < TRANSIENT_MAX_S:
-            last = run
+    first, last = span
 
     start = max(0, first * n - int(round(HEAD_KEEP_S * rate)))
     stop = min(len(x), last * n + int(round(TAIL_KEEP_S * rate)))
@@ -163,7 +195,7 @@ def trim_take(x, rate=RATE):
     fade_in = min(len(y), int(round(FADE_IN_S * rate))) if start > 0 else 0
     if fade_in:
         y[:fade_in] *= np.linspace(0.0, 1.0, fade_in)
-    fade = min(len(y), int(round(FADE_OUT_S * rate)))
+    fade = min(len(y), int(round(FADE_OUT_S * rate))) if stop < len(x) else 0
     if fade:
         y[len(y) - fade:] *= np.linspace(1.0, 0.0, fade)
     return y, {"head_s": start / rate, "tail_s": (len(x) - stop) / rate,
@@ -171,18 +203,21 @@ def trim_take(x, rate=RATE):
 
 
 def tighten_stalls(x, rate=RATE):
-    """Shorten every gap quieter than -30 dBFS and longer than 0.6 s, between
-    the first voiced frame and the end of speech, to 0.3 s (a 5 ms
+    """Shorten every gap of true silence (quieter than -30 dBFS and below the
+    voice threshold) longer than 0.6 s, inside the voice, to 0.3 s (a 5 ms
     equal-power crossfade inside the gap hides the splice). Returns
     (y, stalls) with stalls = [{at_s, from_s, to_s}]; at_s is where the gap
     starts in the input."""
     x = _as_float(x)
     n, db, loud, voiced = _voiced(x, rate)
-    end_idx = _speech_end(voiced, loud, FRAME_S) if voiced.any() else None
-    if end_idx is None:
+    span = _voice_span(x, rate) if voiced.any() else None
+    if span is None:
         return x, []
-    first = int(np.argmax(voiced))
-    quiet = db < PAUSE_DBFS
+    first, end_idx = span
+    # Only true silence: quieter than -30 dBFS AND below the voice threshold,
+    # so a softly spoken word inside a long pause is never taken for one.
+    floor = min(PAUSE_DBFS, max(VOICE_MIN_DBFS, _noise_dbfs(x, rate) + VOICE_OVER_NOISE_DB))
+    quiet = db < floor
     quiet[:first] = False
     quiet[end_idx:] = False
 
@@ -195,9 +230,9 @@ def tighten_stalls(x, rate=RATE):
             continue
         s0, s1 = a * n, b * n
         # The 10 ms grid can miss up to a frame of quiet at each edge.
-        while s0 - ms >= (a - 1) * n and _rms_dbfs(x[s0 - ms:s0]) < PAUSE_DBFS:
+        while s0 - ms >= (a - 1) * n and _rms_dbfs(x[s0 - ms:s0]) < floor:
             s0 -= ms
-        while s1 + ms <= (b + 1) * n and _rms_dbfs(x[s1:s1 + ms]) < PAUSE_DBFS:
+        while s1 + ms <= (b + 1) * n and _rms_dbfs(x[s1:s1 + ms]) < floor:
             s1 += ms
         if (s1 - s0) / rate > PAUSE_MIN_S + 1e-9 and s1 - s0 >= keep + xfade:
             cuts.append((s0, s1))

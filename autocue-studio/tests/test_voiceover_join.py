@@ -114,6 +114,35 @@ class TrimTakeTest(unittest.TestCase):
         hiss_end = 0.5 + 1.0 + 0.25
         self.assertAlmostEqual(len(x) / RATE - info["tail_s"], hiss_end + 0.15, delta=0.005)
 
+    # Jon's 01.1 (27 Nov): "...made of stone" spoken softly at the end of the
+    # line was cut off whole. Soft last words, with short dips between them,
+    # must all be kept, and the Space click 0.4 s later still left out.
+    def test_soft_last_words_with_gaps_between_them_are_all_kept(self):
+        words = [tone(0.35, -14.0, 140.0), noise(0.06),           # loud words
+                 tone(0.25, -30.0, 130.0), noise(0.05),           # "made"
+                 tone(0.12, -34.0, 125.0), noise(0.07),           # "of"
+                 noise(0.06, -36.0), tone(0.30, -37.0, 120.0)]    # "s" + "tone"
+        x = np.concatenate([noise(0.5)] + words + [noise(0.4), click(0.020), noise(0.3)])
+        last_word_end = 0.5 + sum(len(w) for w in words) / RATE
+        y, info = vj.trim_take(x, RATE)
+        kept_until = len(x) / RATE - info["tail_s"]
+        self.assertAlmostEqual(kept_until, last_word_end + 0.15, delta=0.015)
+        self.assertLess(kept_until, last_word_end + 0.4)   # the click is left out
+
+    # Jon's 01.2: "It ... stands" lost its soft start.
+    def test_a_soft_first_word_is_kept(self):
+        x = np.concatenate([noise(0.6), tone(0.15, -33.0, 150.0), noise(0.08),     # "It"
+                            noise(0.08, -35.0), tone(0.5, -14.0, 140.0), noise(0.6)])  # "s" + "tands"
+        y, info = vj.trim_take(x, RATE)
+        self.assertAlmostEqual(info["head_s"], 0.6 - 0.05, delta=0.015)
+
+    def test_a_soft_word_inside_a_long_pause_is_never_cut_out(self):
+        x = np.concatenate([noise(0.5), tone(0.5, -14.0), noise(0.45),
+                            tone(0.2, -36.0, 130.0), noise(0.45), tone(0.5, -14.0), noise(0.5)])
+        y, stalls = vj.tighten_stalls(x, RATE)
+        self.assertEqual(stalls, [])
+        self.assertEqual(len(y), len(x))
+
     def test_voiced_zcr_threshold_means_the_same_as_at_16k(self):
         # ZCR 0.12 at 16 kHz is 1920 crossings a second (a 960 Hz tone).
         # 1.5 kHz is unvoiced in take_checks; 600 Hz is voiced.
