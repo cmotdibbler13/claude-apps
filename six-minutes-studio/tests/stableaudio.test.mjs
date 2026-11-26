@@ -340,3 +340,26 @@ test("runner resume always throws the interrupted message", async () => {
   await assert.rejects(s.runner.resume({}, s.ctx), (e) => e.message === "Interrupted; Stable Audio takes are quick, so run it again.");
   assert.equal(s.runner.lane, "gpu");
 });
+
+test("refresh sets ready, off or music from a live check without spawning, and leaves starting alone", async () => {
+  let page = sfxPage;
+  const s = setup({ page: () => page });
+  await s.starter.refresh(s.host);
+  assert.equal(s.starter.state(), "ready");
+  page = musicPage;
+  await s.starter.refresh(s.host);
+  assert.equal(s.starter.state(), "music");
+  assert.equal(s.starter.message(), MUSIC_MSG);
+  const off = setup({ curlCode: () => 7 });
+  await off.starter.refresh(off.host);
+  assert.equal(off.starter.state(), "off");
+  assert.equal(s.pterms().length + off.pterms().length, 0);
+  // never while starting
+  const h = setup({ page: () => "<html></html>" });
+  const starter = makeStableAudioStarter({ sleep: () => new Promise(() => {}), settings: { stableAudio: SA } });
+  starter.ensure(h.host).catch(() => {});
+  await new Promise((r) => setImmediate(r));
+  assert.equal(starter.state(), "starting");
+  await starter.refresh(h.host);
+  assert.equal(starter.state(), "starting");
+});

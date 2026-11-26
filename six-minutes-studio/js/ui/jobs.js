@@ -6,6 +6,8 @@ const active = (j) => j.status === "queued" || j.status === "running";
 const sameFilm = (a, b) => filmKey(a.film) === filmKey(b.film);
 const same = (a, b) => sameFilm(a, b) && a.assetId === b.assetId && a.take === b.take && a.assetId !== undefined;
 
+const isAudio = (j) => j.assetId === "SCORE" || String(j.assetId ?? "").startsWith("SFX-");
+
 export const activeCount = (jobs = []) => jobs.filter(active).length;
 
 // With a tray icon, closing the window only hides the app, so jobs keep running; Exit is in the tray menu.
@@ -23,7 +25,7 @@ export function jobRow(job, index, jobs, retried) {
   const ended = job.status === "failed" || job.status === "interrupted";
   // Not when a later job covers this take, or another take of the same shot is still queued or running.
   const superseded = jobs.slice(index + 1).some((k) => same(k, job))
-    || jobs.some((k) => k !== job && active(k) && sameFilm(k, job) && k.assetId !== undefined && k.assetId === job.assetId);
+    || (!isAudio(job) && jobs.some((k) => k !== job && active(k) && sameFilm(k, job) && k.assetId !== undefined && k.assetId === job.assetId));
   const hf = job.tool === "higgsfield", comfy = job.tool === "comfyui", eleven = job.tool === "elevenlabs";
   const unsure = ended && (job.ambiguous || (job.status === "interrupted" && !job.jobRef));
   return {

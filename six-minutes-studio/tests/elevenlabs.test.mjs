@@ -108,6 +108,27 @@ test("sfx keeps the original and finishes to wav", async () => {
   assert.equal(r.file, OUT + ".wav");
 });
 
+test("two starts on the same node poll their own sessions and save their own files", async () => {
+  const OUT2 = "S:\\Film A\\studio\\media\\SC-01_t2";
+  const urlFor = (id) => URL.replace("/S1/G1/", `/${id}/G1/`);
+  let runs = 0;
+  const t = setup({ mcp: (tool, i) => {
+    if (tool === "creative_run_flow_nodes") return { session_ids: [`S${++runs}`] };
+    const sid = i.session_ids[0];
+    return { ...OBSERVED, session_ids: [sid], generations: [{ ...OBSERVED.generations[0], content_url: urlFor(sid) }], media: [] };
+  } });
+  const j2 = job(false); j2.input = { ...j2.input, out: OUT2 };
+  const r1 = await t.runner.start(job(), t.ctx);
+  const r2 = await t.runner.start(j2, t.ctx);
+  const polls = t.calls.filter((c) => c.t === "creative_get_flow_run_status").map((c) => c.i.session_ids);
+  assert.deepEqual(polls, [["S1"], ["S2"]]);
+  const curls = t.spawns.filter((s) => s.cmd === "curl").map((s) => s.args.at(-1));
+  assert.deepEqual(curls, [urlFor("S1"), urlFor("S2")]);
+  assert.equal(r1.file, OUT + ".mp3");
+  assert.equal(r2.file, OUT2 + ".mp3");
+  assert.equal(await t.host.fs.exists(OUT2 + ".mp3"), true);
+});
+
 test("polls using poll_after_seconds until done", async () => {
   let n = 0;
   const t = setup({ mcp: (tool) => (tool === "creative_run_flow_nodes" ? { session_id: "S1" } : ++n < 3 ? running : OBSERVED) });

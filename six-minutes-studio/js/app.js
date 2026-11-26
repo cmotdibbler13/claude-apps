@@ -247,6 +247,8 @@ async function openReview(dir) {
     app.store = store;
   }
   showView("review");
+  // One free check so the Stable Audio chip is right when Small SFX is already running or was stopped by hand.
+  if (app.starter) Promise.resolve(app.starter.refresh(app.host)).catch(() => {}).then(() => render());
 }
 
 // ---- live jobs ----
@@ -453,8 +455,8 @@ const reviewActions = {
     await startTake(ctx(), id, { note: note.trim() });
     app.review.noteFor = null; app.review.draft = "";
   }),
-  // Through cardAction so the per-shot pending guard also covers a take being prepared.
   make3d: cardAction((id) => addBlender3d(ctx(), id)),
+  // Through cardAction so the per-shot pending guard also covers a take being prepared.
   setTool: cardAction((id, tool) => setTool(ctx(), id, tool)),
   // Ignored while any card action or the shot list is in flight; resolves true once saved.
   async setPreferComfy(on) {

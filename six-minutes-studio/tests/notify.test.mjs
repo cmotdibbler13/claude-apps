@@ -63,3 +63,9 @@ test("bodies are capped at 300 characters", () => {
   for (const m of out) { assert.ok(m.length <= 300); }
   assert.ok(out[1].endsWith("…"));
 });
+
+test("the score is named Score in messages", () => {
+  const prev = [job({ id: "a", assetId: "SCORE", take: 2 })];
+  const next = [job({ id: "a", assetId: "SCORE", take: 2, status: "done" })];
+  assert.equal(notifyRules(prev, next)[0], "Score take 2 is ready to review");
+});

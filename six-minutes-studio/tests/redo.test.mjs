@@ -322,6 +322,12 @@ test("startTake on a comfyui shot adds a comfyui job with an .mp4 out", async ()
   assert.equal(t2.prompt, "again");
 });
 
+test("addBlender3d with an empty source description uses the source id", async () => {
+  const { ctx, store } = await setup([hf({ id: "HF-02", lineIndex: 3, line: "L3", desc: "", approved: true })]);
+  const id = await addBlender3d(ctx, "HF-02");
+  assert.equal(store.state.assets.find((a) => a.id === id).desc, "3D line-art version of HF-02");
+});
+
 test("addBlender3d adds a Blender shot beside its line art, once", async () => {
   const assets = [hf({ id: "HF-02", lineIndex: 3, line: "L3", desc: "A Lighthouse at dusk", approved: true }), hf({ id: "HF-07", kind: "broll", lineIndex: 5 })];
   const { ctx, store } = await setup(assets);

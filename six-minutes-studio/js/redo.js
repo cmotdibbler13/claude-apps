@@ -39,7 +39,7 @@ export async function addBlender3d(ctx, lineartId) {
     if (has3d(d.assets, lineartId)) throw new Error(`${lineartId} already has a Blender version.`);
     const top = d.assets.reduce((m, a) => Math.max(m, Number(/^HF-(\d+)$/.exec(a.id)?.[1] ?? 0)), 0);
     id = `HF-${String(top + 1).padStart(2, "0")}`;
-    const desc = src.desc ? src.desc[0].toLowerCase() + src.desc.slice(1) : "";
+    const desc = src.desc ? src.desc[0].toLowerCase() + src.desc.slice(1) : lineartId;
     d.assets.push({
       id, kind: "blender", tool: "blender", sourceId: lineartId, line: src.line, lineIndex: src.lineIndex,
       desc: `3D line-art version of ${desc}`, draftPrompt: `3D line-art version of ${lineartId} in Blender`,

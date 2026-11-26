@@ -521,3 +521,24 @@ test("live jobs: ElevenLabs never offers Run again, but checks when it has a job
   assert.equal(by.c.retryNote, null);
   assert.equal(by.c.canCheck, false);
 });
+
+test("audio: a running take does not hide check again on a different failed take; the same take does", () => {
+  const aj = (o) => job({ tool: "elevenlabs", assetId: "SFX-01", ...o });
+  const m = jobsModel({ jobs: [
+    aj({ id: "a", take: 1, status: "failed", error: "x", jobRef: "R1" }),
+    aj({ id: "b", take: 2, status: "running" }),
+    aj({ id: "c", assetId: "SCORE", take: 1, status: "failed", error: "x", jobRef: "R2" }),
+    aj({ id: "d", assetId: "SCORE", take: 2, status: "queued" }),
+    aj({ id: "e", assetId: "SFX-02", take: 1, status: "failed", error: "x", jobRef: "R3" }),
+    aj({ id: "f", assetId: "SFX-02", take: 1, status: "running" }),
+  ], log: null, retried: new Set() });
+  const by = Object.fromEntries(m.rows.map((r) => [r.id, r]));
+  assert.equal(by.a.canCheck, true);
+  assert.equal(by.c.canCheck, true);
+  assert.equal(by.e.canCheck, false, "a later job for the same take supersedes");
+  const sa = jobsModel({ jobs: [
+    aj({ id: "g", tool: "stableaudio", take: 1, status: "failed", error: "x" }),
+    aj({ id: "h", tool: "stableaudio", take: 2, status: "running" }),
+  ], log: null, retried: new Set() });
+  assert.equal(sa.rows.find((r) => r.id === "g").canRetry, true);
+});

@@ -268,7 +268,14 @@ export async function startAudioTake(ctx, id, { note, count = 1 } = {}) {
   const ns = Array.from({ length: count }, (_, i) => first + i);
   const media = join(store.dir, "studio", "media");
   const project = projectOf(store.dir);
-  const stem = (n) => (isScore(id) ? `${project}_score_t${n}` : `${project}_sfx_${cueSlug(item.cue)}_t${n}`);
+  const stem = (n) => (isScore(id) ? `${project}_score_t${n}` : `${project}_sfx_${id.toLowerCase()}${cueSlug(item.cue) ? "_" + cueSlug(item.cue) : ""}_t${n}`);
+  for (const n of ns) {
+    const base = join(media, stem(n));
+    const paths = source === "elevenlabs" ? [base + ".mp3", base + ".wav", base + ".orig.mp3", base + ".orig.wav"] : [base + ".wav"];
+    for (const f of paths) {
+      if (await ctx.host.fs.exists(f)) throw new Error(`A file for ${labelOf(item)} take ${n} is already there; not replacing it.`);
+    }
+  }
   const inputFor = (n) => (source === "elevenlabs"
     ? { kind, flowId, nodeId: item.node.id, out: join(media, stem(n)), sfx: kind === "sfx" }
     : { prompt: item.prompt, seconds: Math.round(Number(item.durationS)), out: join(media, stem(n) + ".wav") });

@@ -91,6 +91,15 @@ export function makeStableAudioStarter({ sleep, settings }) {
       }
       return running;
     },
+    // Free live check, never spawns. Leaves "starting" alone.
+    async refresh(host) {
+      if (state === "starting") return;
+      const live = await stableAudioState(host, sa());
+      if (state === "starting") return;
+      if (live === "ready") set("ready");
+      else if (live === "music") set("music", MSG_MUSIC);
+      else if (live === "off") set("off");
+    },
     async stop() {
       const p = proc;
       proc = null; gen++; running = null;

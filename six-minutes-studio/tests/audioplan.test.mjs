@@ -117,7 +117,7 @@ test("Stable Audio take: whole seconds and the film's media path", async () => {
   assert.equal(j.take, 1);
   assert.equal(j.what, "SFX-01 door creak take 1");
   assert.equal(j.why, "First take");
-  assert.deepEqual(j.input, { prompt: PLAN.sfx[0].prompt, seconds: 3, out: MEDIA + "Film_A_sfx_door-creak_t1.wav" });
+  assert.deepEqual(j.input, { prompt: PLAN.sfx[0].prompt, seconds: 3, out: MEDIA + "Film_A_sfx_sfx-01_door-creak_t1.wav" });
   assert.ok(Number.isInteger(j.input.seconds));
   const c = s.store.state.audio.sfx[0];
   assert.equal(c.chosen, 1);
@@ -193,7 +193,7 @@ test("ElevenLabs cue: job input and a stale estimate after an edit", async () =>
   await getEstimate(s.ctx, "SFX-02");
   await startAudioTake(s.ctx, "SFX-02");
   const [j] = s.jobs.list();
-  assert.deepEqual(j.input, { kind: "sfx", flowId: "F1", nodeId: "N2", sfx: true, out: MEDIA + "Film_A_sfx_harbour-wind_t1" });
+  assert.deepEqual(j.input, { kind: "sfx", flowId: "F1", nodeId: "N2", sfx: true, out: MEDIA + "Film_A_sfx_sfx-02_harbour-wind_t1" });
   assert.equal(j.what, "SFX-02 harbour wind take 1");
 });
 
@@ -314,4 +314,36 @@ test("takes without a note: First take, then Take n", async () => {
   await getEstimate(s.ctx, "SCORE");
   await startAudioTake(s.ctx, "SCORE", { count: 2 });
   assert.deepEqual(s.jobs.list().map((j) => j.why), ["First take", "Take 2"]);
+});
+
+test("two cues with the same name get different out paths", async () => {
+  const s = await planned();
+  await addCue(s.store, { cue: "door creak", prompt: "another door", durationS: 2 });
+  await startAudioTake(s.ctx, "SFX-01");
+  await startAudioTake(s.ctx, "SFX-03");
+  const outs = s.jobs.list().map((j) => j.input.out);
+  assert.deepEqual(outs, [MEDIA + "Film_A_sfx_sfx-01_door-creak_t1.wav", MEDIA + "Film_A_sfx_sfx-03_door-creak_t1.wav"]);
+});
+
+test("an empty slug leaves no double underscore", async () => {
+  const s = await planned();
+  await editItem(s.store, "SFX-01", {});
+  await s.store.update((d) => { d.audio.sfx[0].cue = "!!!"; });
+  await startAudioTake(s.ctx, "SFX-01");
+  assert.equal(s.jobs.list()[0].input.out, MEDIA + "Film_A_sfx_sfx-01_t1.wav");
+});
+
+test("an existing file for the take refuses the start and adds no job", async () => {
+  const s = await planned();
+  await s.host.fs.mkdir(MEDIA);
+  await s.host.fs.write(MEDIA + "Film_A_sfx_sfx-01_door-creak_t1.wav", "x");
+  await assert.rejects(() => startAudioTake(s.ctx, "SFX-01"), /A file for SFX-01 door creak take 1 is already there; not replacing it\./);
+  assert.equal(s.jobs.list().length, 0);
+  assert.equal(s.store.state.audio.sfx[0].takes.length, 0);
+  await editItem(s.store, "SFX-02", { source: "elevenlabs" });
+  eleven(s.host);
+  await getEstimate(s.ctx, "SFX-02");
+  await s.host.fs.write(MEDIA + "Film_A_sfx_sfx-02_harbour-wind_t1.mp3", "x");
+  await assert.rejects(() => startAudioTake(s.ctx, "SFX-02"), /already there/);
+  assert.equal(s.jobs.list().length, 0);
 });

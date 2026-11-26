@@ -5,6 +5,7 @@ import { toolLabel } from "./labels.js";
 const MAX = 300;
 const cap = (s) => (s.length > MAX ? s.slice(0, MAX - 1) + "…" : s);
 const live = (j) => j.status === "queued" || j.status === "running";
+const nameOf = (id) => (id === "SCORE" ? "Score" : id);
 const folder = (p) => String(p ?? "").split(/[\\/]/).filter(Boolean).pop() ?? "";
 
 export function notifyRules(prev = [], next = []) {
@@ -13,8 +14,8 @@ export function notifyRules(prev = [], next = []) {
   for (const j of next) {
     const old = before.get(j.id);
     if (!old || old.status === j.status) continue;
-    if (j.status === "done") out.push(`${j.assetId} take ${j.take} is ready to review`);
-    else if (j.status === "failed") out.push(`${j.assetId} take ${j.take} failed in ${toolLabel(j.tool)}`);
+    if (j.status === "done") out.push(`${nameOf(j.assetId)} take ${j.take} is ready to review`);
+    else if (j.status === "failed") out.push(`${nameOf(j.assetId)} take ${j.take} failed in ${toolLabel(j.tool)}`);
   }
   for (const key of new Set(prev.filter(live).map((j) => filmKey(j.film)))) {
     if (next.some((j) => filmKey(j.film) === key && live(j))) continue;
