@@ -301,3 +301,30 @@
   9. Close the app from the tray. Small SFX stops in Pinokio.
 - [ ] Publish the artifact (same URL) with capabilities: desktop as stored, sample, and mcp `{Higgsfield:[…same four…], ElevenLabs:["creative_create_flow","creative_add_flow_node","creative_run_flow_nodes","creative_get_flow_run_status"]}`.
 - [ ] Push and comment on PR #4 with a summary and the checklist pointer.
+
+### Task 8 (added 27 Nov at Jon's request, run after Task 2): "Make 3D in Blender" on every line drawing
+
+Jon: "all the line drawings will need a button to make them 3d in blender please if they dont already have that option in the script."
+
+**Files:**
+- Modify: `six-minutes-studio/js/redo.js` (new `addBlender3d`)
+- Modify: `six-minutes-studio/js/ui/review.js` (`cardModel` gets `can3d`; `controls` gets the button)
+- Modify: `six-minutes-studio/js/app.js` (`reviewActions.make3d`)
+- Test: `six-minutes-studio/tests/redo.test.mjs`, `tests/viewmodel.test.mjs`
+
+**Interfaces:**
+- Produces:
+  - `has3d(assets, lineartId) -> boolean`: some asset has `kind === "blender"` and `sourceId === lineartId`.
+  - `addBlender3d(ctx, lineartId) -> Promise<string>` (the new id):
+    - Refused unless the source is `kind "lineart"`: `<id> is not line art.`
+    - Refused when `has3d`: `<id> already has a Blender version.`
+    - Adds `{id: next free "HF-nn" (highest existing number + 1, two digits minimum), kind:"blender", tool:"blender", sourceId, line, lineIndex (copied from the source), desc:"3D line-art version of <source desc, first letter lower-cased>", draftPrompt:"3D line-art version of <source id> in Blender", takes:[], chosen:0, approved:false}` through the same `save` helper, so `waiting` is updated.
+    - Logs `<new id> added: 3D version of <source id> in Blender`.
+    - The new card sits beside its source (same `lineIndex`, a later id). It is locked until the source is approved, as now (`canStart`).
+  - `cardModel(...).can3d`: true for a lineart card with no Blender version, when the card is free (not busy or pending). The button text is `Make 3D in Blender`. It is a ghost button in the card's row, shown whether or not the drawing is approved yet.
+- [ ] **Step 1: Write failing tests**
+  - `addBlender3d` on HF-02 (lineart) in a list whose highest id is HF-07 adds HF-08, with `sourceId` HF-02, the same `lineIndex`, and `tool` "blender". A second call rejects with `HF-02 already has a Blender version.`
+  - On a broll shot, it rejects with the not-line-art message.
+  - The viewmodel shows `can3d` true for a lineart card without a Blender version, false when one exists, and false on broll and blender cards.
+- [ ] **Step 2: Run.** Expect FAIL. **Step 3: Implement.** **Step 4: Run `npm test`.** Expect PASS.
+- [ ] **Step 5: Commit** `Studio: Make 3D in Blender on every line drawing`.
