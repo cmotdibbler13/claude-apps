@@ -104,7 +104,7 @@ function fakeClaude({ fs = true } = {}) {
       stat: async () => ({ size: 1 }), exists: async () => true,
       writeFile: async () => {}, appendFile: async () => {}, mkdir: async () => {}, rename: async () => {},
     } : undefined,
-    shell: { trashItem: async (p) => log.push(["trash", p]) },
+    shell: { trashItem: async (p) => log.push(["trash", p]), openPath: async (p) => (log.push(["open", p]), "") },
     os: { platform: async () => "win32" },
     childProcess: {
       exec: async (c, o) => (log.push(["exec", c, o]), { stdout: "o", stderr: "", code: 0 }),
@@ -196,4 +196,14 @@ test("makeHost spawn: handlers registered after an error still settle", async ()
   const seen = [];
   p.onErr((s) => seen.push("e" + s)); p.onExit((c) => seen.push("x" + c));
   assert.deepEqual(seen, ["eboom", "xnull"]);
+});
+
+test("host.open calls shell.openPath; FakeHost records opened paths", async () => {
+  const f = fakeClaude();
+  const h = await makeHost(f.claude);
+  await h.open("S:\\a\\v.mp4");
+  assert.deepEqual(f.log.filter((e) => e[0] === "open"), [["open", "S:\\a\\v.mp4"]]);
+  const fh = new FakeHost();
+  await fh.open("S:\\b.mp4");
+  assert.deepEqual(fh.opened, ["S:\\b.mp4"]);
 });

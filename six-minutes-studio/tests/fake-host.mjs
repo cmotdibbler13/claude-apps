@@ -9,6 +9,7 @@ export class FakeHost {
     this.dirs = new Set();
     this.notified = [];
     this.trays = [];
+    this.opened = [];
     this.t = 1_700_000_000_000;
     this._exec = () => ({ stdout: "", stderr: "", code: 0 });
     this._spawn = () => {};
@@ -127,6 +128,7 @@ export class FakeHost {
     Promise.resolve().then(() => this._spawn(cmd, args, opts, ctl));
     return proc;
   }
+  async open(p) { this.opened.push(p); }
   async notify(body) { this.notified.push(body); }
   async tray(opts) { this.trays.push(opts); }
   now() { return this.t; }

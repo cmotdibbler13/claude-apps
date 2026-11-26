@@ -31,6 +31,7 @@ export async function makeHost(claude = globalThis.claude) {
       rename: (a, b) => fs.rename(a, b),
       trash: (p) => shell.trashItem(p),
     },
+    open: (p) => shell.openPath(p),
     exec: (cmd, opts = {}) => {
       const o = {};
       if (opts.cwd) o.cwd = opts.cwd;
