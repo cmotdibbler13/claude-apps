@@ -88,8 +88,11 @@ def is_current(result, take_path):
 
 def needs_check(result, take_mtime):
     """True when Check all should (re)check a take: no result, a result for an
-    older take, or an error (the cause may have been fixed since)."""
+    older take, an error (the cause may have been fixed since), or a result
+    from an older version of the checks."""
     if not result or "error" in result:
+        return True
+    if result.get("version") != take_checks.VERSION:
         return True
     saved = result.get("take_mtime")
     if not isinstance(saved, (int, float)):

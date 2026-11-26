@@ -9,6 +9,7 @@ import time
 import unittest
 
 import check_worker
+import take_checks
 from check_worker import CheckWorker
 from take_checks import CheckError
 
@@ -307,7 +308,7 @@ class ReadResult(WorkerTestCase):
     def test_needs_check(self):
         self.assertTrue(check_worker.needs_check(None, 100.0))
         self.assertTrue(check_worker.needs_check({"take_mtime": 90.0, "ok": True}, 100.0))
-        self.assertFalse(check_worker.needs_check({"take_mtime": 100.0, "ok": True}, 100.0))
+        self.assertFalse(check_worker.needs_check({"take_mtime": 100.0, "ok": True, "version": take_checks.VERSION}, 100.0))
         # An error is retried by Check all even when it is for this very take.
         self.assertTrue(check_worker.needs_check(
             {"take_mtime": 100.0, "error": "Checks unavailable: no model"}, 100.0))
@@ -525,3 +526,13 @@ class AppImports(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OlderChecksVersion(unittest.TestCase):
+    def test_result_from_older_checks_is_rechecked(self):
+        import take_checks
+        current = {"ok": False, "take_mtime": 100.0, "version": take_checks.VERSION}
+        older = dict(current, version=take_checks.VERSION - 1)
+        self.assertFalse(check_worker.needs_check(current, 100.0))
+        self.assertTrue(check_worker.needs_check(older, 100.0))
+        self.assertTrue(check_worker.needs_check({"ok": True, "take_mtime": 100.0}, 100.0))

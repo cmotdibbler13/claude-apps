@@ -43,7 +43,7 @@ import sys
 import numpy as np
 
 RATE = 16000
-VERSION = 1
+VERSION = 2   # raise when the checks change, so Check all re-checks older results
 
 FRAME_S = 0.010
 VOICED_DBFS = -24.0

@@ -127,7 +127,7 @@ class CleanEndOk(TakeTestCase):
         self.assertNotIn("cut_off", kinds(r))
         self.assertTrue(r["ok"], r["flags"])
         self.assertEqual(r["flags"], [])
-        self.assertEqual(r["version"], 1)
+        self.assertEqual(r["version"], take_checks.VERSION)
         self.assertAlmostEqual(r["duration_s"], take.t, delta=0.02)
 
 
