@@ -1,5 +1,6 @@
 // Films view: one row per film with the four-step tracker and what is waiting on Jon.
 import { h, btn } from "./dom.js";
+import { filmKey } from "../paths.js";
 
 const STEPS = [[1, "1 Script"], [2, "2 Assets"], [3, "3 Build"], ["shorts", "Shorts"]];
 const active = (j) => j.status === "queued" || j.status === "running";
@@ -7,7 +8,7 @@ const active = (j) => j.status === "queued" || j.status === "running";
 export const UNREACHABLE = "Can't reach S:\\Youtube video ideas or the server copy. Check the drive is connected.";
 
 export function filmRow(film, jobs = []) {
-  const running = jobs.filter((j) => j.film === film.dir && active(j)).length;
+  const running = jobs.filter((j) => filmKey(j.film) === filmKey(film.dir) && active(j)).length;
   let wait = null;
   if (film.waiting) wait = { you: true, live: false, label: "Waiting on you:", text: film.waiting };
   else if (running) wait = { you: false, live: true, label: "Running:", text: `${running} job${running === 1 ? "" : "s"}` };

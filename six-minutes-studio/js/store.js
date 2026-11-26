@@ -32,7 +32,8 @@ export async function openFilm(host, dir) {
     await host.fs.rename(tmp, file);
   }
 
-  const store = { state, dir };
+  // pending: takes being started right now ("<assetId>#<n>"), whose job is not in the queue yet.
+  const store = { state, dir, pending: new Set() };
   let chain = Promise.resolve();
 
   store.update = (fn) => {

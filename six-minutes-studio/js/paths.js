@@ -20,3 +20,7 @@ export function join(...parts) {
   const body = segs.join("\\").replace(/\\{2,}/g, "\\").replace(/^\\/, unc ? "" : "\\").replace(/\\+$/, "");
   return unc ? "\\\\" + body.replace(/^\\/, "") : body;
 }
+
+// A film is known by its folder name under the root, case-insensitively, so a job saved with the
+// S: path still matches the film when the app runs from the UNC copy (and the other way round).
+export const filmKey = (p) => (String(p ?? "").split(/[\\/]/).filter(Boolean).pop() ?? "").toLowerCase();

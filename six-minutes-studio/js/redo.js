@@ -1,7 +1,7 @@
 // Takes: start a first take or a redo with a note, mirror job progress onto takes, approvals.
 import { askJson } from "./claude.js";
 import { writeBlenderScript } from "./tools/blender.js";
-import { join } from "./paths.js";
+import { join, filmKey } from "./paths.js";
 
 const REWRITE_INSTRUCTIONS = `You improve one image or video generation prompt for a Six Minutes On... documentary film (dark, calm, precise, British English).
 You get the shot (id, desc, line, kind), the previous prompt and Jon's note. Change the previous prompt to follow the note and keep everything else the same.
@@ -69,14 +69,18 @@ export async function startTake(ctx, assetId, { note } = {}) {
   take.status = "queued";
   take.at = host.now();
 
-  await store.update((d) => {
-    const a = find(d, assetId);
-    if (a.takes.length !== n - 1) throw new Error(`${asset.id} changed while the take was being prepared.`);
-    a.takes.push(take);
-    a.chosen = n;
-    a.approved = false;
-  });
+  const key = `${assetId}#${n}`;
+  store.pending?.add(key);
   let jobId;
+  try {
+    await store.update((d) => {
+      const a = find(d, assetId);
+      if (a.takes.length !== n - 1) throw new Error(`${asset.id} changed while the take was being prepared.`);
+      a.takes.push(take);
+      a.chosen = n;
+      a.approved = false;
+    });
+  } catch (e) { store.pending?.delete(key); throw e; }
   try {
     jobId = jobs.add({
       film: store.dir, assetId, take: n, tool: asset.tool,
@@ -92,6 +96,8 @@ export async function startTake(ctx, assetId, { note } = {}) {
     });
     await store.log(`${asset.id} take ${n} failed: ${msg}`);
     throw e;
+  } finally {
+    store.pending?.delete(key);
   }
   await store.update((d) => {
     const t = find(d, assetId).takes.find((x) => x.n === n);
@@ -103,10 +109,13 @@ export async function startTake(ctx, assetId, { note } = {}) {
 
 // Mirror job status onto takes. Each sync reconciles against the current job list and writes
 // state.json only when some take actually changes (progress alone never writes).
-function applyJobs(d, dir, list, lines) {
+export const LOST = "Lost track of this job";
+
+function applyJobs(d, dir, list, lines, pending) {
   // Latest job per (asset, take): a retry replaces the earlier failed one.
+  const film = filmKey(dir);
   const latest = new Map();
-  for (const j of list) if (j.film === dir) latest.set(`${j.assetId}\u0000${j.take}`, j);
+  for (const j of list) if (filmKey(j.film) === film) latest.set(`${j.assetId}\u0000${j.take}`, j);
   let changed = false;
   for (const j of latest.values()) {
     const t = find(d, j.assetId)?.takes.find((x) => x.n === j.take);
@@ -121,6 +130,17 @@ function applyJobs(d, dir, list, lines) {
       lines.push(`${j.assetId} take ${j.take} failed: ${t.error}`);
     } else delete t.error;
   }
+  // A busy take with no job (job list moved aside, not saved before close) would stay busy for ever.
+  for (const a of d.assets ?? []) {
+    for (const t of a.takes ?? []) {
+      if (t.status !== "queued" && t.status !== "running") continue;
+      if (latest.has(`${a.id}\u0000${t.n}`) || pending?.has(`${a.id}#${t.n}`)) continue;
+      t.status = "interrupted";
+      t.error = LOST;
+      changed = true;
+      lines.push(`${a.id} take ${t.n} failed: ${LOST}`);
+    }
+  }
   return changed;
 }
 
@@ -130,11 +150,11 @@ export function watchJobs(ctx) {
   let queued = false;
   const run = async () => {
     queued = false;
-    if (!applyJobs(structuredClone(store.state), store.dir, jobs.list(), [])) return;
+    if (!applyJobs(structuredClone(store.state), store.dir, jobs.list(), [], store.pending)) return;
     const lines = [];
     await store.update((d) => {
       lines.length = 0;
-      applyJobs(d, store.dir, jobs.list(), lines);
+      applyJobs(d, store.dir, jobs.list(), lines, store.pending);
     });
     for (const l of lines) await store.log(l);
   };

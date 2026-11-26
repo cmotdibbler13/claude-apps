@@ -1,8 +1,10 @@
 // Live jobs view: every job newest first, with progress and why it exists; activity log beside.
 import { h, btn, basename, toolLabel } from "./dom.js";
+import { filmKey } from "../paths.js";
 
 const active = (j) => j.status === "queued" || j.status === "running";
-const same = (a, b) => a.film === b.film && a.assetId === b.assetId && a.take === b.take && a.assetId !== undefined;
+const sameFilm = (a, b) => filmKey(a.film) === filmKey(b.film);
+const same = (a, b) => sameFilm(a, b) && a.assetId === b.assetId && a.take === b.take && a.assetId !== undefined;
 
 export const activeCount = (jobs = []) => jobs.filter(active).length;
 
@@ -16,7 +18,7 @@ export function jobRow(job, index, jobs, retried) {
   const ended = job.status === "failed" || job.status === "interrupted";
   // Not when a later job covers this take, or another take of the same shot is still queued or running.
   const superseded = jobs.slice(index + 1).some((k) => same(k, job))
-    || jobs.some((k) => k !== job && active(k) && k.film === job.film && k.assetId !== undefined && k.assetId === job.assetId);
+    || jobs.some((k) => k !== job && active(k) && sameFilm(k, job) && k.assetId !== undefined && k.assetId === job.assetId);
   return {
     id: job.id,
     what: job.what ?? job.tool,
@@ -35,6 +37,10 @@ export function jobRow(job, index, jobs, retried) {
 
 const two = (n) => String(n).padStart(2, "0");
 export const clock = (t) => { const d = new Date(t); return `${two(d.getHours())}:${two(d.getMinutes())}`; };
+
+export const movedAsideBanner = (name) => name
+  ? `The job list couldn't be read and was saved as ${name}. Jobs that were running may not reconnect.`
+  : "The job list couldn't be read. Jobs that were running may not reconnect.";
 
 export function jobsModel({ jobs = [], log = null, retried = new Set(), persistError = null }) {
   const rows = jobs.map((j, i) => jobRow(j, i, jobs, retried)).reverse();

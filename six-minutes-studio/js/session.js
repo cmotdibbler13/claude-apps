@@ -60,7 +60,8 @@ export function makeFilmSession({ host, jobs, open = openFilm, watch = watchJobs
 }
 
 // R14: missing file -> []. Any other read or parse failure: move the file aside so paid jobRefs survive, then [].
-export async function readSavedJobs(host, file) {
+// onMovedAside(name) reports the new file name (null if it could not be moved) so the app can say so.
+export async function readSavedJobs(host, file, { onMovedAside = () => {} } = {}) {
   try { if (!(await host.fs.exists(file))) return []; } catch { /* fall through and try to read */ }
   try {
     const v = JSON.parse(await host.fs.read(file, "utf8"));
@@ -68,7 +69,9 @@ export async function readSavedJobs(host, file) {
     return v;
   } catch {
     const bad = file.replace(/\.json$/i, "") + `.bad-${host.now()}.json`;
-    try { await host.fs.rename(file, bad); } catch (e) { console.error(`Couldn't move ${file} aside`, e); }
+    let name = null;
+    try { await host.fs.rename(file, bad); name = bad.split(/[\\/]/).pop(); } catch (e) { console.error(`Couldn't move ${file} aside`, e); }
+    try { onMovedAside(name); } catch { /* reporting must not stop the boot */ }
     return [];
   }
 }

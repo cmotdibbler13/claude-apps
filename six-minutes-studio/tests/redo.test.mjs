@@ -183,3 +183,39 @@ test("a 200-frame Blender render writes state.json and the jobs file only a few 
   assert.ok(writes.state <= 10, `state.json written ${writes.state} times`);
   assert.ok(writes.jobs <= 10, `jobs file written ${writes.jobs} times`);
 });
+
+test("a busy take with no matching job is marked interrupted: lost track", async () => {
+  const { ctx, host, store } = await setup([hf({ takes: [{ n: 1, prompt: "p", status: "running", jobId: "gone", at: 1 }], chosen: 1 })], idle);
+  watchJobs(ctx);
+  await tick();
+  const t = store.state.assets[0].takes[0];
+  assert.equal(t.status, "interrupted");
+  assert.equal(t.error, "Lost track of this job");
+  assert.ok((await store.readLog()).some((l) => l.text === "HF-01 take 1 failed: Lost track of this job"));
+  host.claudeScript(() => ({ prompt: "again" }));
+  assert.equal((await startTake(ctx, "HF-01", { note: "again" })).n, 2);
+});
+
+test("a take being started is not mistaken for a lost one", async () => {
+  const { ctx, store, jobs } = await setup([hf()], idle);
+  watchJobs(ctx);
+  const update = store.update;
+  store.update = (fn) => {
+    const p = update(fn);
+    // Another job changes the moment the new take is written, before its job is added.
+    p.then(() => { try { jobs.add({ film: "S:\\Youtube video ideas\\Other", assetId: "HF-09", take: 1, tool: "higgsfield", input: {} }); } catch { /* ignore */ } });
+    return p;
+  };
+  await startTake(ctx, "HF-01");
+  await tick(); await tick();
+  assert.ok(["queued", "running"].includes(store.state.assets[0].takes[0].status), store.state.assets[0].takes[0].status);
+});
+
+test("jobs match a film by folder name, so S: and the UNC copy are the same film", async () => {
+  const runners = { higgsfield: { start: async () => ({ file: "x.png" }) } };
+  const { ctx, store, jobs } = await setup([hf({ takes: [{ n: 1, prompt: "p", status: "queued", at: 1 }], chosen: 1 })], runners);
+  jobs.add({ film: "\\\\192.168.1.171\\jon\\Youtube video ideas\\FILM A", assetId: "HF-01", take: 1, tool: "higgsfield", input: {} });
+  watchJobs(ctx);
+  await tick(); await tick();
+  assert.equal(store.state.assets[0].takes[0].status, "done");
+});

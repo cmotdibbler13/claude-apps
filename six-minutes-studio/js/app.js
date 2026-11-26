@@ -22,7 +22,7 @@ const LAYOUT_KEY = "six-minutes-studio.reviewLayout";
 
 const app = {
   host: null, root: null, jobs: null, films: [], view: "films",
-  film: null, store: null, session: null, retried: new Set(),
+  film: null, store: null, session: null, retried: new Set(), movedAside: null,
   review: { making: false, listError: null, cardErrors: new Map(), pending: new Set(), noteFor: null, draft: "" },
   previews: new Map(),
   layout: (() => { try { return localStorage.getItem(LAYOUT_KEY) || "script"; } catch { return "script"; } })(),
@@ -126,6 +126,9 @@ async function renderNow() {
   const banner = $("persist-banner");
   banner.hidden = !pe;
   banner.textContent = pe ? jobsView.jobsModel({ persistError: pe }).banner : "";
+  const moved = $("moved-banner");
+  moved.hidden = !app.movedAside;
+  moved.textContent = app.movedAside ? jobsView.movedAsideBanner(app.movedAside.name) : "";
 
   if (app.view === "films") {
     paint("films", $("view-films"), filmsView.filmsModel({ root: app.root, films: app.films, jobs: list }), filmsView, filmsActions);
@@ -155,7 +158,7 @@ async function loadRoot() {
       runners: { higgsfield: makeHiggsfieldRunner({ settings }), blender: makeBlenderRunner({ settings }) },
       file,
     });
-    const saved = await readSavedJobs(host, file);
+    const saved = await readSavedJobs(host, file, { onMovedAside: (name) => { app.movedAside = { name }; } });
     app.session = makeFilmSession({ host, jobs: app.jobs, onSaved: () => render() });
     app.jobs.onChange((list) => { onJobsChanged(list); render(); });
     app.jobs.onPersistError(() => render());

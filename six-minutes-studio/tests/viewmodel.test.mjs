@@ -195,3 +195,17 @@ test("script path candidates from the handover", () => {
   ]);
   assert.deepEqual(scriptCandidates("no paths here", DIR), []);
 });
+
+test("moved-aside job list banner", async () => {
+  const { movedAsideBanner } = await import("../js/ui/jobs.js");
+  assert.equal(movedAsideBanner(".studio-jobs.bad-1.json"), "The job list couldn't be read and was saved as .studio-jobs.bad-1.json. Jobs that were running may not reconnect.");
+  assert.equal(movedAsideBanner(null), "The job list couldn't be read. Jobs that were running may not reconnect.");
+});
+
+test("film rows and job rows match jobs by folder name, not by full path", () => {
+  const unc = "\\\\192.168.1.171\\jon\\Youtube video ideas\\skara brae";
+  const row = filmRow(film(), [job({ film: unc, status: "running" })]);
+  assert.equal(row.wait.text, "1 job");
+  const m = jobsModel({ jobs: [job({ id: "a", status: "failed" }), job({ id: "b", film: unc, status: "running" })], log: null, retried: new Set() });
+  assert.equal(m.rows.find((r) => r.id === "a").canRetry, false);
+});

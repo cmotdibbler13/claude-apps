@@ -131,3 +131,15 @@ test("A then B then A during a redo keeps one store per film and the new take su
   assert.deepEqual(disk.assets[0].takes.map((t) => t.n), [1, 2]);
   assert.deepEqual(sA2.state.assets[0].takes.map((t) => t.n), [1, 2]);
 });
+
+test("saved jobs: a moved-aside file is reported by its new name", async () => {
+  const host = new FakeHost();
+  await host.fs.mkdir(ROOT);
+  await host.fs.write(FILE, "{not json");
+  const moved = [];
+  await readSavedJobs(host, FILE, { onMovedAside: (name) => moved.push(name) });
+  assert.deepEqual(moved, [`.studio-jobs.bad-${host.now()}.json`]);
+  const ok = [];
+  await readSavedJobs(host, FILE, { onMovedAside: (name) => ok.push(name) });
+  assert.deepEqual(ok, []);
+});
