@@ -425,3 +425,24 @@ test("editItem validates lineId and refuses startS on the score", async () => {
   await assert.rejects(() => editItem(s.store, "SFX-01", { lineId: "five" }));
   await assert.rejects(() => editItem(s.store, "SCORE", { startS: "0:10" }));
 });
+
+test("start time and line can change while a take is busy; other edits still cannot", async () => {
+  const s = await planned();
+  await startAudioTake(s.ctx, "SFX-01");
+  await editItem(s.store, "SFX-01", { startS: "0:30" });
+  assert.equal(s.store.state.audio.sfx[0].startS, 30);
+  await editItem(s.store, "SFX-01", { lineId: "05" });
+  assert.equal(s.store.state.audio.sfx[0].lineId, "05");
+  await assert.rejects(() => editItem(s.store, "SFX-01", { startS: "0:31", prompt: "x" }), /in progress/);
+});
+
+test("Jon retyping the proposed time marks it his", async () => {
+  const s = await planned();
+  await s.store.update((d) => { d.audio.sfx[0].lineId = "05.2"; });
+  await proposeStarts(s.store, ROWS, null);
+  assert.equal(s.store.state.audio.sfx[0].startSBy, undefined);
+  await editItem(s.store, "SFX-01", { startS: s.store.state.audio.sfx[0].startS });
+  assert.equal(s.store.state.audio.sfx[0].startSBy, "jon");
+  await proposeStarts(s.store, [{ clip: "05", start_s: 1 }], null);
+  assert.ok(Math.abs(s.store.state.audio.sfx[0].startS - 65.3) < 1e-9);
+});

@@ -90,3 +90,36 @@ test("resume asks for a fresh run", async () => {
   const s = await setup(() => {});
   await assert.rejects(s.runner.resume(), { message: "Interrupted; run it again." });
 });
+
+// ---- Open in Stem Remixer, Use this export ----
+import { openInStemRemixer, listExports } from "../js/tools/stemfit.js";
+
+test("Open in Stem Remixer spawns pythonw main.py --open --plan in its folder, detached, without waiting", async () => {
+  const host = new FakeHost();
+  const spawns = [];
+  host.spawnScript((cmd, args, opts) => { spawns.push({ cmd, args, opts }); }); // never exits: the app stays open
+  const t0 = Date.now();
+  const msg = await openInStemRemixer(host, { stemRemixerDir: SR }, { score: SCORE, plan: MIX + "\\plan.json" }, { graceMs: 20 });
+  assert.ok(Date.now() - t0 < 1000);
+  assert.equal(msg, "Opened in Stem Remixer");
+  assert.deepEqual(spawns, [{ cmd: SR + "\\.venv\\Scripts\\pythonw.exe", args: ["main.py", "--open", SCORE, "--plan", MIX + "\\plan.json"], opts: { cwd: SR, detached: true } }]);
+});
+
+test("Open in Stem Remixer reports a spawn that fails straight away", async () => {
+  const host = new FakeHost();
+  host.spawnScript((cmd, args, opts, p) => { p.err("spawn ENOENT"); p.exit(null); });
+  await assert.rejects(openInStemRemixer(host, { stemRemixerDir: SR }, { score: SCORE, plan: null }, { graceMs: 50 }), /Stem Remixer didn't open: spawn ENOENT/);
+  await assert.rejects(openInStemRemixer(host, { stemRemixerDir: null }, { score: SCORE }), { message: MSG_NO_STEM_REMIXER });
+});
+
+test("Use this export lists .wav and .mp3 in the Stem Remixer folder newer than the fit, newest first", async () => {
+  const host = new FakeHost();
+  await host.fs.mkdir(SR);
+  const times = { "old.wav": 100, "new.wav": 300, "mid.MP3": 200, "notes.txt": 400, "Stems": 500 };
+  for (const n of Object.keys(times)) if (n !== "Stems") await host.fs.write(`${SR}\\${n}`, "x");
+  await host.fs.mkdir(SR + "\\Stems");
+  host.fs.stat = async (p) => ({ isFile: !p.endsWith("Stems"), isDirectory: p.endsWith("Stems"), mtimeMs: times[p.split("\\").pop()] });
+  const list = await listExports(host, { stemRemixerDir: SR }, 150);
+  assert.deepEqual(list.map((f) => [f.name, f.when]), [["new.wav", 300], ["mid.MP3", 200]]);
+  assert.equal(list[0].path, SR + "\\new.wav");
+});

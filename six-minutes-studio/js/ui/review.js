@@ -5,6 +5,7 @@ import { canStart, has3d } from "../redo.js";
 import { join } from "../paths.js";
 import { countsLine, STATUS_LABEL, NO_LINE_SCRIPT } from "../narration.js";
 import { audioModel, audioSections } from "./audio.js";
+import { mixModel, mixSection } from "./mix.js";
 
 const busyTake = (t) => t.status === "queued" || t.status === "running";
 const isBusy = (a) => a.takes.some(busyTake);
@@ -101,7 +102,7 @@ function narrationSection(n, actions) {
   return h("section", { class: "narration", "aria-label": "Narration" }, kids);
 }
 
-export function reviewModel({ film, state, layout = "script", making = false, listError = null, cardErrors = new Map(), pending = new Set(), noteFor = null, openError = null, prefError = null, narration = null, playing = null, audio, sa = null, audioUi = {} }) {
+export function reviewModel({ film, state, layout = "script", making = false, listError = null, cardErrors = new Map(), pending = new Set(), noteFor = null, openError = null, prefError = null, narration = null, playing = null, audio, sa = null, audioUi = {}, mixUi = {} }) {
   if (openError) return { openFailed: true, dir: openError.dir, title: openError.title, message: `Couldn't open ${openError.title}: ${openError.message}` };
   if (!film) return { noFilm: true };
   const assets = state?.assets ?? [];
@@ -119,6 +120,7 @@ export function reviewModel({ film, state, layout = "script", making = false, li
     listError,
     narration: narrationModel(narration, playing),
     audio: audioModel(audio === undefined ? state?.audio : audio, { pending, cardErrors, noteFor, playing, sa, ...audioUi }),
+    mix: mixModel({ state, narration, pending, cardErrors, noteFor, playing, settings: mixUi.settings ?? {}, jobs: mixUi.jobs ?? [], ui: mixUi.ui ?? {} }),
     summary: summarize(assets),
     noteFor,
     cards: ordered.map((a) => cardModel(a, assets, { pending: pending.has(a.id), error: cardErrors.get(a.id) ?? null })),
@@ -229,7 +231,7 @@ export function render(el, model, actions) {
     model.prefError ? h("p", { class: "err", text: model.prefError }) : null,
   ].filter(Boolean);
   if (model.needsShotList) {
-    el.replaceChildren(...head, ...(model.narration ? [narrationSection(model.narration, actions)] : []), ...audioSections(model.audio, actions),
+    el.replaceChildren(...head, ...(model.narration ? [narrationSection(model.narration, actions)] : []), ...audioSections(model.audio, actions), mixSection(model.mix, actions),
       h("div", { class: "h2row" }, h("h2", { text: "B-roll" })), h("div", { class: "panel" },
       h("p", { text: "This film has no shot list yet. Claude reads the script and part1_handover.md and plans the b-roll." }),
       btn(model.making ? "Making the shot list\u2026" : "Make shot list", () => actions.makeShotList(), { disabled: model.making }),
@@ -245,5 +247,5 @@ export function render(el, model, actions) {
   const body = model.layout === "grid"
     ? h("div", { class: "cards" }, model.cards.map((c) => card(c, model, actions)))
     : h("div", { class: "script" }, model.cards.map((c) => h("div", { class: "shot" }, h("blockquote", { class: "line", text: c.line }), card(c, model, actions))));
-  el.replaceChildren(...head, ...(model.narration ? [narrationSection(model.narration, actions)] : []), ...audioSections(model.audio, actions), sum, h("div", { class: "h2row" }, h("h2", { text: "B-roll" }), toggle), body);
+  el.replaceChildren(...head, ...(model.narration ? [narrationSection(model.narration, actions)] : []), ...audioSections(model.audio, actions), mixSection(model.mix, actions), sum, h("div", { class: "h2row" }, h("h2", { text: "B-roll" }), toggle), body);
 }

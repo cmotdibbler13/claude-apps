@@ -50,7 +50,10 @@ export async function makeHost(claude = globalThis.claude) {
       const so = {};
       if (opts.cwd) so.cwd = opts.cwd;
       if (opts.shell === true) so.shell = true; // only for fixed commands such as pterm
+      // A detached app (Stem Remixer) gets no pipes, so it keeps running after Studio closes.
+      if (opts.detached === true) { so.detached = true; so.stdio = "ignore"; }
       const p = childProcess.spawn(cmd, args, Object.keys(so).length ? so : undefined);
+      if (opts.detached === true) { try { p.unref?.(); } catch { /* not supported: still runs */ } }
       // A refused spawn (e.g. Blender not found) arrives as an 'error' event with no 'exit'.
       // Surface the text to onErr and settle onExit once with code null so callers never hang.
       const errFns = [], exitFns = [];
@@ -67,9 +70,9 @@ export async function makeHost(claude = globalThis.claude) {
       });
       p.on("exit", (code) => settle(code));
       return {
-        onOut: (f) => p.stdout.on("data", f),
+        onOut: (f) => p.stdout?.on("data", f),
         onErr: (f) => {
-          p.stderr.on("data", f);
+          p.stderr?.on("data", f);
           errFns.push(f);
           if (errText !== null) f(errText);
         },

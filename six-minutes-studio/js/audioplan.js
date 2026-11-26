@@ -163,9 +163,12 @@ export async function addCue(store, { cue, prompt, durationS } = {}) {
   return id;
 }
 
+// Start time and line can change while a take is busy: they don't change the take itself.
+const ANY_TIME = new Set(["startS", "lineId"]);
 export async function editItem(store, id, patch = {}) {
   const item = need(store.state, id);
-  notBusy(store, item);
+  const guarded = Object.keys(patch).some((k) => patch[k] !== undefined && !ANY_TIME.has(k));
+  if (guarded) notBusy(store, item);
   const next = {};
   if (patch.prompt !== undefined) next.prompt = String(patch.prompt);
   if (patch.durationS !== undefined) next.durationS = length(id, patch.durationS);
@@ -188,16 +191,19 @@ export async function editItem(store, id, patch = {}) {
     next.startS = parseStart(patch.startS);
     startSet = true;
   }
+  // Jon typing the proposed time again makes it his, so a later proposal leaves it alone.
+  const claim = startSet && next.startS != null && item.startSBy !== "jon";
   const changes = Object.keys(next).filter((k) => next[k] !== item[k]);
-  if (!changes.length) return;
+  if (!changes.length && !claim) return;
   await store.update((d) => {
     const x = need(d, id);
-    notBusy(store, x);
+    if (guarded) notBusy(store, x);
     for (const k of changes) x[k] = next[k];
     if (startSet) { if (next.startS == null) delete x.startSBy; else x.startSBy = "jon"; }
     if (changes.includes("prompt")) delete x.pendingNote; // the note was for the rewritten prompt
     if (changes.some((k) => k === "prompt" || k === "durationS" || k === "loop")) x.est = null;
   });
+  if (!changes.length) { await store.log(`${labelOf(item)}: start time kept as yours`); return; }
   const what = changes.map((k) => (k === "startS" ? (next.startS == null ? "start time cleared" : `starts at ${formatStart(next.startS)}`) : k === "lineId" ? "line changed" : k === "source" ? `now uses ${SOURCE_LABEL[next.source]}` : k === "durationS" ? "length changed" : k === "loop" ? `loop ${next.loop ? "on" : "off"}` : "prompt edited"));
   await store.log(`${labelOf(item)}: ${what.join(", ")}`);
 }

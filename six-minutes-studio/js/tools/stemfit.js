@@ -67,3 +67,51 @@ export function makeStemFitRunner({ settings = DEFAULT_SETTINGS } = {}) {
     async resume() { throw new Error(MSG_INTERRUPTED); },
   };
 }
+
+// ---- hand tweaks in Stem Remixer ----
+export const stemPythonw = (dir) => join(dir, ".venv", "Scripts", "pythonw.exe");
+export const MSG_OPENED = "Opened in Stem Remixer";
+const OPEN_GRACE_MS = 1500;
+
+// Starts Stem Remixer on the score with the fit plan, detached, and never waits for it to close.
+// Only a start that fails within graceMs (pythonw missing, refused) is reported.
+export function openInStemRemixer(host, settings, { score, plan = null }, { graceMs = OPEN_GRACE_MS } = {}) {
+  const dir = settings?.stemRemixerDir;
+  if (!dir) return Promise.reject(new Error(MSG_NO_STEM_REMIXER));
+  if (typeof score !== "string" || !score) return Promise.reject(new Error("There is no score take to open."));
+  const args = ["main.py", "--open", score, ...(plan ? ["--plan", plan] : [])];
+  return new Promise((resolve, reject) => {
+    let settled = false, err = "";
+    const finish = (fn) => { if (!settled) { settled = true; fn(); } };
+    let p;
+    try { p = host.spawn(stemPythonw(dir), args, { cwd: dir, detached: true }); } catch (e) {
+      return reject(new Error(`Stem Remixer didn't open: ${e?.message ?? e}`));
+    }
+    p.onErr((c) => { err = (err + String(c)).slice(-2000); });
+    p.onExit((code) => finish(() => {
+      if (code === 0) return resolve(MSG_OPENED);
+      const why = err.trim().split(/\r?\n/).slice(-3).join(" ") || (code == null ? "it didn't start" : `it stopped (exit ${code})`);
+      reject(new Error(`Stem Remixer didn't open: ${why}`));
+    }));
+    setTimeout(() => finish(() => resolve(MSG_OPENED)), graceMs);
+  });
+}
+
+// Stem Remixer's Export mix dialog opens in its own folder (the app's working folder): the .wav and .mp3
+// files there newer than sinceMs, newest first.
+export async function listExports(host, settings, sinceMs = 0) {
+  const dir = settings?.stemRemixerDir;
+  if (!dir) throw new Error(MSG_NO_STEM_REMIXER);
+  let entries;
+  try { entries = await host.fs.list(dir); } catch { throw new Error(`Couldn't read ${dir}.`); }
+  const out = [];
+  for (const e of entries) {
+    if (e.isDirectory || !/\.(wav|mp3)$/i.test(e.name)) continue;
+    const path = join(dir, e.name);
+    let st;
+    try { st = await host.fs.stat(path); } catch { continue; }
+    if (!st?.isFile || !(Number(st.mtimeMs) > Number(sinceMs ?? 0))) continue;
+    out.push({ path, name: e.name, when: Number(st.mtimeMs) });
+  }
+  return out.sort((a, b) => b.when - a.when);
+}

@@ -147,3 +147,53 @@ test("ElevenLabs tools check lists the flow tools it needs", async () => {
   const ok = (await runChecks(host, () => {}, saSettings)).find((x) => x.name === "ElevenLabs tools");
   assert.equal(ok.ok, true);
 });
+
+// ---- Stem Remixer and Autocue join ----
+const SRD = "C:\\Apps\\Stem Remixer";
+const ACD = "C:\\Users\\Jon\\desktop autocue";
+async function srHost({ files = [".venv\\Scripts\\python.exe", "fit.py", "measure.py"], version = "1.9.0", join = true } = {}) {
+  const host = new FakeHost();
+  host.spawnScript((cmd, args, o, p) => { p.out("ok"); p.exit(0); });
+  host.fs.list = async () => [];
+  await host.fs.mkdir(SRD + "\\.venv\\Scripts");
+  await host.fs.mkdir(ACD);
+  for (const f of files) await host.fs.write(`${SRD}\\${f}`, "x");
+  if (version !== null) await host.fs.write(SRD + "\\VERSION", version + "\n");
+  if (join) await host.fs.write(ACD + "\\voiceover_join.py", "x");
+  return host;
+}
+const srSettings = (o = {}) => ({ ...settings, stemRemixerDir: SRD, autocueDir: ACD, ...o });
+const named = (results, name) => results.find((r) => r.name === name);
+
+test("Stem Remixer check passes with its Python, fit.py and measure.py, and shows the version", async () => {
+  const r = named(await runChecks(await srHost(), () => {}, srSettings()), "Stem Remixer");
+  assert.equal(r.ok, true);
+  assert.equal(r.detail, "Stem Remixer 1.9.0");
+  const nov = named(await runChecks(await srHost({ version: null }), () => {}, srSettings()), "Stem Remixer");
+  assert.equal(nov.ok, true);
+});
+
+test("Stem Remixer check fails with the settings text when the folder or a file is missing", async () => {
+  const want = "Set stemRemixerDir in .studio-settings.json to your Stem Remixer folder (1.9.0 or newer).";
+  const unset = named(await runChecks(await srHost(), () => {}, srSettings({ stemRemixerDir: null })), "Stem Remixer");
+  assert.equal(unset.ok, false);
+  assert.equal(unset.detail, want);
+  const noFit = named(await runChecks(await srHost({ files: [".venv\\Scripts\\python.exe", "measure.py"] }), () => {}, srSettings()), "Stem Remixer");
+  assert.equal(noFit.ok, false);
+  assert.equal(noFit.detail, want);
+});
+
+test("Stem Remixer check fails on a version below 1.9.0", async () => {
+  const r = named(await runChecks(await srHost({ version: "1.8.2" }), () => {}, srSettings()), "Stem Remixer");
+  assert.equal(r.ok, false);
+  assert.equal(r.detail, "Stem Remixer is 1.8.2; update it to 1.9.0 or newer (its Update button)");
+  assert.equal(named(await runChecks(await srHost({ version: "1.10.0" }), () => {}, srSettings()), "Stem Remixer").ok, true);
+});
+
+test("Autocue join check passes when voiceover_join.py is in autocueDir", async () => {
+  const ok = named(await runChecks(await srHost(), () => {}, srSettings()), "Autocue join");
+  assert.equal(ok.ok, true);
+  const no = named(await runChecks(await srHost({ join: false }), () => {}, srSettings()), "Autocue join");
+  assert.equal(no.ok, false);
+  assert.match(no.detail, /voiceover_join\.py/);
+});

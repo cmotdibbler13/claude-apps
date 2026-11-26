@@ -16,7 +16,11 @@ import { makeBlenderRunner } from "./tools/blender.js";
 import { makeComfyRunner } from "./tools/comfyui.js";
 import { makeStableAudioStarter, makeStableAudioRunner } from "./tools/stableaudio.js";
 import { makeElevenRunner } from "./tools/elevenlabs.js";
-import { planAudio, addCue, editItem, getEstimate, rewriteFromNote, startAudioTake, approveAudio, unapproveAudio, chooseAudio } from "./audioplan.js";
+import { planAudio, addCue, editItem, getEstimate, rewriteFromNote, startAudioTake, approveAudio, unapproveAudio, chooseAudio, proposeStarts } from "./audioplan.js";
+import { makeVoiceJoinRunner } from "./tools/voicejoin.js";
+import { makeStemFitRunner, openInStemRemixer, listExports } from "./tools/stemfit.js";
+import { makeMixdownRunner } from "./tools/mixdown.js";
+import { startJoin, startFit, startMix, useStemRemixerExport, approveMix, parseCsv } from "./mixplan.js";
 import { mountProbe } from "./ui/probe.js";
 import * as filmsView from "./ui/films.js";
 import * as jobsView from "./ui/jobs.js";
@@ -165,8 +169,10 @@ async function renderNow() {
       audio: app.store?.state?.audio ?? null,
       sa: app.starter ? { state: app.starter.state(), message: app.starter.message() } : null,
       audioUi: { estimating: r.estimating, planning: !!r.planning, planError: r.planError ?? null, adding: !!r.adding, addError: r.addError ?? null },
+      mixUi: { settings: { stemRemixer: !!app.settings?.stemRemixerDir }, jobs: list, ui: { exports: r.exports ?? null, opened: r.opened ?? null } },
     });
     paint("review", $("view-review"), model, reviewView, reviewActions);
+    proposeOnce();
   }
 }
 
@@ -190,6 +196,9 @@ async function loadRoot() {
         comfyui: makeComfyRunner({ settings }),
         stableaudio: makeStableAudioRunner({ settings, starter }),
         elevenlabs: makeElevenRunner({}),
+        voicejoin: makeVoiceJoinRunner({ settings }),
+        stemfit: makeStemFitRunner({ settings }),
+        mixdown: makeMixdownRunner(),
       },
       file,
     });
@@ -219,6 +228,7 @@ const filmsActions = {
 
 function resetReview() {
   stopTake();
+  dropMixPlayer();
   app.previews.clear();
   revokeAll();
   app.review = { making: false, listError: null, cardErrors: new Map(), pending: new Set(), estimating: new Set(), noteFor: null, draft: "" };
@@ -312,6 +322,7 @@ function stopTake() {
 async function playTake(file) {
   const again = app.playing === file;
   stopTake();
+  try { mixPlayer.el?.pause(); } catch { /* not loaded */ }
   render();
   if (again) return;
   app.playing = file;
@@ -327,6 +338,46 @@ async function playTake(file) {
     console.error(e);
     if (app.playing === file) { stopTake(); render(); }
   }
+}
+
+// ---- the mix preview: one <audio> with its own scrubber, kept across re-renders so it keeps playing ----
+const mixPlayer = { file: null, el: null };
+function dropMixPlayer() {
+  if (mixPlayer.el) { try { mixPlayer.el.pause(); } catch { /* gone */ } mixPlayer.el.removeAttribute("src"); }
+  mixPlayer.file = null; mixPlayer.el = null;
+}
+function mixAudioEl(file, label) {
+  if (mixPlayer.file === file && mixPlayer.el) return mixPlayer.el;
+  dropMixPlayer();
+  const el = document.createElement("audio");
+  el.controls = true;
+  el.preload = "metadata";
+  el.className = "maudio";
+  el.setAttribute("aria-label", `Mix preview ${label ?? ""}`.trim());
+  // Starting the mix stops a narration or score take that is playing (one sound at a time).
+  el.addEventListener("play", () => { if (app.playing) { stopTake(); render(); } });
+  mixPlayer.file = file; mixPlayer.el = el;
+  toBlobUrl(app.host, file).then((url) => { if (mixPlayer.el === el) el.src = url; }, (e) => console.error(e));
+  return el;
+}
+function seekMix(t) {
+  const el = mixPlayer.el;
+  if (!el) return;
+  try { el.currentTime = Math.max(0, Number(t) || 0); } catch { /* not loaded yet */ }
+  el.play().catch(() => {});
+}
+
+// Once a voiceover is joined (and when Review opens on a film that has one), Claude's start times for the
+// sound effects come from its timings. proposeStarts never overwrites a time Jon set.
+async function proposeOnce() {
+  const r = app.review, store = app.store;
+  const vo = store?.state?.mix?.voiceover;
+  if (!vo || vo.status !== "done" || !vo.csv || r.proposedAt === vo.at) return;
+  r.proposedAt = vo.at;
+  try {
+    const rows = parseCsv(await app.host.fs.read(vo.csv, "utf8"));
+    if (app.store === store && app.review === r) await proposeStarts(store, rows, r.lineScript ?? null);
+  } catch (e) { console.error(e); }
 }
 
 // ---- review ----
@@ -429,6 +480,38 @@ function cardAction(fn) {
   };
 }
 const ctx = () => ({ host: app.host, store: app.store, jobs: app.jobs });
+const mixCtx = () => ({ ...ctx(), lineScript: app.review.lineScript ?? null, settings: app.settings ?? {} });
+// A Voiceover and mix step's action, guarded like a card (VOICEOVER, FIT or MIX).
+const stepAction = (id, fn) => { const run = cardAction((_, ...a) => fn(...a)); return (...a) => run(id, ...a); };
+
+async function findExports() {
+  const r = app.review;
+  const fit = app.store?.state?.mix?.fit;
+  r.exports = { loading: true, files: [] }; render();
+  try {
+    const files = await listExports(app.host, app.settings ?? {}, fit?.at ?? 0);
+    const when = (ms) => { try { return new Date(ms).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" }); } catch { return ""; } };
+    if (app.review === r) r.exports = { files: files.map((f) => ({ ...f, whenText: when(f.when) })), pick: files[0]?.path ?? null };
+  } catch (e) {
+    if (app.review === r) r.exports = { files: [], error: msg(e) };
+  }
+  render();
+}
+
+async function openStemRemixer() {
+  const r = app.review, store = app.store;
+  const fit = store?.state?.mix?.fit;
+  r.opened = "Opening Stem Remixer…"; r.cardErrors.delete("FIT"); render();
+  try {
+    const plan = join(store.dir, "studio", "mix", "plan.json");
+    const score = fit?.scoreFile ?? null;
+    const text = await openInStemRemixer(app.host, app.settings ?? {}, { score, plan: (await app.host.fs.exists(plan)) ? plan : null });
+    if (app.review === r) r.opened = text;
+  } catch (e) {
+    if (app.review === r) { r.opened = null; r.cardErrors.set("FIT", msg(e)); }
+  }
+  render();
+}
 
 function preview(file) {
   if (!app.previews.has(file)) {
@@ -515,6 +598,28 @@ const reviewActions = {
   approveAudio: cardAction((id) => approveAudio(ctx(), id)),
   unapproveAudio: cardAction((id) => unapproveAudio(ctx(), id)),
   startStableAudio: () => { startStableAudio(); },
+  // Voiceover and mix
+  joinVoiceover: stepAction("VOICEOVER", (allowFlagged) => { userStarted(); return startJoin(mixCtx(), { allowFlagged: !!allowFlagged }); }),
+  fitScore: stepAction("FIT", async (note) => {
+    if (note !== undefined && !String(note).trim()) throw new Error("Write a note saying what should change.");
+    userStarted();
+    app.review.opened = null;
+    await startFit(mixCtx(), note === undefined ? {} : { note: String(note).trim() });
+    if (app.review.noteFor === "FIT") { app.review.noteFor = null; app.review.draft = ""; }
+  }),
+  openStemRemixer: () => { openStemRemixer(); },
+  findExports: () => { findExports(); },
+  pickExport(path) { if (app.review.exports) { app.review.exports.pick = path; render(); } },
+  closeExports() { app.review.exports = null; render(); },
+  useExport: stepAction("FIT", async (path) => {
+    userStarted();
+    await useStemRemixerExport(mixCtx(), path);
+    app.review.exports = null;
+  }),
+  makeMix: stepAction("MIX", () => { userStarted(); return startMix(mixCtx()); }),
+  approveMix: stepAction("MIX", () => approveMix(mixCtx())),
+  mixPlayer: (file, label) => mixAudioEl(file, label),
+  seekMix,
   field: (k) => fields.get(k),
   setField(k, v) { if (v === undefined) fields.delete(k); else fields.set(k, v); },
   rendering: () => rendering,

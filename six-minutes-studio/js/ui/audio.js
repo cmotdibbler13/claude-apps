@@ -81,6 +81,7 @@ export function itemModel(item, { pending = false, estimating = false, error = n
     canGenerate,
     canGetCost,
     canEdit: free,
+    canEditStart: !pending, // the start time doesn't touch the take, so it can change while one runs
     takes: takes.map((t) => ({
       n: t.n, source: t.source ?? source, sourceLabel: toolLabel(t.source ?? source), file: t.status === "done" ? t.file ?? null : null,
       playing: !!t.file && t.status === "done" && t.file === playing,
@@ -128,8 +129,9 @@ export function audioModel(audio, { pending = new Set(), estimating = new Set(),
 
 // Saves a typed value. The kept text is cleared only once the save succeeded (editAudio resolves true)
 // and Jon hasn't typed more since; a failed or refused save leaves it in the box.
-export function saveTyped(actions, id, key, value, saved, patch) {
-  if (String(value) === String(saved ?? "")) { actions.setField(key, undefined); return Promise.resolve(true); }
+// always: send it even when it matches what is saved (a retyped start time marks it Jon's).
+export function saveTyped(actions, id, key, value, saved, patch, { always = false } = {}) {
+  if (!always && String(value) === String(saved ?? "")) { actions.setField(key, undefined); return Promise.resolve(true); }
   return Promise.resolve(actions.editAudio(id, patch)).then((ok) => {
     if (ok === true && actions.field(key) === value) actions.setField(key, undefined);
     return ok === true;
@@ -166,14 +168,19 @@ function lengthBox(c, actions) {
 function startBox(c, actions) {
   const key = `au-${c.id}-start`;
   const inp = h("input", { type: "text", id: key, class: "alen", placeholder: "m:ss.s", size: 7,
-    "aria-label": `Film time ${c.cue} starts at`, disabled: !c.canEdit });
+    "aria-label": `Film time ${c.cue} starts at`, disabled: !c.canEditStart });
   inp.value = actions.field(key) ?? c.startText;
-  inp.addEventListener("input", () => actions.setField(key, inp.value));
-  inp.addEventListener("change", () => {
+  // Typing the same time again fires no change event, so a typed box also saves when Jon leaves it.
+  let typed = false;
+  const save = () => {
+    typed = false;
     const v = inp.value;
     actions.setField(key, v);
-    saveTyped(actions, c.id, key, v, c.startText, { startS: v });
-  });
+    saveTyped(actions, c.id, key, v, c.startText, { startS: v }, { always: v.trim() !== "" });
+  };
+  inp.addEventListener("input", () => { typed = true; actions.setField(key, inp.value); });
+  inp.addEventListener("change", save);
+  inp.addEventListener("blur", () => { if (typed && !actions.rendering()) save(); });
   return h("label", { class: "aopt" }, h("span", { text: "Starts at" }), inp);
 }
 

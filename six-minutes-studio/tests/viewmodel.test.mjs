@@ -551,3 +551,193 @@ test("the card shows the start time as m:ss.s, or Not placed yet", () => {
   assert.equal(m[1].startText, "1:05.3");
   assert.equal(m[1].placedNote, null);
 });
+
+// ---- Voiceover and mix ----
+import { mixModel } from "../js/ui/mix.js";
+import { OUT_OF_DATE } from "../js/mixplan.js";
+
+const VOW = "S:\\f\\studio\\voiceover\\f_voiceover.wav";
+const FITW = "S:\\f\\studio\\mix\\f_score_fitted.wav";
+const SC1 = "S:\\f\\studio\\media\\f_score_t1.wav";
+const nrow = (id, status, o = {}) => ({ id, section: "Opening", text: "one two three four five", status, flags: [], notes: [], file: status === "missing" ? undefined : `S:\\rec\\f_${id}.wav`, takeS: 100, ...o });
+const narr = (rows) => ({ project: "f", rows, counts: { total: rows.length, recorded: rows.filter((r) => r.status !== "missing").length, ok: rows.filter((r) => r.status === "ok").length, jon: rows.filter((r) => r.status === "jon").length, flagged: rows.filter((r) => r.status === "flagged").length, unchecked: 0 } });
+const goodNarr = () => narr([nrow("01.1", "ok"), nrow("01.2", "jon"), nrow("02.1", "ok")]);
+const approvedScore = () => score({ approved: true, chosen: 1, takes: [{ n: 1, status: "done", file: SC1 }] });
+const vo = (o = {}) => ({ id: "VOICEOVER", status: "done", at: 200_000, wav: VOW, csv: "S:\\f\\t.csv", lengthS: 362, tightened: [{ id: "01.2", at_s: 1.2, from_s: 0.9, to_s: 0.3 }], extra: [], silent: [], takes: [{ n: 1, status: "done" }], ...o });
+const SHEET = { rows: [{ section: "Opening", targetS: 6, landsS: 6.4, missS: 0.4, noMove: false }, { section: "The dig", targetS: 95.2, landsS: null, missS: null, noMove: true }, { section: "The end", targetS: 300, landsS: 292.8, missS: -7.2, noMove: false }], worstS: 7.2, suggestNewTake: true, missing: ["The dig"] };
+const TARGETS = { filmS: 380.5, sections: [{ name: "Opening", startS: 6 }, { name: "The dig", startS: 95.2 }, { name: "The end", startS: 300 }] };
+const fitH = (o = {}) => ({ id: "FIT", status: "done", at: 300_000, file: FITW, sheet: SHEET, targets: TARGETS, plan: { steps: [], notes: "Cut the middle." }, source: "app", scoreFile: SC1, fromVoiceoverAt: 200_000, fromScoreTake: 1, lengthS: 380.5, takes: [{ n: 1, status: "done" }], ...o });
+const MIXF = { wav: "S:\\f\\studio\\mix\\f_mix.wav", mp3: "S:\\f\\studio\\mix\\f_mix_preview.mp3", voice: "S:\\f\\studio\\mix\\f_voice_stem.flac", music: "S:\\f\\studio\\mix\\f_music_stem.flac" };
+const mixH = (o = {}) => ({ id: "MIX", status: "done", at: 400_000, files: MIXF, unplaced: ["SFX-02"], approved: false, fromFitAt: 300_000, fromVoiceoverAt: 200_000, fromSfx: [], takes: [{ n: 1, status: "done" }], ...o });
+const mstate = (mix = {}, o = {}) => ({ assets: [], audio: { score: approvedScore(), sfx: [] }, mix: { voiceover: null, fit: null, mix: null, ...mix }, ...o });
+const mm = (state, o = {}) => mixModel({ state, narration: goodNarr(), settings: { stemRemixer: true }, ...o });
+const step = (m, id) => m.steps.find((x) => x.id === id);
+
+test("mix: before anything, join is ready and fit and mix say what they wait for", () => {
+  const m = mm(mstate());
+  const j = step(m, "VOICEOVER"), f = step(m, "FIT"), x = step(m, "MIX");
+  assert.equal(j.state, "ready");
+  assert.equal(j.run.label, "Join voiceover");
+  assert.equal(j.run.allowFlagged, false);
+  assert.equal(j.run.enabled, true);
+  assert.equal(j.counts, "3 of 3 recorded · 2 ok · 1 OK by Jon");
+  assert.equal(f.state, "locked");
+  assert.equal(f.statusText, "Waits for the voiceover join.");
+  assert.equal(f.run.enabled, false);
+  assert.equal(x.state, "locked");
+  assert.equal(x.statusText, "Waits for the score fit.");
+});
+
+test("mix: flagged lines make it Join anyway (N flagged) with the ids; OK by Jon counts as fine", () => {
+  const m = mm(mstate(), { narration: narr([nrow("01.1", "flagged"), nrow("01.2", "jon"), nrow("02.1", "flagged")]) });
+  const j = step(m, "VOICEOVER");
+  assert.equal(j.state, "ready");
+  assert.equal(j.run.label, "Join anyway (2 flagged)");
+  assert.equal(j.run.allowFlagged, true);
+  assert.equal(j.flagged, "Flagged: 01.1, 02.1");
+});
+
+test("mix: a missing take locks the join with Record these first", () => {
+  const m = mm(mstate(), { narration: narr([nrow("01.1", "ok"), nrow("01.2", "missing"), nrow("03.1", "missing")]) });
+  const j = step(m, "VOICEOVER");
+  assert.equal(j.state, "locked");
+  assert.equal(j.statusText, "Record these first: 01.2, 03.1");
+  assert.equal(j.run.enabled, false);
+  const none = mm(mstate(), { narration: null });
+  assert.equal(step(none, "VOICEOVER").state, "locked");
+  assert.equal(step(none, "VOICEOVER").statusText, "Waiting for the Narration list.");
+});
+
+test("mix: running steps show their progress and block their button", () => {
+  const s = mstate({ voiceover: { id: "VOICEOVER", status: "running", jobId: "jv", takes: [{ n: 1, status: "running", jobId: "jv" }] } });
+  const j = step(mm(s, { jobs: [{ id: "jv", status: "running", progress: 0.42 }] }), "VOICEOVER");
+  assert.equal(j.state, "running");
+  assert.equal(j.statusText, "Joining… 42%");
+  assert.equal(j.run.enabled, false);
+  const q = step(mm(mstate({ voiceover: { id: "VOICEOVER", status: "queued", takes: [{ n: 1, status: "queued" }] } })), "VOICEOVER");
+  assert.equal(q.statusText, "Queued");
+  const f = step(mm(mstate({ voiceover: vo() }), { pending: new Set(["FIT"]) }), "FIT");
+  assert.equal(f.state, "running");
+  assert.equal(f.statusText, "Working…");
+  const x = step(mm(mstate({ voiceover: vo(), fit: fitH(), mix: { id: "MIX", status: "running", jobId: "jm", takes: [{ n: 1, status: "running" }] } }), { jobs: [{ id: "jm", status: "running", progress: 0.5 }] }), "MIX");
+  assert.equal(x.statusText, "Mixing… 50%");
+});
+
+test("mix: a done join shows its length against the estimate, ▶ and the stalls tightened", () => {
+  const m = mm(mstate({ voiceover: vo({ extra: ["stray.wav"], silent: ["02.1"] }) }), { playing: VOW });
+  const j = step(m, "VOICEOVER");
+  assert.equal(j.state, "done");
+  assert.equal(j.lengthText, "6:02 (the script estimate is 0:06)");
+  assert.equal(j.file, VOW);
+  assert.equal(j.playing, true);
+  assert.deepEqual(j.details, ["Stall tightened: 01.2, 0.9 s to 0.3 s", "Takes that match no line: stray.wav", "No speech found, joined as silence: 02.1"]);
+  assert.equal(j.run.label, "Join again");
+  const f = step(m, "FIT");
+  assert.equal(f.state, "ready");
+  assert.equal(f.run.label, "Fit score");
+});
+
+test("mix: a take recorded after the join makes the join out of date", () => {
+  const n = narr([nrow("01.1", "ok", { takeS: 250 }), nrow("01.2", "ok")]);
+  const j = step(mm(mstate({ voiceover: vo() }), { narration: n }), "VOICEOVER");
+  assert.equal(j.state, "stale");
+  assert.equal(j.statusText, OUT_OF_DATE);
+  assert.equal(j.run.enabled, true);
+});
+
+test("mix: the fit waits for an approved score and for the Stem Remixer folder", () => {
+  const noScore = mstate({ voiceover: vo() }, { audio: { score: score(), sfx: [] } });
+  assert.equal(step(mm(noScore), "FIT").statusText, "Waits for an approved score take (Score card).");
+  const noDir = step(mm(mstate({ voiceover: vo() }), { settings: { stemRemixer: false } }), "FIT");
+  assert.equal(noDir.state, "locked");
+  assert.match(noDir.statusText, /stemRemixerDir/);
+});
+
+test("mix: a done fit shows the sheet table, the suggestion line and the hand-tweak buttons", () => {
+  const f = step(mm(mstate({ voiceover: vo(), fit: fitH() })), "FIT");
+  assert.equal(f.state, "done");
+  assert.deepEqual(f.sheet, [
+    { section: "Opening", target: "0:06", lands: "0:06", miss: "+0.4 s" },
+    { section: "The dig", target: "1:35", lands: "no move found", miss: "" },
+    { section: "The end", target: "5:00", lands: "4:53", miss: "-7.2 s" },
+  ]);
+  assert.equal(f.suggestion, "A big move is still 7.2 s off. A new score take may fit better (Score card).");
+  assert.equal(f.notes, "Cut the middle.");
+  assert.equal(f.file, FITW);
+  assert.equal(f.run.label, "Fit again with a note");
+  assert.equal(f.canOpen, true);
+  assert.equal(f.canUseExport, true);
+  const ok = step(mm(mstate({ voiceover: vo(), fit: fitH({ sheet: { ...SHEET, suggestNewTake: false, worstS: 0.4 } }) })), "FIT");
+  assert.equal(ok.suggestion, null);
+  const sr = step(mm(mstate({ voiceover: vo(), fit: fitH({ source: "stemremixer", file: "C:\\sr\\my export.wav" }) })), "FIT");
+  assert.equal(sr.sourceText, "Using your Stem Remixer export: my export.wav");
+  assert.equal(step(mm(mstate({ voiceover: vo(), fit: fitH() })), "MIX").state, "ready");
+});
+
+test("mix: a fit from an older join or another score take is out of date, and so is the mix", () => {
+  const s = mstate({ voiceover: vo({ at: 250_000 }), fit: fitH(), mix: mixH({ approved: true }) });
+  const m = mm(s);
+  const f = step(m, "FIT"), x = step(m, "MIX");
+  assert.equal(f.state, "stale");
+  assert.equal(f.statusText, OUT_OF_DATE);
+  assert.equal(f.run.label, "Fit again");
+  assert.equal(f.run.enabled, true);
+  assert.equal(x.state, "stale");
+  assert.equal(x.statusText, OUT_OF_DATE);
+  assert.equal(x.approved, false, "an old approval is not shown as approved");
+  assert.equal(x.canApprove, false);
+  assert.equal(x.approvalNote, "The approval was for an earlier mix.");
+  assert.equal(x.run.enabled, false, "the fit must be run again first");
+  assert.equal(x.lock, "Waits for the score fit to be run again.");
+});
+
+test("mix: a done mix shows the player, the section marks, the files and Approve mix", () => {
+  const x = step(mm(mstate({ voiceover: vo(), fit: fitH(), mix: mixH() })), "MIX");
+  assert.equal(x.state, "done");
+  assert.equal(x.player, MIXF.mp3);
+  assert.deepEqual(x.marks, [{ t: 6, label: "0:06 Opening" }, { t: 95.2, label: "1:35 The dig" }, { t: 300, label: "5:00 The end" }]);
+  assert.deepEqual(x.files.map((f) => f.name), ["f_mix.wav", "f_mix_preview.mp3", "f_voice_stem.flac", "f_music_stem.flac"]);
+  assert.equal(x.unplaced, "Not placed (no start time): SFX-02");
+  assert.equal(x.canApprove, true);
+  assert.equal(x.run.label, "Make mix again");
+  const a = step(mm(mstate({ voiceover: vo(), fit: fitH(), mix: mixH({ approved: true }) })), "MIX");
+  assert.equal(a.approved, true);
+  assert.equal(a.canApprove, false);
+  const r = step(mm(mstate({ voiceover: vo(), fit: fitH() })), "MIX");
+  assert.equal(r.run.label, "Make mix preview");
+});
+
+test("mix: an interrupted or failed step says so and can run again", () => {
+  const i = step(mm(mstate({ voiceover: { id: "VOICEOVER", status: "interrupted", error: "Interrupted", takes: [{ n: 1, status: "interrupted" }] } })), "VOICEOVER");
+  assert.equal(i.state, "interrupted");
+  assert.equal(i.statusText, "Interrupted; run it again.");
+  assert.equal(i.run.enabled, true);
+  const lost = step(mm(mstate({ voiceover: vo(), fit: { id: "FIT", status: "failed", error: "Interrupted; run it again.", takes: [{ n: 1, status: "failed" }] } })), "FIT");
+  assert.equal(lost.state, "interrupted");
+  const bad = step(mm(mstate({ voiceover: vo(), fit: { id: "FIT", status: "failed", error: "fit.py said no", takes: [{ n: 1, status: "failed" }] } })), "FIT");
+  assert.equal(bad.state, "failed");
+  assert.equal(bad.statusText, "Failed: fit.py said no");
+  assert.equal(bad.run.label, "Fit again");
+});
+
+test("mix: card errors, the export list and the open message reach the model", () => {
+  const m = mm(mstate({ voiceover: vo(), fit: fitH() }), { cardErrors: new Map([["FIT", "boom"]]), ui: { exports: { files: [{ path: "C:\\sr\\b.wav", name: "b.wav", when: 2 }, { path: "C:\\sr\\a.mp3", name: "a.mp3", when: 1 }], pick: "C:\\sr\\b.wav" }, opened: "Opened in Stem Remixer" } });
+  const f = step(m, "FIT");
+  assert.equal(f.error, "boom");
+  assert.deepEqual(f.exports.files.map((x) => [x.name, x.picked]), [["b.wav", true], ["a.mp3", false]]);
+  assert.equal(f.opened, "Opened in Stem Remixer");
+  assert.equal(reviewModel({ film: film(), state: mstate(), sa: sa(), narration: goodNarr() }).mix.steps.length, 3);
+});
+
+test("audio: Starts at is always sent, so a retyped time marks it Jon's; it stays editable while busy", async () => {
+  const { saveTyped } = await import("../js/ui/audio.js");
+  const calls = [];
+  const fields = new Map([["k", "1:05.3"]]);
+  const actions = { field: (k) => fields.get(k), setField: (k, v) => (v === undefined ? fields.delete(k) : fields.set(k, v)), editAudio: async (id, p) => { calls.push(p); return true; } };
+  assert.equal(await saveTyped(actions, "SFX-01", "k", "1:05.3", "1:05.3", { startS: "1:05.3" }, { always: true }), true);
+  assert.deepEqual(calls, [{ startS: "1:05.3" }]);
+  const takes = [{ n: 1, source: "stableaudio", prompt: "p", status: "running" }];
+  const m = audioModel({ score: score(), sfx: [cue({ takes, chosen: 1 })] }, { sa: sa() }).sfx[0];
+  assert.equal(m.canEdit, false);
+  assert.equal(m.canEditStart, true);
+});

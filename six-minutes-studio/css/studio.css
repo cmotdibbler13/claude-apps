@@ -171,3 +171,46 @@ textarea{width:100%;background:var(--s0);color:var(--ink);border:1px solid var(-
 .score-card{display:block}
 .score-card .card textarea{min-height:10em}
 .cards.sfx-cards{grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}
+/* Voiceover and mix: three numbered steps, the fit sheet, the mix player and its section marks */
+.msteps{list-style:none;margin:0;padding:0;display:grid;gap:10px}
+.mstep{background:var(--s2);border:1px solid var(--rule);padding:14px 16px;display:flex;flex-direction:column;gap:10px}
+.mstep.m-locked{background:var(--s1)}
+.mstep.m-done{border-color:var(--moss)}
+.mstep.m-stale,.mstep.m-interrupted{border-color:var(--brass)}
+.mstep.m-failed{border-color:var(--eng)}
+.mstep p{margin:0}
+.mstep .row{margin-top:0}
+.mhead{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px}
+.mhead h3{margin:0;font-size:15px;font-weight:500;letter-spacing:.02em;flex:1 1 auto}
+.mnum{font-variant-numeric:tabular-nums;color:var(--brass);font-size:13px}
+.achip.ms-done{color:var(--lw)}
+.achip.ms-running{color:var(--tide)}
+.achip.ms-locked,.achip.ms-ready{color:var(--fnt)}
+.achip.ms-failed{color:var(--eng)}
+.mstatus{font-size:13px;overflow-wrap:anywhere}
+.mstatus.hist{color:var(--mut)}
+.mstatus.mstale{color:var(--brass);font-weight:500}
+.mstatus.locked{align-self:auto}
+.mflag{font-size:13px;color:var(--brass);overflow-wrap:anywhere}
+.mplay{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;font-size:13px;font-variant-numeric:tabular-nums}
+.mstep .nplay{width:24px;height:22px;padding:0;background:none;border:1px solid var(--rule);color:var(--tide);font-size:10px;line-height:1;cursor:pointer}
+.mstep .nplay.on{color:var(--brass);border-color:var(--brass)}
+.mlist{list-style:none;margin:0;padding:0;display:grid;gap:2px;font-size:12px;color:var(--mut)}
+.mlist li{overflow-wrap:anywhere}
+.mtable{overflow-x:auto;max-width:100%}
+.mtable table{border-collapse:collapse;font-size:13px;min-width:0;width:100%;max-width:560px}
+.mtable th{font-size:11px;font-weight:500;letter-spacing:.14em;text-transform:uppercase;color:var(--fnt);text-align:left;padding:4px 10px 4px 0;border-bottom:1px solid var(--rule)}
+.mtable td{padding:4px 10px 4px 0;border-bottom:1px solid var(--rule);overflow-wrap:anywhere}
+.mtable td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+.mtable td.nomove{color:var(--fnt);font-style:italic}
+.mstep textarea{width:100%;min-height:4.5em;background:var(--s0);color:var(--ink);border:1px solid var(--rule);font:13px/1.5 Inter,"Helvetica Neue",Arial,sans-serif;padding:8px}
+.mexports{display:flex;flex-direction:column;align-items:flex-start;gap:8px;background:var(--s1);border:1px solid var(--rule);padding:10px 12px}
+.mlist.pick{gap:4px;align-self:stretch}
+.mpick{display:flex;flex-wrap:wrap;justify-content:space-between;gap:2px 12px;width:100%;text-align:left;background:none;border:1px solid var(--rule);padding:6px 10px;font-size:13px;color:var(--ink)}
+.mpick.on{border-color:var(--brass)}
+.mpick .mname{overflow-wrap:anywhere}
+.mplayer .maudio{width:100%;max-width:720px;display:block}
+.mmarks{display:flex;flex-wrap:wrap;gap:6px}
+.mmark{background:none;border:1px solid var(--rule);color:var(--tide);font-size:12px;padding:3px 8px;font-variant-numeric:tabular-nums}
+.mmark:hover,.mfile:hover{border-color:var(--tide)}
+.mfile{background:none;border:0;border-bottom:1px dotted var(--rs);padding:0;color:var(--mut);font-size:12px;text-align:left;overflow-wrap:anywhere}

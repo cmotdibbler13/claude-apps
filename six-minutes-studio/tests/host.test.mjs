@@ -237,3 +237,17 @@ test("makeHost reads and requests full access through desktop.permissions", asyn
   d.permissions.state = async () => { throw new Error("EPERM"); };
   assert.equal(await h.permissionState("full-access"), "unavailable");
 });
+
+test("makeHost spawn: detached gets no pipes and its handlers still attach", async () => {
+  const f = fakeClaude();
+  const h = await makeHost(f.claude);
+  const p = h.spawn("pythonw.exe", ["main.py"], { cwd: "C:\\sr", detached: true });
+  const sp = f.log.filter((e) => Array.isArray(e) && e[0] === "spawn");
+  assert.deepEqual(sp[0][3], { cwd: "C:\\sr", detached: true, stdio: "ignore" });
+  const proc = f.getProc();
+  proc.stdout = null; proc.stderr = null; // stdio "ignore" gives no streams
+  const seen = [];
+  p.onOut(() => seen.push("o")); p.onErr((s) => seen.push("e" + s)); p.onExit((c) => seen.push("x" + c));
+  proc.h.exit(0);
+  assert.deepEqual(seen, ["x0"]);
+});

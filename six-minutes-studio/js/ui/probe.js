@@ -2,6 +2,7 @@
 import { runProcess } from "../proc.js";
 import { DEFAULT_SETTINGS } from "../settings.js";
 import { stableAudioState, MSG_MUSIC } from "../tools/stableaudio.js";
+import { join } from "../paths.js";
 
 const ROOT = "S:\\Youtube video ideas\\";
 const UNC = "\\\\192.168.1.171\\jon\\Youtube video ideas\\";
@@ -38,6 +39,30 @@ const stableAudioCheck = (sa) => async (host) => {
   throw new Error(`Not ready: look at Stable Audio in Pinokio (${sa.url})`);
 };
 
+// Stem Remixer: its own Python plus fit.py and measure.py (1.9.0 or newer). Never starts it.
+export const MSG_SET_STEM_REMIXER = "Set stemRemixerDir in .studio-settings.json to your Stem Remixer folder (1.9.0 or newer).";
+const NEED_VERSION = [1, 9, 0];
+const older = (v, want) => {
+  const a = String(v).split(".").map((x) => parseInt(x, 10) || 0);
+  for (let i = 0; i < want.length; i++) if ((a[i] ?? 0) !== want[i]) return (a[i] ?? 0) < want[i];
+  return false;
+};
+const stemRemixerCheck = (dir) => async (host) => {
+  if (!dir) throw new Error(MSG_SET_STEM_REMIXER);
+  for (const f of [join(dir, ".venv", "Scripts", "python.exe"), join(dir, "fit.py"), join(dir, "measure.py")]) {
+    if (!(await host.fs.exists(f))) throw new Error(MSG_SET_STEM_REMIXER);
+  }
+  let v = null;
+  try { v = String(await host.fs.read(join(dir, "VERSION"), "utf8")).trim() || null; } catch { /* no VERSION file */ }
+  if (v && older(v, NEED_VERSION)) throw new Error(`Stem Remixer is ${v}; update it to 1.9.0 or newer (its Update button)`);
+  return v ? `Stem Remixer ${v}` : "ready";
+};
+
+const autocueJoinCheck = (dir) => async (host) => {
+  if (dir && (await host.fs.exists(join(dir, "voiceover_join.py")))) return "voiceover_join.py found";
+  throw new Error(`voiceover_join.py isn't in ${dir || "autocueDir"}. Update Autocue Studio, or set autocueDir in .studio-settings.json.`);
+};
+
 const toolsCheck = (server, want) => async (host) => {
   if (!host.mcp) throw new Error("connector access is not available");
   const tools = await host.mcp.listTools(server);
@@ -53,6 +78,8 @@ export const makeChecks = (settings = DEFAULT_SETTINGS) => [
   { name: "ffmpeg", run: cmdCheck("ffmpeg", ["-version"]) },
   { name: "curl", run: cmdCheck("curl", ["--version"]) },
   { name: "ComfyUI", run: comfyCheck(settings.comfy ?? DEFAULT_SETTINGS.comfy) },
+  { name: "Stem Remixer", run: stemRemixerCheck(settings.stemRemixerDir) },
+  { name: "Autocue join", run: autocueJoinCheck(settings.autocueDir ?? DEFAULT_SETTINGS.autocueDir) },
   { name: "Stable Audio", run: stableAudioCheck({ ...DEFAULT_SETTINGS.stableAudio, ...(settings.stableAudio ?? {}) }) },
   {
     name: "Higgsfield tools",
