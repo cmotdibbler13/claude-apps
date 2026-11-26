@@ -1,13 +1,35 @@
 // Per-project tool settings from <root>\.studio-settings.json merged over defaults.
 import { join } from "./paths.js";
 
-export const DEFAULT_SETTINGS = { videoModel: "kling3_0", imageModel: "gpt_image_2", blenderPath: "blender" };
+export const DEFAULT_SETTINGS = {
+  videoModel: "kling3_0", imageModel: "gpt_image_2", blenderPath: "blender",
+  comfy: {
+    url: "http://127.0.0.1:8188",
+    outputDir: "C:\\Users\\Jon\\AppData\\Local\\Comfy-Desktop\\ComfyUI-Shared\\output",
+    workflow: null,
+    nodes: {
+      prompt: ["364", "text"], width: ["372", "value"], height: ["360", "value"], length: ["362", "value"],
+      fps: ["361", "value"], seed: ["339", "noise_seed"], output: ["9999", "filename_prefix"],
+    },
+    lengthUnit: "seconds", width: 1920, height: 1088, seconds: 5, fps: 24, expectedSeconds: 240,
+  },
+};
+
+const isObj = (v) => v && typeof v === "object" && !Array.isArray(v);
+
+function withDefaults(root, v = {}) {
+  const d = structuredClone(DEFAULT_SETTINGS);
+  const c = isObj(v.comfy) ? v.comfy : {};
+  const comfy = { ...d.comfy, ...c, nodes: { ...d.comfy.nodes, ...(isObj(c.nodes) ? c.nodes : {}) } };
+  if (!comfy.workflow) comfy.workflow = join(root, "ComfyUI workflows", "broll_ltx.json");
+  return { ...d, ...v, comfy };
+}
 
 export async function loadSettings(host, root) {
   try {
     const raw = await host.fs.read(join(root, ".studio-settings.json"), "utf8");
     const v = JSON.parse(raw);
-    if (v && typeof v === "object" && !Array.isArray(v)) return { ...DEFAULT_SETTINGS, ...v };
+    if (isObj(v)) return withDefaults(root, v);
   } catch { /* missing or unreadable: defaults */ }
-  return { ...DEFAULT_SETTINGS };
+  return withDefaults(root);
 }

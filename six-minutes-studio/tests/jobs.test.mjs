@@ -249,7 +249,7 @@ test("check re-polls a failed connector job by its jobRef on the same record, sp
   assert.throws(() => jobs.check(id), /not failed or interrupted/);
   const b = jobs.add(spec("blender"));
   await tick(); await tick(); await tick();
-  assert.throws(() => jobs.check(b), /job id/);
+  assert.throws(() => jobs.check(b), /with an id can be checked/);
 });
 
 test("check refuses a connector job with no jobRef", async () => {
@@ -257,6 +257,56 @@ test("check refuses a connector job with no jobRef", async () => {
   const { jobs } = await setup({ higgsfield });
   const id = jobs.add(spec("higgsfield"));
   await tick(); await tick(); await tick();
-  assert.throws(() => jobs.check(id), /job id/);
+  assert.throws(() => jobs.check(id), /with an id can be checked/);
   assert.equal(jobs.list()[0].ambiguous, undefined);
+});
+
+test("restore resumes a gpu job with jobRef when its runner can resume", async () => {
+  const resumed = [];
+  const comfy = { lane: "gpu", start: async () => ({}), resume: async (j) => { resumed.push(j.jobRef); return { file: "c.mp4" }; } };
+  const { jobs } = await setup({ comfy });
+  jobs.restore([{ id: "c1", film: "F", assetId: "a", take: 1, tool: "comfy", lane: "gpu", what: "w", why: "y", status: "running", jobRef: "P1" }]);
+  await tick(); await tick(); await tick();
+  assert.deepEqual(resumed, ["P1"]);
+  assert.equal(jobs.list()[0].status, "done");
+  assert.equal(jobs.list()[0].file, "c.mp4");
+});
+
+test("resumed gpu job holds the gpu lane", async () => {
+  const d = deferred(), started = [];
+  const comfy = { lane: "gpu", start: async () => ({}), resume: () => d.promise };
+  const blender = { lane: "gpu", start: async (j) => { started.push(j.id); return { file: "b" }; } };
+  const { jobs } = await setup({ comfy, blender });
+  const base = { film: "F", assetId: "a", take: 1, what: "w", why: "y", progress: null, eta: null };
+  jobs.restore([
+    { ...base, id: "c1", tool: "comfy", lane: "gpu", status: "running", jobRef: "P1" },
+    { ...base, id: "b1", tool: "blender", lane: "gpu", status: "queued" },
+  ]);
+  await tick(); await tick();
+  assert.deepEqual(statuses(jobs), ["running", "queued"]);
+  assert.deepEqual(started, []);
+  d.resolve({ file: "c.mp4" });
+  await tick(); await tick(); await tick();
+  assert.deepEqual(statuses(jobs), ["done", "done"]);
+  assert.deepEqual(started, ["b1"]);
+});
+
+test("a gpu job without resume is still interrupted", async () => {
+  const blender = { lane: "gpu", start: async () => ({}) };
+  const { jobs } = await setup({ blender });
+  jobs.restore([{ id: "b1", film: "F", assetId: "a", take: 1, tool: "blender", lane: "gpu", what: "w", why: "y", status: "running", jobRef: "X" }]);
+  await tick();
+  assert.equal(jobs.list()[0].status, "interrupted");
+});
+
+test("check re-polls a failed gpu job with a jobRef", async () => {
+  const comfy = { lane: "gpu", start: async (j, ctx) => { ctx.setRef("P9"); const e = new Error("lost"); e.ambiguous = true; throw e; }, resume: async () => ({ file: "c.mp4" }) };
+  const { jobs } = await setup({ comfy });
+  const id = jobs.add(spec("comfy"));
+  await tick(); await tick(); await tick();
+  assert.equal(jobs.list()[0].status, "failed");
+  jobs.check(id);
+  await tick(); await tick(); await tick();
+  assert.equal(jobs.list()[0].status, "done");
+  assert.equal(jobs.list()[0].file, "c.mp4");
 });

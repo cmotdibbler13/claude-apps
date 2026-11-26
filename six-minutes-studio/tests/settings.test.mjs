@@ -5,22 +5,23 @@ import { loadSettings } from "../js/settings.js";
 
 const ROOT = "S:\\Youtube video ideas";
 const DEFAULTS = { videoModel: "kling3_0", imageModel: "gpt_image_2", blenderPath: "blender" };
+const base = (s) => ({ videoModel: s.videoModel, imageModel: s.imageModel, blenderPath: s.blenderPath });
 
 test("missing file gives defaults", async () => {
   const host = new FakeHost();
-  assert.deepEqual(await loadSettings(host, ROOT), DEFAULTS);
+  assert.deepEqual(base(await loadSettings(host, ROOT)), DEFAULTS);
 });
 test("bad JSON gives defaults", async () => {
   const host = new FakeHost();
   await host.fs.mkdir(ROOT);
   await host.fs.write(ROOT + "\\.studio-settings.json", "{nope");
-  assert.deepEqual(await loadSettings(host, ROOT), DEFAULTS);
+  assert.deepEqual(base(await loadSettings(host, ROOT)), DEFAULTS);
 });
 test("non-object JSON gives defaults", async () => {
   const host = new FakeHost();
   await host.fs.mkdir(ROOT);
   await host.fs.write(ROOT + "\\.studio-settings.json", "[1]");
-  assert.deepEqual(await loadSettings(host, ROOT), DEFAULTS);
+  assert.deepEqual(base(await loadSettings(host, ROOT)), DEFAULTS);
 });
 test("file values merge over defaults", async () => {
   const host = new FakeHost();
@@ -30,4 +31,34 @@ test("file values merge over defaults", async () => {
   assert.equal(s.videoModel, "veo");
   assert.equal(s.imageModel, "gpt_image_2");
   assert.equal(s.blenderPath, "blender");
+});
+
+test("comfy defaults are present, workflow resolves under root", async () => {
+  const s = await loadSettings(new FakeHost(), ROOT);
+  assert.equal(s.comfy.url, "http://127.0.0.1:8188");
+  assert.equal(s.comfy.outputDir, "C:\\Users\\Jon\\AppData\\Local\\Comfy-Desktop\\ComfyUI-Shared\\output");
+  assert.equal(s.comfy.workflow, ROOT + "\\ComfyUI workflows\\broll_ltx.json");
+  assert.deepEqual(s.comfy.nodes, {
+    prompt: ["364", "text"], width: ["372", "value"], height: ["360", "value"], length: ["362", "value"],
+    fps: ["361", "value"], seed: ["339", "noise_seed"], output: ["9999", "filename_prefix"],
+  });
+  assert.equal(s.comfy.lengthUnit, "seconds");
+  assert.deepEqual([s.comfy.width, s.comfy.height, s.comfy.seconds, s.comfy.fps, s.comfy.expectedSeconds], [1920, 1088, 5, 24, 240]);
+});
+test("partial comfy override keeps the other defaults", async () => {
+  const host = new FakeHost();
+  await host.fs.mkdir(ROOT);
+  await host.fs.write(ROOT + "\\.studio-settings.json", JSON.stringify({ comfy: { url: "http://10.0.0.2:8188", nodes: { seed: ["1", "s"] } } }));
+  const s = await loadSettings(host, ROOT);
+  assert.equal(s.comfy.url, "http://10.0.0.2:8188");
+  assert.deepEqual(s.comfy.nodes.seed, ["1", "s"]);
+  assert.deepEqual(s.comfy.nodes.prompt, ["364", "text"]);
+  assert.equal(s.comfy.fps, 24);
+  assert.equal(s.comfy.workflow, ROOT + "\\ComfyUI workflows\\broll_ltx.json");
+});
+test("an explicit comfy.workflow is kept", async () => {
+  const host = new FakeHost();
+  await host.fs.mkdir(ROOT);
+  await host.fs.write(ROOT + "\\.studio-settings.json", JSON.stringify({ comfy: { workflow: "D:\\w.json" } }));
+  assert.equal((await loadSettings(host, ROOT)).comfy.workflow, "D:\\w.json");
 });
