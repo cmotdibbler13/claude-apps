@@ -102,8 +102,8 @@ export function makeJobs(host, { runners = {}, file } = {}) {
       const old = jobs.find((j) => j.id === id);
       if (!old) throw new Error(`Unknown job ${id}`);
       if (old.status !== "failed" && old.status !== "interrupted") throw new Error(`Job ${id} is ${old.status}, not failed or interrupted`);
-      const { film, assetId, take, tool, what, why, lane } = old;
-      return api.add({ film, assetId, take, tool, what, why, lane });
+      const { film, assetId, take, tool, what, why, lane, input } = old;
+      return api.add({ film, assetId, take, tool, what, why, lane, input });
     },
     list: snap,
     toJSON: snap,

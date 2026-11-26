@@ -186,3 +186,16 @@ test("persist failure is reported, queue keeps running, and clears on next good 
   off();
   d.resolve({ file: "f" });
 });
+
+test("retry copies input so the runner can run again", async () => {
+  const seen = [];
+  const higgsfield = { lane: "connector", start: async (j) => { seen.push(j.input); throw new Error("x"); } };
+  const { jobs } = await setup({ higgsfield });
+  const input = { kind: "broll", prompt: "p", out: "C:\\o\\HF-01_t1" };
+  const id = jobs.add(spec("higgsfield", { input }));
+  await tick(); await tick(); await tick();
+  jobs.retry(id);
+  await tick();
+  assert.deepEqual(seen, [input, input]);
+  assert.deepEqual(jobs.list()[1].input, input);
+});
