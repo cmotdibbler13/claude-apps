@@ -11,7 +11,7 @@ const WPM = 150;
 const live = (s) => s === "queued" || s === "running";
 const VERB = { VOICEOVER: "Joining…", FIT: "Fitting…", MIX: "Mixing…" };
 // Lines the join takes only when Jon presses Join anyway: their check found a problem, never ran, or is older than the checker.
-const NOT_OK = new Set(["flagged", "unchecked", "outdated"]);
+const NOT_OK = new Set(["flagged", "unchecked", "outdated", "error"]);
 const COUNT_WORD = { 2: "Two", 3: "Three", 4: "Four", 5: "Five" };
 export { joinStale };
 

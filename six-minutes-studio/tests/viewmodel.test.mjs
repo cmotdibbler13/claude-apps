@@ -598,6 +598,8 @@ test("mix: flagged, unchecked and outdated lines make it Join anyway (N not OK) 
   const one = step(mm(mstate(), { narration: narr([nrow("01.1", "unchecked"), nrow("01.2", "ok")]) }), "VOICEOVER");
   assert.equal(one.run.label, "Join anyway (1 not OK)");
   assert.equal(one.flagged, "Not OK: 01.1 unchecked");
+  const err = step(mm(mstate(), { narration: narr([nrow("01.1", "error"), nrow("01.2", "ok")]) }), "VOICEOVER");
+  assert.equal(err.run.label, "Join anyway (1 not OK)");
 });
 
 test("mix: a done join lists the lines that had two takes and which file it used", () => {
