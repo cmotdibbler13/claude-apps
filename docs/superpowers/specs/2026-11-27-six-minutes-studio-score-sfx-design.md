@@ -64,5 +64,13 @@ There's one sensible way: the app drives both services directly, ElevenLabs thro
   - Stable Audio not running: "Stable Audio isn't running at 127.0.0.1:7860. Start "Small SFX" in Pinokio, then press Run again, or switch this cue to ElevenLabs."
   - The Music model loaded instead of SFX: say so.
 
+## Calls made after the builder check (Claude's; Jon may change them)
+- **Pick and Approve work as on b-roll cards.** The take picker chooses a take; **Approve** confirms it. The Part 2 handover reads the approved, chosen take.
+- **Plan once.** "Plan music and sound effects" runs only while the film has no score or cues, so it can never overwrite takes or picks. After that, Jon edits prompts and lengths on the cards. An **Add cue** button covers a cue the plan missed.
+- **The estimate is shown per press.** Each ElevenLabs job is one take (`generations_count: 1`). The button shows the estimate for exactly what it will start: "Generate 2 takes · about N credits" for the score, and per take for an SFX cue. Pressing it is the confirmation. Redo with a note also shows its estimate first, and nothing paid starts without that press.
+- **ElevenLabs files** are downloaded from the result URL with curl into `studio\media` (as Higgsfield's are). The connector's result shape is unobserved, so the runner parses it defensively and the first real run confirms it.
+- **Stable Audio parameters** come from Jon's `api_notes.md` (copied for the builders). The runner hard-codes the 29-value order from those notes and checks `/gradio_api/info` in Probe. The page title is read from `GET /`.
+- **Score length** is editable. The app suggests the estimate and never warns.
+
 ## Left to the builder
 Module split, the exact ffmpeg filters for trimming and measuring, the poll cadence (ElevenLabs no faster than the returned `poll_after_seconds`; Stable Audio's stream is one request), and copy wording in the house style.
