@@ -20,6 +20,13 @@ Thresholds (the voicestudio-narration skill's own, own-voice values):
     first and last voiced frames;
   * clipping: any sample at full scale or a peak above -0.3 dBFS;
   * noise: the quietest 10 % of 50 ms frames above -55 dBFS.
+
+The word checks use a looser "voice end": the last 10 ms frame above
+max(-45 dBFS, noise + 12 dB), whatever its zero-crossing rate, again ignoring
+a trailing transient under 40 ms. A soft last word after a pause sits below
+-24 dBFS but is still the voice, so transcript words up to 0.25 s after the
+voice end count, and the last-word cut-off test asks whether the voice (not
+just the loud speech) ran to the end.
 """
 
 import difflib
@@ -56,6 +63,8 @@ NOISE_FRAME_S = 0.050
 NOISE_FRACTION = 0.10
 NOISE_MAX_DBFS = -55.0
 FLOOR_DBFS = -120.0
+VOICE_MIN_DBFS = -45.0       # the voice end: above this...
+VOICE_OVER_NOISE_DB = 12.0   # ...and this far above the room's noise
 
 ORDER = ("cut_off", "misread", "clipping", "pause", "noise")
 SEVERE = {"cut_off", "misread", "clipping"}
@@ -189,7 +198,7 @@ def _speech_end(voiced, loud, frame_s):
 
 def analyse(samples, rate, peak_dbfs=None, clipped=None, words=None):
     """Audio-only checks. Returns duration_s, peak_dbfs, noise_dbfs,
-    speech_end_s and flags (cut_off by energy, clipping, pause, noise).
+    speech_end_s, voice_end_s and flags (cut_off by energy, clipping, pause, noise).
     peak_dbfs/clipped come from decode_with_peak when known; words, if given,
     name the word before each pause."""
     x = np.asarray(samples, dtype=np.float32)
@@ -204,6 +213,18 @@ def analyse(samples, rate, peak_dbfs=None, clipped=None, words=None):
         at = float(np.argmax(np.abs(x))) / rate if len(x) else None
         flags.append(flag("clipping", "clipping: re-record a little quieter", at))
 
+    # Noise floor: the quietest 10 % of 50 ms frames.
+    n50 = max(1, int(round(NOISE_FRAME_S * rate)))
+    f50 = _frames(x, n50)
+    if len(f50):
+        power = np.sort(np.mean(f50.astype(np.float64) ** 2, axis=1))
+        k = max(1, int(len(power) * NOISE_FRACTION))
+        p = float(np.mean(power[:k]))
+        noise_dbfs = 10 * math.log10(p) if p > 0 else FLOOR_DBFS
+    else:
+        noise_dbfs = FLOOR_DBFS
+    noise_dbfs = max(noise_dbfs, FLOOR_DBFS)
+
     # 10 ms frames: voiced speech and its end.
     n10 = max(1, int(round(FRAME_S * rate)))
     f10 = _frames(x, n10)
@@ -212,6 +233,11 @@ def analyse(samples, rate, peak_dbfs=None, clipped=None, words=None):
     voiced = loud & (_zcr(f10) < VOICED_MAX_ZCR)
     end_idx = _speech_end(voiced, loud, FRAME_S)
     speech_end_s = None
+    voice_end_s = None
+    voice = db10 > max(VOICE_MIN_DBFS, noise_dbfs + VOICE_OVER_NOISE_DB)
+    voice_idx = _speech_end(voice, voice, FRAME_S)
+    if voice_idx is not None:
+        voice_end_s = voice_idx * n10 / float(rate)
     if end_idx is not None:
         speech_end_s = end_idx * n10 / float(rate)
         tail = duration - speech_end_s
@@ -232,25 +258,17 @@ def analyse(samples, rate, peak_dbfs=None, clipped=None, words=None):
                 text = f"pause of {length:.1f} s" + (f' after "{w}"' if w else "")
                 flags.append(flag("pause", text, start_s))
 
-    # Noise floor: the quietest 10 % of 50 ms frames.
-    n50 = max(1, int(round(NOISE_FRAME_S * rate)))
-    f50 = _frames(x, n50)
-    if len(f50):
-        power = np.sort(np.mean(f50.astype(np.float64) ** 2, axis=1))
-        k = max(1, int(len(power) * NOISE_FRACTION))
-        p = float(np.mean(power[:k]))
-        noise_dbfs = 10 * math.log10(p) if p > 0 else FLOOR_DBFS
-    else:
-        noise_dbfs = FLOOR_DBFS
-    noise_dbfs = max(noise_dbfs, FLOOR_DBFS)
     if noise_dbfs > NOISE_MAX_DBFS:
         flags.append(flag("noise", f"room noise at {round(noise_dbfs)} dBFS"))
+    if speech_end_s is not None and (voice_end_s is None or voice_end_s < speech_end_s):
+        voice_end_s = speech_end_s   # a very noisy room: never before the speech
 
     return {
         "duration_s": round(duration, 3),
         "peak_dbfs": round(max(peak_dbfs, FLOOR_DBFS), 1),
         "noise_dbfs": round(noise_dbfs, 1),
         "speech_end_s": None if speech_end_s is None else round(speech_end_s, 3),
+        "voice_end_s": None if voice_end_s is None else round(voice_end_s, 3),
         "flags": flags,
     }
 
@@ -601,17 +619,17 @@ def _same_words(a, b):
     return False
 
 
-def word_flags(expected_text, transcript_words, audio_end_s, speech_end_s=None):
+def word_flags(expected_text, transcript_words, audio_end_s, voice_end_s=None):
     """misread flags (misread, missed, added words) from a word diff of the
     line against the transcript, plus a cut_off flag when the line's last word
     is missing, or ends within 0.1 s of the end of the audio while the voice
-    itself (speech_end_s) also ends within 0.3 s of it.
+    itself (voice_end_s, from analyse) also ends within 0.3 s of it.
 
-    Transcript words starting more than 0.25 s after speech_end_s are
+    Transcript words starting more than 0.25 s after voice_end_s are
     ignored (Whisper's tail hallucinations, "Thank you.")."""
     words = list(transcript_words or [])
-    if speech_end_s is not None:
-        words = [w for w in words if w[1] <= speech_end_s + HALLUCINATION_AFTER_S]
+    if voice_end_s is not None:
+        words = [w for w in words if w[1] <= voice_end_s + HALLUCINATION_AFTER_S]
     exp = _expected_tokens(expected_text)
     got = _timed_tokens(words)
     a, b = [t[0] for t in exp], [t[0] for t in got]
@@ -641,8 +659,8 @@ def word_flags(expected_text, transcript_words, audio_end_s, speech_end_s=None):
             flags.append(flag("misread", f'may have added "{_quote(said)}"', got[j1][2]))
 
     if exp:
-        voice_near_end = (speech_end_s is None
-                          or audio_end_s - speech_end_s <= DROP_RULE_MAX_TAIL_S)
+        voice_near_end = (voice_end_s is None
+                          or audio_end_s - voice_end_s <= DROP_RULE_MAX_TAIL_S)
         word_at_end = (last_match is not None and voice_near_end
                        and audio_end_s - last_match[3] < CUT_OFF_TAIL_S)
         if last_missing or word_at_end:
@@ -810,7 +828,7 @@ def check_take(path, line_text, transcriber):
     words = [(str(w), float(s), float(e)) for w, s, e in (words or [])]
     audio = analyse(samples, rate, peak_dbfs=peak_dbfs, clipped=clipped, words=words)
     flags = order_flags(audio["flags"] + word_flags(line_text, words, audio["duration_s"],
-                                                      speech_end_s=audio["speech_end_s"]))
+                                                      voice_end_s=audio["voice_end_s"]))
     return {
         "ok": not any(f["kind"] in SEVERE for f in flags),
         "flags": flags,

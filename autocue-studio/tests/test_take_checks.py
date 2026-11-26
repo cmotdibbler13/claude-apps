@@ -547,13 +547,13 @@ class TailHallucination(TakeTestCase):
         r = self.check(take, "The road to Skaill.", heard)
         self.assertNotIn("cut_off", kinds(r), r["flags"])
 
-    def test_word_flags_takes_speech_end(self):
+    def test_word_flags_takes_voice_end(self):
         heard = timed("the road to Skaill")
         end_of_skaill = heard[3][2]
         heard += [("Thank", end_of_skaill + 0.6, end_of_skaill + 0.9),
                   ("you.", end_of_skaill + 0.9, end_of_skaill + 1.2)]
         flags = take_checks.word_flags("The road to Skaill.", heard, end_of_skaill + 2.0,
-                                       speech_end_s=end_of_skaill)
+                                       voice_end_s=end_of_skaill)
         self.assertEqual(flags, [])
 
 
@@ -722,6 +722,53 @@ class FfmpegTimeout(TakeTestCase):
         self.assertEqual(seen["timeout"], 60)
         self.assertIn("timed out", str(cm.exception))
         self.assertIs(subprocess.run, real)
+
+
+# ------------------------------------------------------ final review ----
+
+QUIET_AMP = 10 ** (-26 / 20.0) * np.sqrt(2)  # a 200 Hz word at -26 dB RMS
+
+
+class QuietLastWord(TakeTestCase):
+    """A last word softer than the -24 dBFS voiced threshold, after a pause,
+    is still the voice: it must not be dropped as a tail hallucination."""
+
+    def _take(self, burst=word, tail_s=0.4):
+        take = Take().quiet(0.3)
+        take.say("One").say("two", gap=0)
+        take.quiet(0.3)
+        take.say("Skaill", seconds=0.4, gap=0, burst=burst, amp=QUIET_AMP)
+        return take.quiet(tail_s)
+
+    def test_quiet_final_word_after_a_gap_is_not_cut_off(self):
+        take = self._take()
+        r = self.check(take, "One two Skaill.")
+        self.assertNotIn("cut_off", kinds(r), r["flags"])
+        self.assertTrue(r["ok"], r["flags"])
+
+    def test_voice_end_follows_the_quiet_word(self):
+        take = self._take()
+        path = take.write(self.path())
+        samples, rate = take_checks.decode(path)
+        a = take_checks.analyse(samples, rate)
+        skaill_end = take.words[-1][2]
+        self.assertLess(a["speech_end_s"], take.words[1][2] + 0.05)
+        self.assertAlmostEqual(a["voice_end_s"], skaill_end, delta=0.08)
+
+    def test_truncated_quiet_last_word_is_still_cut_off(self):
+        take = self._take(burst=cut_word, tail_s=0.03)
+        words = take.words[:-1] + [("Skaill", take.words[-1][1], take.t - 0.03)]
+        r = self.check(take, "One two Skaill.", words)
+        self.assertEqual(kinds(r).count("cut_off"), 1, r["flags"])
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["flags"][0]["text"], 'last word "Skaill" cut off')
+
+    def test_click_after_the_quiet_word_is_ignored(self):
+        take = self._take(tail_s=0.5)
+        take.add(_rng.uniform(-0.9, 0.9, int(0.02 * RATE)))
+        words = take.words + [("you.", take.t - 0.1, take.t - 0.01)]
+        r = self.check(take, "One two Skaill.", words)
+        self.assertEqual(r["flags"], [])
 
 
 if __name__ == "__main__":
