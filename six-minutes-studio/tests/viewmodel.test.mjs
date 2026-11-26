@@ -394,10 +394,48 @@ test("audio: the score on ElevenLabs shows 2 takes at twice the current estimate
   assert.equal(stale.est, null);
 });
 
-test("audio: getting the cost shows while the card is pending", () => {
-  const m = audioModel({ score: score(), sfx: [] }, { sa: sa(), pending: new Set(["SCORE"]) }).score;
+test("audio: getting the cost shows only while that card's estimate runs", () => {
+  const m = audioModel({ score: score(), sfx: [] }, { sa: sa(), pending: new Set(["SCORE"]), estimating: new Set(["SCORE"]) }).score;
   assert.equal(m.generateLabel, "Getting the cost…");
   assert.equal(m.canGenerate, false);
+  const saving = audioModel({ score: score(), sfx: [] }, { sa: sa(), pending: new Set(["SCORE"]) }).score;
+  assert.equal(saving.generateLabel, "Get the cost", "another card action (a prompt save) is not getting the cost");
+  assert.equal(saving.canGetCost, false);
+});
+
+test("audio: typed text is cleared only after the save succeeds", async () => {
+  const { saveTyped } = await import("../js/ui/audio.js");
+  const make = (result) => {
+    const fields = new Map([["k", "new words"]]);
+    const calls = [];
+    let release;
+    const done = new Promise((r) => { release = r; });
+    const actions = { field: (k) => fields.get(k), setField: (k, v) => (v === undefined ? fields.delete(k) : fields.set(k, v)),
+      editAudio: (id, patch) => { calls.push([id, patch]); return done.then(() => result); } };
+    return { fields, calls, actions, release };
+  };
+  const ok = make(true);
+  const p = saveTyped(ok.actions, "SFX-01", "k", "new words", "old", { prompt: "new words" });
+  assert.equal(ok.fields.get("k"), "new words", "still shows the typed text while saving");
+  ok.release(); assert.equal(await p, true);
+  assert.deepEqual(ok.calls, [["SFX-01", { prompt: "new words" }]]);
+  assert.equal(ok.fields.has("k"), false);
+
+  const bad = make(false);
+  const q = saveTyped(bad.actions, "SFX-01", "k", "new words", "old", { prompt: "new words" });
+  bad.release(); assert.equal(await q, false);
+  assert.equal(bad.fields.get("k"), "new words", "a failed save keeps the typed text");
+
+  const more = make(true);
+  const r = saveTyped(more.actions, "SFX-01", "k", "new words", "old", { prompt: "new words" });
+  more.fields.set("k", "new words and more");
+  more.release(); await r;
+  assert.equal(more.fields.get("k"), "new words and more", "text typed during the save is kept");
+
+  const same = make(true);
+  assert.equal(await saveTyped(same.actions, "SFX-01", "k", "4", 4, { durationS: 4 }), true);
+  assert.equal(same.calls.length, 0);
+  assert.equal(same.fields.has("k"), false);
 });
 
 test("audio: an ElevenLabs cue is one take at the estimate", () => {

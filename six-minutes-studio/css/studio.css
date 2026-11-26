@@ -145,10 +145,14 @@ textarea{width:100%;background:var(--s0);color:var(--ink);border:1px solid var(-
 /* Score and sound effects: take rows, chips and the small inputs on the audio cards */
 .card.audio .atag{font-size:11px;font-weight:500;letter-spacing:.14em;text-transform:uppercase;color:var(--mut)}
 .atakes{list-style:none;margin:0;padding:0;display:grid;gap:2px}
-.arow{display:grid;grid-template-columns:28px auto auto minmax(0,1fr) auto;gap:0 10px;align-items:center;background:var(--s1);border:1px solid var(--rule);padding:4px 10px;font-size:13px}
+.arow{display:grid;grid-template-columns:28px minmax(0,1fr);gap:0 10px;align-items:start;background:var(--s1);border:1px solid var(--rule);padding:4px 10px;font-size:13px}
 .arow.on{border-color:var(--brass)}
+.arow .abody{display:flex;flex-direction:column;gap:2px;min-width:0}
+.arow .ahead,.arow .aline{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 10px}
 .arow .an{font-variant-numeric:tabular-nums}
-.arow .asrc,.arow .ameta{color:var(--mut);font-size:12px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.arow .asrc,.arow .ameta{color:var(--mut);font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.arow .aline .err{white-space:normal;flex:1 1 12ch}
+.nplay-gap{display:inline-block;width:24px;height:22px}
 .arow .nplay{width:24px;height:22px;padding:0;background:none;border:1px solid var(--rule);color:var(--tide);font-size:10px;line-height:1;cursor:pointer}
 .arow .nplay.on{color:var(--brass);border-color:var(--brass)}
 .achip{font-size:11px;font-weight:500;letter-spacing:.14em;text-transform:uppercase;color:var(--brass);white-space:nowrap}
@@ -164,3 +168,6 @@ textarea{width:100%;background:var(--s0);color:var(--ink);border:1px solid var(-
 .card.audio input[type=number],.aadd input{background:var(--s0);color:var(--ink);border:1px solid var(--rule);font:13px Inter,"Helvetica Neue",Arial,sans-serif;padding:4px 6px}
 .card.audio input.alen,.aadd input.alen{width:5em}
 .aadd input[type=text]{min-width:16em}
+.score-card{display:block}
+.score-card .card textarea{min-height:10em}
+.cards.sfx-cards{grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}

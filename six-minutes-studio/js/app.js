@@ -29,7 +29,7 @@ const LAYOUT_KEY = "six-minutes-studio.reviewLayout";
 const app = {
   host: null, root: null, jobs: null, films: [], view: "films",
   film: null, store: null, session: null, playing: null, retried: new Set(), movedAside: null, stateError: null, bootError: null, openError: null,
-  review: { making: false, listError: null, cardErrors: new Map(), pending: new Set(), noteFor: null, draft: "" },
+  review: { making: false, listError: null, cardErrors: new Map(), pending: new Set(), estimating: new Set(), noteFor: null, draft: "" },
   starter: null, saBusy: false,
   previews: new Map(),
   layout: (() => { try { return localStorage.getItem(LAYOUT_KEY) || "script"; } catch { return "script"; } })(),
@@ -164,7 +164,7 @@ async function renderNow() {
       cardErrors: r.cardErrors, pending: r.pending, noteFor: r.noteFor, openError: app.openError, prefError: r.prefError ?? null, narration: r.narration ?? null, playing: app.playing,
       audio: app.store?.state?.audio ?? null,
       sa: app.starter ? { state: app.starter.state(), message: app.starter.message() } : null,
-      audioUi: { planning: !!r.planning, planError: r.planError ?? null, adding: !!r.adding, addError: r.addError ?? null },
+      audioUi: { estimating: r.estimating, planning: !!r.planning, planError: r.planError ?? null, adding: !!r.adding, addError: r.addError ?? null },
     });
     paint("review", $("view-review"), model, reviewView, reviewActions);
   }
@@ -221,7 +221,7 @@ function resetReview() {
   stopTake();
   app.previews.clear();
   revokeAll();
-  app.review = { making: false, listError: null, cardErrors: new Map(), pending: new Set(), noteFor: null, draft: "" };
+  app.review = { making: false, listError: null, cardErrors: new Map(), pending: new Set(), estimating: new Set(), noteFor: null, draft: "" };
   fields.clear();
 }
 
@@ -405,15 +405,24 @@ async function startStableAudio() {
   finally { app.saBusy = false; render(); }
 }
 
+// "Getting the cost…" shows only while getEstimate runs for that card.
+async function estimateFor(id) {
+  const r = app.review;
+  r.estimating.add(id); render();
+  try { return await getEstimate(ctx(), id); }
+  finally { r.estimating.delete(id); render(); }
+}
+
 // Typed but not yet saved text in the audio boxes, kept across re-renders.
 const fields = new Map();
 
 function cardAction(fn) {
   return async (id, ...args) => {
     const r = app.review;
-    if (r.pending.has(id)) return;
+    if (r.pending.has(id)) return false;
     r.pending.add(id); r.cardErrors.delete(id); render();
-    try { await fn(id, ...args); } catch (e) { r.cardErrors.set(id, msg(e)); }
+    // Resolves true once fn succeeded, false when it failed (or was ignored above as already pending).
+    try { await fn(id, ...args); return true; } catch (e) { r.cardErrors.set(id, msg(e)); return false; }
     finally { r.pending.delete(id); render(); }
   };
 }
@@ -480,7 +489,7 @@ const reviewActions = {
   planAudio: () => { planMusic(); },
   addCue: (v) => { addAudioCue(v); },
   editAudio: cardAction((id, patch) => editItem(app.store, id, patch)),
-  getCost: cardAction((id) => getEstimate(ctx(), id)),
+  getCost: cardAction((id) => estimateFor(id)),
   // The score makes 2 takes a press, a cue 1. An ElevenLabs press needs a current estimate (shown on the button).
   generateAudio: cardAction((id) => { userStarted(); return startAudioTake(ctx(), id, { count: id === "SCORE" ? 2 : 1 }); }),
   // Stable Audio is free: rewrite and start. ElevenLabs: rewrite, then get the cost; Jon presses Generate to pay.
@@ -493,7 +502,7 @@ const reviewActions = {
       await rewriteFromNote(ctx(), id, note.trim());
       fields.delete(`au-${id}-prompt`);
       app.review.noteFor = null; app.review.draft = "";
-      await getEstimate(ctx(), id);
+      await estimateFor(id);
     } else {
       await startAudioTake(ctx(), id, { note: note.trim() });
       fields.delete(`au-${id}-prompt`);

@@ -27,7 +27,7 @@ function takeStatus(t) {
   return null;
 }
 
-export function itemModel(item, { pending = false, error = null, noteOpen = false, playing = null } = {}) {
+export function itemModel(item, { pending = false, estimating = false, error = null, noteOpen = false, playing = null } = {}) {
   const score = isScore(item.id);
   const kind = score ? "score" : "sfx";
   const source = score ? "elevenlabs" : item.source ?? "stableaudio";
@@ -49,7 +49,7 @@ export function itemModel(item, { pending = false, error = null, noteOpen = fals
     generateLabel = `${what} · about ${count * item.est.credits} credits`;
     canGenerate = free && ready;
   } else {
-    generateLabel = pending && !running ? "Getting the cost…" : "Get the cost";
+    generateLabel = estimating ? "Getting the cost…" : "Get the cost";
     canGenerate = false;
     canGetCost = free && ready;
   }
@@ -101,13 +101,13 @@ export function itemModel(item, { pending = false, error = null, noteOpen = fals
 }
 
 // sa: {state, message} from the Stable Audio starter.
-export function audioModel(audio, { pending = new Set(), cardErrors = new Map(), noteFor = null, playing = null, sa = null,
+export function audioModel(audio, { pending = new Set(), estimating = new Set(), cardErrors = new Map(), noteFor = null, playing = null, sa = null,
   planning = false, planError = null, adding = false, addError = null } = {}) {
   const st = sa?.state ?? "off";
   const saModel = { state: st, label: SA_LABEL[st] ?? st, canStart: st !== "starting" && st !== "ready", message: sa?.message ?? null };
   const sfx = audio?.sfx ?? [];
   const needsPlan = !audio || (!audio.score && sfx.length === 0);
-  const opts = (id) => ({ pending: pending.has(id), error: cardErrors.get(id) ?? null, noteOpen: noteFor === id, playing });
+  const opts = (id) => ({ pending: pending.has(id), estimating: estimating.has(id), error: cardErrors.get(id) ?? null, noteOpen: noteFor === id, playing });
   return {
     needsPlan,
     planning,
@@ -123,16 +123,25 @@ export function audioModel(audio, { pending = new Set(), cardErrors = new Map(),
 // ---- DOM ----
 // Text boxes keep what Jon typed across re-renders (actions.field / setField) and save on blur or change.
 
+// Saves a typed value. The kept text is cleared only once the save succeeded (editAudio resolves true)
+// and Jon hasn't typed more since; a failed or refused save leaves it in the box.
+export function saveTyped(actions, id, key, value, saved, patch) {
+  if (String(value) === String(saved ?? "")) { actions.setField(key, undefined); return Promise.resolve(true); }
+  return Promise.resolve(actions.editAudio(id, patch)).then((ok) => {
+    if (ok === true && actions.field(key) === value) actions.setField(key, undefined);
+    return ok === true;
+  });
+}
+
 function promptBox(c, actions) {
   const key = `au-${c.id}-prompt`;
-  const ta = h("textarea", { id: key, "aria-label": `Prompt for ${c.cue}`, disabled: !c.canEdit });
+  const ta = h("textarea", { id: key, rows: c.isScore ? 8 : 3, "aria-label": `Prompt for ${c.cue}`, disabled: !c.canEdit });
   ta.value = actions.field(key) ?? c.prompt;
   ta.addEventListener("input", () => actions.setField(key, ta.value));
   ta.addEventListener("blur", () => {
     if (actions.rendering()) return; // replaced by a re-render, not left by Jon
-    const v = ta.value;
-    actions.setField(key, undefined);
-    if (v !== c.prompt) actions.editAudio(c.id, { prompt: v });
+    actions.setField(key, ta.value);
+    saveTyped(actions, c.id, key, ta.value, c.prompt, { prompt: ta.value });
   });
   return ta;
 }
@@ -145,8 +154,8 @@ function lengthBox(c, actions) {
   inp.addEventListener("input", () => actions.setField(key, inp.value));
   inp.addEventListener("change", () => {
     const v = inp.value;
-    actions.setField(key, undefined);
-    if (String(v) !== String(c.durationS ?? "")) actions.editAudio(c.id, { durationS: v === "" ? null : Number(v) });
+    actions.setField(key, v);
+    saveTyped(actions, c.id, key, v, c.durationS, { durationS: v === "" ? null : Number(v) });
   });
   return h("label", { class: "aopt" }, h("span", { text: "Length" }), inp, h("span", { text: "s" }));
 }
@@ -164,10 +173,11 @@ function takeRow(c, t, actions) {
       ? h("button", { type: "button", class: `nplay${t.playing ? " on" : ""}`, "aria-label": `${t.playing ? "Stop" : "Play"} ${c.id} take ${t.n}`,
         title: t.playing ? "Stop" : "Play this take", onclick: () => actions.playTake(t.file) }, t.playing ? "■" : "▶")
       : h("span", { class: "nplay-gap" }),
-    h("span", { class: "an", text: `Take ${t.n}` }),
-    h("span", { class: "asrc", text: t.sourceLabel }),
-    t.statusText ? h("span", { class: t.error ? "err" : "ameta", text: t.statusText }) : h("span", { class: "ameta", text: t.meta }),
-    t.chip ? h("span", { class: "achip", text: t.chip }) : null);
+    h("div", { class: "abody" },
+      h("div", { class: "ahead" }, h("span", { class: "an", text: `Take ${t.n}` }), h("span", { class: "asrc", text: t.sourceLabel })),
+      t.statusText || t.meta || t.chip ? h("div", { class: "aline" },
+        t.statusText ? h("span", { class: t.error ? "err" : "ameta", text: t.statusText }) : t.meta ? h("span", { class: "ameta", text: t.meta }) : null,
+        t.chip ? h("span", { class: "achip", text: t.chip }) : null) : null));
 }
 
 function audioCard(c, actions) {
@@ -239,7 +249,7 @@ export function audioSections(m, actions) {
   }
   const scoreSec = h("section", { class: "audio", "aria-label": "Score" },
     h("div", { class: "h2row" }, h("h2", { text: "Score" })),
-    m.score ? h("div", { class: "cards" }, audioCard(m.score, actions)) : h("p", { class: "note", text: "No score planned." }));
+    m.score ? h("div", { class: "score-card" }, audioCard(m.score, actions)) : h("p", { class: "note", text: "No score planned." }));
   const s = m.sa;
   const sfxSec = h("section", { class: "audio", "aria-label": "Sound effects" },
     h("div", { class: "h2row" }, h("h2", { text: "Sound effects" }),
@@ -247,7 +257,7 @@ export function audioSections(m, actions) {
         h("span", { class: `achip sa-${s.state}`, text: `Stable Audio: ${s.label}` }),
         s.canStart ? btn("Start Stable Audio", () => actions.startStableAudio(), { ghost: true }) : null)),
     s.message ? h("p", { class: "err", text: s.message }) : null,
-    m.sfx.length ? h("div", { class: "cards" }, m.sfx.map((c) => audioCard(c, actions))) : h("p", { class: "note", text: "No sound effects yet." }),
+    m.sfx.length ? h("div", { class: "cards sfx-cards" }, m.sfx.map((c) => audioCard(c, actions))) : h("p", { class: "note", text: "No sound effects yet." }),
     addCueForm(m, actions));
   return [scoreSec, sfxSec];
 }
