@@ -14,7 +14,7 @@ const UNREACHABLE = "Couldn't reach Higgsfield to check this job; it may still b
 
 // MCP error codes that mean the call definitely did not start a generation. Any other code
 // (server_unavailable, upstream_error, unknown ones) is ambiguous for a write: it may have run.
-const DEFINITE = new Set([
+export const DEFINITE = new Set([
   "tool_error", "bad_request", "not_in_manifest", "needs_reauth", "server_not_connected", "selection_required",
   "server_not_found", "blocked_by_policy", "self_only", "approval_required", "cancelled", "rate_limited",
   "not_granted", "capability_disabled", "capability_removed", "transform_error", "consent_required",
