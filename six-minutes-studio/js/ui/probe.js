@@ -16,12 +16,25 @@ const cmdCheck = (cmd, args) => async (host) => {
   return (r.stdout || r.stderr).trim().split(/\r?\n/)[0];
 };
 
+// ComfyUI: curl GET <url>/system_stats, then the workflow file the runner will load.
+const comfyCheck = (comfy) => async (host) => {
+  const url = String(comfy.url || DEFAULT_SETTINGS.comfy.url).replace(/\/+$/, "");
+  const r = await runProcess(host, "curl", ["-sS", "--fail", `${url}/system_stats`], { timeout: 15000 });
+  if (r.code !== 0) throw new Error(`exit ${r.code}: ${(r.stderr || r.stdout).trim()}`);
+  let version = null;
+  try { version = JSON.parse(r.stdout)?.system?.comfyui_version ?? null; } catch { /* not JSON: still running */ }
+  if (!comfy.workflow) throw new Error("Workflow path not set yet; open Films first");
+  if (!(await host.fs.exists(comfy.workflow))) throw new Error(`Workflow not found: ${comfy.workflow}`);
+  return typeof version === "string" && version ? `ComfyUI ${version}` : "running";
+};
+
 export const makeChecks = (settings = DEFAULT_SETTINGS) => [
   { name: "S: root readable", run: listCheck(ROOT) },
   { name: "UNC root readable", run: listCheck(UNC) },
   { name: "Blender", run: cmdCheck(settings.blenderPath || DEFAULT_SETTINGS.blenderPath, ["--version"]) },
   { name: "ffmpeg", run: cmdCheck("ffmpeg", ["-version"]) },
   { name: "curl", run: cmdCheck("curl", ["--version"]) },
+  { name: "ComfyUI", run: comfyCheck(settings.comfy ?? DEFAULT_SETTINGS.comfy) },
   {
     name: "Higgsfield tools",
     async run(host) {

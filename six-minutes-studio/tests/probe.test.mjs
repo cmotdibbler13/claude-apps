@@ -29,3 +29,67 @@ test("a program that is missing fails its check with the reason", async () => {
   assert.equal(curl.ok, false);
   assert.match(curl.detail, /ENOENT/);
 });
+
+const comfySettings = (o = {}) => ({ ...settings, comfy: { url: "http://127.0.0.1:8188", workflow: "S:\\Youtube video ideas\\ComfyUI workflows\\broll_ltx.json", ...o } });
+const comfyCheck = (results) => results.find((r) => r.name === "ComfyUI");
+
+test("ComfyUI check follows curl, asks system_stats and shows the version", async () => {
+  const host = new FakeHost();
+  const s = comfySettings();
+  await host.fs.mkdir("S:\\Youtube video ideas\\ComfyUI workflows");
+  await host.fs.write(s.comfy.workflow, "{}");
+  const spawned = [];
+  host.spawnScript((cmd, args, o, p) => {
+    spawned.push([cmd, ...args]);
+    if (args.includes("http://127.0.0.1:8188/system_stats")) p.out(JSON.stringify({ system: { comfyui_version: "0.3.40" } }));
+    else p.out("ok");
+    p.exit(0);
+  });
+  host.fs.list = async () => [];
+  const names = makeChecks(s).map((c) => c.name);
+  assert.equal(names[names.indexOf("curl") + 1], "ComfyUI");
+  const r = comfyCheck(await runChecks(host, () => {}, s));
+  assert.ok(spawned.some((a) => JSON.stringify(a) === JSON.stringify(["curl", "-sS", "--fail", "http://127.0.0.1:8188/system_stats"])));
+  assert.equal(r.ok, true);
+  assert.equal(r.detail, "ComfyUI 0.3.40");
+});
+
+test("ComfyUI check says running when the JSON has no version", async () => {
+  const host = new FakeHost();
+  const s = comfySettings({ url: "http://127.0.0.1:9000/" });
+  await host.fs.mkdir("S:\\Youtube video ideas\\ComfyUI workflows");
+  await host.fs.write(s.comfy.workflow, "{}");
+  const spawned = [];
+  host.spawnScript((cmd, args, o, p) => { spawned.push(args); p.out("{}"); p.exit(0); });
+  host.fs.list = async () => [];
+  const r = comfyCheck(await runChecks(host, () => {}, s));
+  assert.ok(spawned.some((a) => a.includes("http://127.0.0.1:9000/system_stats")));
+  assert.equal(r.ok, true);
+  assert.equal(r.detail, "running");
+});
+
+test("ComfyUI check fails when curl fails", async () => {
+  const host = new FakeHost();
+  const s = comfySettings();
+  host.spawnScript((cmd, args, o, p) => {
+    if (args.some((a) => /system_stats/.test(a))) { p.err("curl: (7) Failed to connect to 127.0.0.1 port 8188"); p.exit(7); }
+    else { p.out("ok"); p.exit(0); }
+  });
+  host.fs.list = async () => [];
+  const r = comfyCheck(await runChecks(host, () => {}, s));
+  assert.equal(r.ok, false);
+  assert.match(r.detail, /Failed to connect/);
+});
+
+test("ComfyUI check fails when the workflow file is missing or its path is not set", async () => {
+  const host = new FakeHost();
+  host.spawnScript((cmd, args, o, p) => { p.out("{}"); p.exit(0); });
+  host.fs.list = async () => [];
+  const s = comfySettings();
+  const r = comfyCheck(await runChecks(host, () => {}, s));
+  assert.equal(r.ok, false);
+  assert.equal(r.detail, `Workflow not found: ${s.comfy.workflow}`);
+  const unset = comfyCheck(await runChecks(host, () => {}, comfySettings({ workflow: null })));
+  assert.equal(unset.ok, false);
+  assert.equal(unset.detail, "Workflow path not set yet; open Films first");
+});

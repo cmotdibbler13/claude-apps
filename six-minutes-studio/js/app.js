@@ -8,10 +8,11 @@ import { makeFilmSession, readSavedJobs } from "./session.js";
 import { makeJobs } from "./jobs.js";
 import { notifyRules } from "./notify.js";
 import { buildShotList } from "./shots.js";
-import { startTake, approve, unapprove, choose } from "./redo.js";
+import { startTake, approve, unapprove, choose, setTool, setPreferComfy } from "./redo.js";
 import { ensureProxy, toBlobUrl, openFull, revokeAll } from "./media.js";
 import { makeHiggsfieldRunner } from "./tools/higgsfield.js";
 import { makeBlenderRunner } from "./tools/blender.js";
+import { makeComfyRunner } from "./tools/comfyui.js";
 import { mountProbe } from "./ui/probe.js";
 import * as filmsView from "./ui/films.js";
 import * as jobsView from "./ui/jobs.js";
@@ -144,7 +145,7 @@ async function renderNow() {
     const r = app.review;
     const model = reviewView.reviewModel({
       film: app.film, state: app.store?.state, layout: app.layout, making: r.making, listError: r.listError,
-      cardErrors: r.cardErrors, pending: r.pending, noteFor: r.noteFor, openError: app.openError,
+      cardErrors: r.cardErrors, pending: r.pending, noteFor: r.noteFor, openError: app.openError, prefError: r.prefError ?? null,
     });
     paint("review", $("view-review"), model, reviewView, reviewActions);
   }
@@ -160,7 +161,11 @@ async function loadRoot() {
     app.settings = settings;
     const file = join(app.root, ".studio-jobs.json");
     app.jobs = makeJobs(host, {
-      runners: { higgsfield: makeHiggsfieldRunner({ settings }), blender: makeBlenderRunner({ settings }) },
+      runners: {
+        higgsfield: makeHiggsfieldRunner({ settings }),
+        blender: makeBlenderRunner({ settings }),
+        comfyui: makeComfyRunner({ settings }),
+      },
       file,
     });
     const saved = await readSavedJobs(host, file, { onMovedAside: (name) => { app.movedAside = { name }; } });
@@ -304,6 +309,17 @@ const reviewActions = {
     await startTake(ctx(), id, { note: note.trim() });
     app.review.noteFor = null; app.review.draft = "";
   }),
+  // Through cardAction so the per-shot pending guard also covers a take being prepared.
+  setTool: cardAction((id, tool) => setTool(ctx(), id, tool)),
+  // Ignored while any card action or the shot list is in flight; resolves true once saved.
+  async setPreferComfy(on) {
+    const r = app.review;
+    if (r.pending.size || r.making || r.prefSaving || !app.store) return false;
+    r.prefSaving = true; r.prefError = null;
+    try { await setPreferComfy(ctx(), on); return true; }
+    catch (e) { r.prefError = `Couldn't save the preference: ${msg(e)}`; return false; }
+    finally { r.prefSaving = false; render(); }
+  },
   openNote(id) { app.review.noteFor = id; app.review.draft = ""; app.review.focusNote = true; render(); },
   closeNote() { app.review.noteFor = null; app.review.draft = ""; render(); },
   draft: () => app.review.draft,

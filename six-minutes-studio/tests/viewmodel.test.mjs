@@ -248,3 +248,87 @@ test("a film that fails to open shows its message on the review screen", () => {
   assert.equal(m.message, "Couldn't open Skara Brae: EACCES");
   assert.equal(m.dir, DIR);
 });
+
+// ComfyUI
+
+const broll = (o = {}) => asset({ id: "HF-05", kind: "broll", desc: "Dunes at dusk", ...o });
+
+test("tool switch shows only on b-roll cards, with the current tool pressed", () => {
+  assert.equal(cardModel(asset(), [asset()]).toolSwitch, null);
+  const bl = asset({ id: "BL-01", kind: "lineart", tool: "blender", sourceId: "HF-01" });
+  assert.equal(cardModel(bl, [bl]).toolSwitch, null);
+  const c = cardModel(broll({ tool: "comfyui" }), [broll({ tool: "comfyui" })]);
+  assert.deepEqual(c.toolSwitch.options, [
+    { tool: "higgsfield", label: "Higgsfield", pressed: false },
+    { tool: "comfyui", label: "ComfyUI", pressed: true },
+  ]);
+  assert.equal(c.toolSwitch.disabled, false);
+  assert.equal(c.tool, "ComfyUI");
+  assert.match(c.tag, /HF-05 \u00B7 ComfyUI/);
+});
+
+test("tool switch is disabled while the shot is busy or pending", () => {
+  const busy = broll({ takes: [take(1, "running")], chosen: 1 });
+  assert.equal(cardModel(busy, [busy]).toolSwitch.disabled, true);
+  const queued = broll({ takes: [take(1, "queued")], chosen: 1 });
+  assert.equal(cardModel(queued, [queued]).toolSwitch.disabled, true);
+  assert.equal(cardModel(broll(), [broll()], { pending: true }).toolSwitch.disabled, true);
+  const done = broll({ takes: [take(1, "done", { file: "x.mp4" })], chosen: 1 });
+  assert.equal(cardModel(done, [done]).toolSwitch.disabled, false);
+});
+
+test("comfyui overlay text; other tools keep Regenerating in", () => {
+  const run = broll({ tool: "comfyui", takes: [take(1, "running")], chosen: 1 });
+  assert.equal(cardModel(run, [run]).overlay, "Rendering in ComfyUI");
+  const q = broll({ tool: "comfyui", takes: [take(1, "queued")], chosen: 1 });
+  assert.equal(cardModel(q, [q]).overlay, "Queued for ComfyUI");
+  const hf = broll({ takes: [take(1, "running")], chosen: 1 });
+  assert.equal(cardModel(hf, [hf]).overlay, "Regenerating in Higgsfield");
+});
+
+test("review model carries the prefer ComfyUI preference, before and after a shot list", () => {
+  const f = film();
+  const empty = reviewModel({ film: f, state: { assets: [], prefs: { preferComfy: true } } });
+  assert.equal(empty.needsShotList, true);
+  assert.equal(empty.preferComfy, true);
+  assert.equal(empty.preferDisabled, false);
+  const m = reviewModel({ film: f, state: { assets: [broll()] }, pending: new Set(["HF-05"]) });
+  assert.equal(m.preferComfy, false);
+  assert.equal(m.preferDisabled, true, "while any card action is pending");
+  assert.equal(reviewModel({ film: f, state: { assets: [] }, making: true }).preferDisabled, true);
+});
+
+test("comfyui jobs: check again is free, plain run again, ComfyUI warning", () => {
+  const cj = (o) => job({ tool: "comfyui", lane: "gpu", ...o });
+  const m = jobsModel({ jobs: [
+    cj({ id: "a", status: "failed", error: "Couldn't reach ComfyUI", jobRef: "P1", ambiguous: true }),
+    cj({ id: "b", assetId: "HF-02", status: "interrupted" }),
+    cj({ id: "c", assetId: "HF-03", status: "failed", error: "bad node", jobRef: "P3" }),
+    cj({ id: "d", assetId: "HF-04", status: "failed", error: "x", jobRef: "P4" }),
+    cj({ id: "e", assetId: "HF-04", take: 2, status: "running" }),
+  ], log: null, retried: new Set() });
+  const by = Object.fromEntries(m.rows.map((r) => [r.id, r]));
+  assert.equal(by.a.tool, "ComfyUI");
+  assert.equal(by.a.canCheck, true);
+  assert.equal(by.a.retryLabel, "Run again");
+  assert.equal(by.a.warning, "Check ComfyUI first: this render may still be running.");
+  assert.equal(by.b.canCheck, false);
+  assert.equal(by.b.warning, "Check ComfyUI first: this render may still be running.");
+  assert.equal(by.c.canCheck, true);
+  assert.equal(by.c.warning, null);
+  assert.equal(by.d.canCheck, false, "superseded by another take of the shot");
+});
+
+test("higgsfield on the gpu lane still gets the credits wording; blender never checks", () => {
+  const m = jobsModel({ jobs: [
+    job({ id: "a", status: "failed", jobRef: "R1", ambiguous: true, lane: undefined }),
+    job({ id: "b", assetId: "BL-01", status: "failed", jobRef: "X", tool: "blender", lane: "gpu" }),
+  ], log: null, retried: new Set() });
+  const by = Object.fromEntries(m.rows.map((r) => [r.id, r]));
+  assert.equal(by.a.canCheck, true);
+  assert.equal(by.a.retryLabel, "Run again (new generation, uses credits)");
+  assert.equal(by.a.warning, "Check Higgsfield first: this job may still be running.");
+  assert.equal(by.b.canCheck, false);
+  assert.equal(by.b.retryLabel, "Run again");
+  assert.equal(by.b.warning, null);
+});

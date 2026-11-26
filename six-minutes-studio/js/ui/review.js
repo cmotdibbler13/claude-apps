@@ -8,6 +8,7 @@ const busyTake = (t) => t.status === "queued" || t.status === "running";
 const isBusy = (a) => a.takes.some(busyTake);
 const VIDEO_EXT = /\.(mp4|mov|webm|mkv)$/i;
 export const isVideo = (file) => VIDEO_EXT.test(String(file ?? ""));
+const BROLL_TOOLS = ["higgsfield", "comfyui"];
 const chosenOf = (a) => a?.takes.find((t) => t.n === a.chosen) ?? null;
 
 export function summarize(assets = []) {
@@ -35,7 +36,11 @@ export function cardModel(asset, assets, { pending = false, error = null } = {})
     approved: !!asset.approved,
     busy,
     pending,
-    overlay: running ? (running.status === "running" ? `Regenerating in ${tool}` : `Queued for ${tool}`) : null,
+    overlay: running ? (running.status === "running" ? (asset.tool === "comfyui" ? "Rendering in ComfyUI" : `Regenerating in ${tool}`) : `Queued for ${tool}`) : null,
+    toolSwitch: asset.kind === "broll" ? {
+      options: BROLL_TOOLS.map((t) => ({ tool: t, label: toolLabel(t), pressed: asset.tool === t })),
+      disabled: !free,
+    } : null,
     locked,
     lockText: locked ? `Approve ${asset.sourceId} first` : null,
     sourceId: asset.sourceId ?? null,
@@ -54,7 +59,7 @@ export function cardModel(asset, assets, { pending = false, error = null } = {})
   };
 }
 
-export function reviewModel({ film, state, layout = "script", making = false, listError = null, cardErrors = new Map(), pending = new Set(), noteFor = null, openError = null }) {
+export function reviewModel({ film, state, layout = "script", making = false, listError = null, cardErrors = new Map(), pending = new Set(), noteFor = null, openError = null, prefError = null }) {
   if (openError) return { openFailed: true, dir: openError.dir, title: openError.title, message: `Couldn't open ${openError.title}: ${openError.message}` };
   if (!film) return { noFilm: true };
   const assets = state?.assets ?? [];
@@ -65,6 +70,9 @@ export function reviewModel({ film, state, layout = "script", making = false, li
     eyebrow: `${film.title} / Part 2 assets / review`,
     layout: layout === "grid" ? "grid" : "script",
     needsShotList: assets.length === 0,
+    preferComfy: !!state?.prefs?.preferComfy,
+    preferDisabled: making || pending.size > 0,
+    prefError,
     making,
     listError,
     summary: summarize(assets),
@@ -124,13 +132,16 @@ function controls(c, model, actions) {
   }
   const takes = c.takes.length > 1 ? h("div", { class: "takes" }, c.takes.map((t) =>
     h("button", { type: "button", "aria-pressed": String(t.pressed), "aria-label": `Take ${t.n}`, disabled: !c.canPick, onclick: () => actions.choose(c.id, t.n) }, String(t.n)))) : null;
+  const sw = c.toolSwitch ? h("div", { class: "toggle tool-switch", role: "group", "aria-label": `Tool for ${c.id}` },
+    c.toolSwitch.options.map((o) => h("button", { type: "button", "aria-pressed": String(o.pressed), disabled: c.toolSwitch.disabled,
+      onclick: () => { if (!o.pressed) actions.setTool(c.id, o.tool); } }, o.label))) : null;
   const row = [takes];
   if (c.locked) row.push(h("span", { class: "locked", text: c.lockText }));
   else if (c.canMakeFirst || (!c.takes.length && (c.busy || c.pending))) row.push(btn("Make first take", () => actions.first(c.id), { disabled: !c.canMakeFirst }));
   else if (c.approved) row.push(h("span", { class: "ok-tag", text: "\u2713 Approved" }), btn("Undo", () => actions.unapprove(c.id), { ghost: true, disabled: !c.canUndo }));
   else row.push(btn("Approve", () => actions.approve(c.id), { disabled: !c.canApprove }), btn("Redo\u2026", () => actions.openNote(c.id), { ghost: true, disabled: !c.canRedo }));
   if (c.file) row.push(btn("Open full size", () => actions.openFull(c.file), { ghost: true }));
-  return [h("div", { class: "row" }, row)];
+  return [sw, h("div", { class: "row" }, row)];
 }
 
 function card(c, model, actions) {
@@ -159,11 +170,19 @@ export function render(el, model, actions) {
     el.replaceChildren(h("h1", { text: "Review" }), h("p", { class: "lede", text: "Open a film's review from Films." }));
     return;
   }
+  const pref = h("input", { type: "checkbox", id: "prefer-comfy", disabled: model.preferDisabled });
+  pref.checked = model.preferComfy;
+  // If the change was refused or failed, put the box back to what the film says.
+  pref.addEventListener("change", () => {
+    Promise.resolve(actions.setPreferComfy(pref.checked)).then((ok) => { if (!ok) pref.checked = model.preferComfy; });
+  });
   const head = [
     h("span", { class: "eyebrow", text: model.eyebrow }),
     h("h1", { style: { marginTop: "8px" }, text: model.title }),
     h("p", { class: "lede", text: "Pick a take, approve it, or redo anything with a note." }),
-  ];
+    h("label", { class: "pref", for: "prefer-comfy" }, pref, h("span", { text: "Prefer ComfyUI for b-roll" })),
+    model.prefError ? h("p", { class: "err", text: model.prefError }) : null,
+  ].filter(Boolean);
   if (model.needsShotList) {
     el.replaceChildren(...head, h("div", { class: "panel" },
       h("p", { text: "This film has no shot list yet. Claude reads the script and part1_handover.md and plans the b-roll." }),
