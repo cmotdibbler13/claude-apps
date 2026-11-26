@@ -1,6 +1,7 @@
 // Probe view: checks the PC and connectors. Never calls a generate tool.
 import { runProcess } from "../proc.js";
 import { DEFAULT_SETTINGS } from "../settings.js";
+import { autocueJoinState, installAutocueJoin } from "../autocueinstall.js";
 import { stableAudioState, MSG_MUSIC } from "../tools/stableaudio.js";
 import { join } from "../paths.js";
 import { MSG_SET_STEM_REMIXER, stemPython } from "../tools/stemfit.js";
@@ -63,14 +64,17 @@ const stemRemixerCheck = (dir) => async (host) => {
   return v ? `Stem Remixer ${v}` : "ready";
 };
 
-// voiceover_join.py imports line_script.py from the same folder, so both must be there.
+// The join files Studio carries must match the ones in Autocue Studio's folder; Install join script fixes it.
+export const MSG_JOIN_MISSING = "The join script isn't installed. Press Install join script below.";
+export const MSG_JOIN_OLD = "The join script is out of date. Press Install join script below.";
+export const MSG_TAKE_CHECKS_OLD = "take_checks.py in Autocue Studio is older than the join needs. Copy autocue-studio\\take_checks.py from the repo into it.";
 const autocueJoinCheck = (dir) => async (host) => {
-  for (const f of ["voiceover_join.py", "line_script.py"]) {
-    if (!dir || !(await host.fs.exists(join(dir, f)))) {
-      throw new Error(`${f} isn't in ${dir || "autocueDir"}. Update Autocue Studio, or set autocueDir in .studio-settings.json.`);
-    }
-  }
-  return "voiceover_join.py found";
+  if (!dir || !(await host.fs.exists(dir))) throw new Error(`Autocue Studio's folder isn't there (${dir || "autocueDir"}). Set autocueDir in .studio-settings.json.`);
+  const st = await autocueJoinState(host, dir);
+  if (st.state === "missing") throw Object.assign(new Error(MSG_JOIN_MISSING), { install: true });
+  if (st.state === "outdated") throw Object.assign(new Error(MSG_JOIN_OLD), { install: true });
+  if (st.takeChecksOld) throw new Error(MSG_TAKE_CHECKS_OLD);
+  return "Join script up to date";
 };
 
 const toolsCheck = (server, want) => async (host) => {
@@ -121,7 +125,7 @@ export async function runChecks(host, onResult = () => {}, settings = DEFAULT_SE
   for (const c of makeChecks(settings)) {
     let r;
     try { r = { name: c.name, ok: true, detail: await c.run(host) }; }
-    catch (e) { r = { name: c.name, ok: false, detail: String(e?.message ?? e) }; }
+    catch (e) { r = { name: c.name, ok: false, detail: String(e?.message ?? e), install: !!e?.install }; }
     out.push(r);
     onResult(r);
   }
@@ -141,11 +145,34 @@ function row(r) {
 // getSettings() gives the loaded .studio-settings.json (defaults until the root is read). reload(), when
 // given, re-reads the file first, so a setting changed while the app is open counts straight away.
 export function mountProbe(host, button, list, getSettings = () => DEFAULT_SETTINGS, reload = null) {
-  button.onclick = async () => {
+  const run = async () => {
     button.disabled = true;
     list.replaceChildren();
     if (reload) { try { await reload(); } catch { /* keep the settings already loaded */ } }
-    await runChecks(host, (r) => list.append(row(r)), getSettings() ?? DEFAULT_SETTINGS);
+    const settings = getSettings() ?? DEFAULT_SETTINGS;
+    const results = await runChecks(host, (r) => list.append(row(r)), settings);
+    // A missing or old join script can be put right from here: Studio carries the current copy.
+    if (results.some((r) => r.install)) list.append(installRow(host, settings.autocueDir ?? DEFAULT_SETTINGS.autocueDir, run));
     button.disabled = false;
   };
+  button.onclick = run;
+}
+
+function installRow(host, dir, rerun) {
+  const li = document.createElement("li");
+  li.className = "install";
+  const b = document.createElement("button");
+  b.type = "button"; b.className = "btn"; b.textContent = "Install join script";
+  const d = document.createElement("span"); d.className = "detail";
+  d.textContent = `Writes voiceover_join.py and line_script.py into ${dir}. Older copies are kept, renamed with the date.`;
+  b.onclick = async () => {
+    b.disabled = true;
+    try {
+      const done = await installAutocueJoin(host, dir);
+      d.textContent = done.length ? `Installed ${done.join(" and ")}. Checking again…` : "Already up to date. Checking again…";
+      await rerun();
+    } catch (e) { d.textContent = `Couldn't install: ${e?.message ?? e}`; b.disabled = false; }
+  };
+  li.append(b, d);
+  return li;
 }

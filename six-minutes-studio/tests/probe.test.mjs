@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FakeHost } from "./fake-host.mjs";
+import { AUTOCUE_FILES } from "../js/autocue-bundle.js";
 import { makeChecks, runChecks } from "../js/ui/probe.js";
 
 const settings = { videoModel: "kling3_0", imageModel: "gpt_image_2", blenderPath: "C:\\Program Files\\Blender Foundation\\Blender 4.2\\blender.exe" };
@@ -159,8 +160,9 @@ async function srHost({ files = [".venv\\Scripts\\python.exe", "fit.py", "measur
   await host.fs.mkdir(ACD);
   for (const f of files) await host.fs.write(`${SRD}\\${f}`, "x");
   if (version !== null) await host.fs.write(SRD + "\\VERSION", version + "\n");
-  if (join) await host.fs.write(ACD + "\\voiceover_join.py", "x");
-  if (lineScript) await host.fs.write(ACD + "\\line_script.py", "x");
+  if (join) await host.fs.write(ACD + "\\voiceover_join.py", join === "old" ? "old" : AUTOCUE_FILES["voiceover_join.py"]);
+  if (lineScript) await host.fs.write(ACD + "\\line_script.py", AUTOCUE_FILES["line_script.py"]);
+  await host.fs.write(ACD + "\\take_checks.py", "def decode(path, rate=RATE):\n");
   return host;
 }
 const srSettings = (o = {}) => ({ ...settings, stemRemixerDir: SRD, autocueDir: ACD, ...o });
@@ -209,16 +211,14 @@ test("Stem Remixer check fails on a version below 1.9.0", async () => {
   assert.equal(named(await runChecks(await srHost({ version: "1.10.0" }), () => {}, srSettings()), "Stem Remixer").ok, true);
 });
 
-test("Autocue join check passes when voiceover_join.py is in autocueDir", async () => {
+test("Autocue join check passes when the join files match Studio's copy; missing or old offers Install", async () => {
   const ok = named(await runChecks(await srHost(), () => {}, srSettings()), "Autocue join");
   assert.equal(ok.ok, true);
+  assert.equal(ok.detail, "Join script up to date");
   const no = named(await runChecks(await srHost({ join: false }), () => {}, srSettings()), "Autocue join");
-  assert.equal(no.ok, false);
-  assert.match(no.detail, /voiceover_join\.py/);
-});
-
-test("Autocue join check also needs line_script.py, which voiceover_join.py imports", async () => {
-  const no = named(await runChecks(await srHost({ lineScript: false }), () => {}, srSettings()), "Autocue join");
-  assert.equal(no.ok, false);
-  assert.match(no.detail, /line_script\.py/);
+  assert.deepEqual([no.ok, no.detail, no.install], [false, "The join script isn't installed. Press Install join script below.", true]);
+  const old = named(await runChecks(await srHost({ join: "old" }), () => {}, srSettings()), "Autocue join");
+  assert.deepEqual([old.ok, old.detail, old.install], [false, "The join script is out of date. Press Install join script below.", true]);
+  const noLine = named(await runChecks(await srHost({ lineScript: false }), () => {}, srSettings()), "Autocue join");
+  assert.equal(noLine.install, true);
 });
