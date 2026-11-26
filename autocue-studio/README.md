@@ -96,12 +96,14 @@ python voiceover_join.py --script china_clay_line_script.txt --takes Recordings\
   limiter. Each clip ends up at -13.8 dB RMS. Clips are 0.6 s apart, 1.2 s
   across a section change, with 0.5 s of silence at the end.
 - **A take with no speech found** stops the join and is listed as `silent`.
-  `--allow-flagged` joins it anyway, untrimmed.
+  `--allow-flagged` joins it anyway, as 0.5 s of silence (still listed).
 - **It writes three files** in `--out`: `<name>_voiceover.wav` (48 kHz,
   24-bit), `<name>_voiceover_timings.csv` (one row per clip) and
   `<name>_voiceover_transcript.json` (every word with the id of its line).
   Files from an earlier run are renamed to `<name>.old-<date>-<time>.<ext>`,
-  never deleted. The takes themselves are only read.
+  never deleted. The takes themselves are only read. If a file can't be
+  replaced because it is open (say the CSV in Excel), the earlier files are
+  put back and it says which one to close.
 - **The transcript** uses the same speech model as the take checks
   (`autocue_settings.json`); `--model` and `--device` override it.
 - **Output** is one JSON object per line: progress while it works, then a

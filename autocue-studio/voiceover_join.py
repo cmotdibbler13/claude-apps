@@ -78,6 +78,7 @@ LIMIT = 0.84
 LIMIT_ATTACK_MS = 2.0
 LIMIT_RELEASE_MS = 50.0
 
+SILENT_PART_S = 0.5      # a take with no speech, joined with --allow-flagged
 TRANSCRIBE_RATE = take_checks.RATE   # whisper wants 16 kHz
 RESAMPLE_TAPS = 127
 RESAMPLE_CUTOFF_HZ = 7200.0
@@ -441,7 +442,7 @@ def transcript_for(parts_with_offsets, transcriber, rate=RATE, on_part=None):
     [(sentence id, 48 kHz audio of that part as it is in the voiceover,
     its start in the voiceover in seconds)]. Each part is transcribed on its
     own (at 16 kHz) and its word times are moved to voiceover time, kept
-    inside the part. on_part(i, sentence id) is called after each part.
+    inside the part. A part of pure digital silence is not transcribed. on_part(i, sentence id) is called after each part.
 
     Returns {"sentences": [{sentence, text, start, end}],
              "words": [{word, start, end, sentence}]}."""
@@ -450,7 +451,11 @@ def transcript_for(parts_with_offsets, transcriber, rate=RATE, on_part=None):
         audio = _as_float(audio)
         start = float(offset)
         end = start + len(audio) / rate
-        text, found = transcriber.transcribe(resample_16k(audio, rate), TRANSCRIBE_RATE)
+        if np.any(audio):
+            text, found = transcriber.transcribe(resample_16k(audio, rate),
+                                                 TRANSCRIBE_RATE)
+        else:
+            text, found = "", []   # digital silence: whisper would invent words
         sentences.append({"sentence": sentence, "text": (text or "").strip(),
                           "start": round(start, 3), "end": round(end, 3)})
         for word, w0, w1 in found or []:
@@ -531,10 +536,31 @@ def aside_names(out_dir, names, now=None):
         n += 1
 
 
+class OutputLocked(OSError):
+    """An output could not be moved or replaced (open in another program)."""
+
+    def __init__(self, name):
+        super().__init__(f"Couldn't write {name}: it may be open in another program "
+                         "(Excel, your editor). Close it and run again.")
+        self.name = name
+
+
+def _remove_quietly(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
 def write_outputs(out_dir, project, x, timings, transcript):
     """Write the three outputs to temp names, move any earlier outputs aside,
     then rename the temps into place. Returns ({kind: path}, [moved-aside
-    paths]). Nothing earlier is ever deleted."""
+    paths]). Nothing earlier is ever deleted.
+
+    If a move or a swap fails (Windows refuses while the CSV is open in
+    Excel, say), every step done so far is undone: the new files are
+    removed, the earlier outputs go back under their names, the temps are
+    deleted, and OutputLocked names the file."""
     os.makedirs(out_dir, exist_ok=True)
     names = output_names(project)
     finals = {k: os.path.join(out_dir, n) for k, n in names.items()}
@@ -545,16 +571,31 @@ def write_outputs(out_dir, project, x, timings, transcript):
         write_json(temps["transcript"], transcript)
     except BaseException:
         for p in temps.values():
-            try:
-                os.remove(p)
-            except OSError:
-                pass
+            _remove_quietly(p)
         raise
     moves = aside_names(out_dir, names.values())
-    for src, dst in moves.items():
-        os.rename(src, dst)   # never over an existing file
-    for k in finals:
-        os.replace(temps[k], finals[k])
+    moved, placed = [], []
+    try:
+        for src, dst in moves.items():
+            step = src
+            os.rename(src, dst)   # never over an existing file
+            moved.append((src, dst))
+        for k in finals:
+            step = finals[k]
+            os.replace(temps[k], finals[k])
+            placed.append(finals[k])
+    except OSError:
+        for path in reversed(placed):
+            _remove_quietly(path)          # our new file, not an earlier one
+        for src, dst in reversed(moved):
+            if not os.path.exists(src):
+                try:
+                    os.rename(dst, src)
+                except OSError:
+                    pass                   # it stays safe under its .old name
+        for p in temps.values():
+            _remove_quietly(p)
+        raise OutputLocked(os.path.basename(step)) from None
     return finals, sorted(moves.values())
 
 
@@ -643,6 +684,7 @@ def join(args, transcriber=None):
         y, info = trim_take(highpass(x), RATE)
         if not info["speech"]:
             silent.append(line_id)
+            y = np.zeros(int(round(SILENT_PART_S * RATE)))   # never boosted
         y, stalls = tighten_stalls(y, RATE)
         for st in stalls:
             tightened.append({"id": line_id, "at_s": round(st["at_s"] + info["head_s"], 3),
@@ -697,7 +739,15 @@ def main(argv=None, transcriber=None):
     except Refused as e:
         _emit({"error": str(e), **e.extra})
         return 2
+    except SystemExit as e:   # argparse's own exits: --help, or an error
+        if e.code in (0, None):
+            return 0
+        _emit({"error": "Bad arguments (see --help)"})
+        return 2
     except take_checks.CheckError as e:
+        _emit({"error": str(e)})
+        return 1
+    except OutputLocked as e:
         _emit({"error": str(e)})
         return 1
     except OSError as e:

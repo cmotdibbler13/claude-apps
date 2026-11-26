@@ -1,12 +1,18 @@
 """Tests for voiceover_join: synthetic audio only (tones, noise, silence)."""
 
+import contextlib
+import csv
+import io
+import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 import wave
+from unittest import mock
 
 import numpy as np
 
@@ -347,12 +353,6 @@ class Decode48Test(unittest.TestCase):
 
 # ------------------------------------------------------------ the command ----
 
-import contextlib
-import csv
-import io
-import json
-import shutil
-
 
 class StubTranscriber:
     """Says the same two words for every part; records what it was given."""
@@ -555,7 +555,18 @@ class JoinCommandTest(unittest.TestCase):
         self.assertTrue(lines[-1]["done"])
         self.assertEqual(lines[-1]["silent"], ["01.2"])
         with open(lines[-1]["transcript"], encoding="utf-8") as fh:
-            self.assertIn("01.2", [s["sentence"] for s in json.load(fh)["sentences"]])
+            tr = json.load(fh)
+        s2 = next(s for s in tr["sentences"] if s["sentence"] == "01.2")
+        # 0.5 s of digital silence, not the room noise boosted to speech level
+        self.assertAlmostEqual(s2["end"] - s2["start"], 0.5, delta=0.001)
+        self.assertEqual(s2["text"], "")
+        self.assertNotIn("01.2", [w["sentence"] for w in tr["words"]])
+        self.assertEqual(len(self.stub.calls), 2)   # silence is not transcribed
+        with wave.open(lines[-1]["wav"]) as w:
+            raw = np.frombuffer(w.readframes(w.getnframes()), dtype=np.uint8)
+        pcm = (raw.reshape(-1, 3).astype(np.int32) * [1, 256, 65536]).sum(axis=1)
+        a, b = int(round(s2["start"] * RATE)), int(round(s2["end"] * RATE))
+        self.assertTrue(np.all(pcm[a:b] == 0))
 
     def test_an_unreadable_take_is_an_error(self):
         with open(self.take("01.2"), "wb") as fh:
@@ -573,6 +584,63 @@ class JoinCommandTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(lines[-1], {"error": "Checks unavailable: no model"})
         self.assertEqual(self.outputs(), [])
+
+    def test_a_locked_file_rolls_back_to_the_earlier_outputs(self):
+        self.assertEqual(self.run_join()[0], 0)
+        before = {}
+        for n in self.outputs():
+            with open(os.path.join(self.out, n), "rb") as fh:
+                before[n] = fh.read()
+        real_rename, calls = os.rename, []
+
+        def rename(src, dst):
+            calls.append((src, dst))
+            if len(calls) == 2:   # the CSV is open in Excel
+                raise PermissionError(32, "The process cannot access the file", src)
+            return real_rename(src, dst)
+
+        with mock.patch.object(vj.os, "rename", rename):
+            code, lines = self.run_join()
+        self.assertEqual(code, 1)
+        self.assertEqual(lines[-1], {"error": "Couldn't write demo_voiceover_timings.csv: "
+                                     "it may be open in another program (Excel, your "
+                                     "editor). Close it and run again."})
+        self.assertEqual(self.outputs(), sorted(before))
+        for n, data in before.items():
+            with open(os.path.join(self.out, n), "rb") as fh:
+                self.assertEqual(fh.read(), data, n)
+
+    def test_a_failed_swap_in_also_rolls_back(self):
+        self.assertEqual(self.run_join()[0], 0)
+        before = {}
+        for n in self.outputs():
+            with open(os.path.join(self.out, n), "rb") as fh:
+                before[n] = fh.read()
+        real_replace, calls = os.replace, []
+
+        def replace(src, dst):
+            calls.append((src, dst))
+            if len(calls) == 3:   # the transcript is open in an editor
+                raise PermissionError(32, "The process cannot access the file", dst)
+            return real_replace(src, dst)
+
+        with mock.patch.object(vj.os, "replace", replace):
+            code, lines = self.run_join()
+        self.assertEqual(code, 1)
+        self.assertIn("Couldn't write demo_voiceover_transcript.json", lines[-1]["error"])
+        self.assertEqual(self.outputs(), sorted(before))
+        for n, data in before.items():
+            with open(os.path.join(self.out, n), "rb") as fh:
+                self.assertEqual(fh.read(), data, n)
+
+    def test_argparse_exiting_still_prints_json(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()), \
+                mock.patch.object(vj._Parser, "error",
+                                  lambda self, msg: self.exit(2, msg)):
+            code = vj.main(["--bogus"], transcriber=StubTranscriber())
+        self.assertEqual(code, 2)
+        self.assertIn("error", json.loads(buf.getvalue().splitlines()[-1]))
 
     def test_bad_arguments_are_a_json_error(self):
         buf = io.StringIO()
