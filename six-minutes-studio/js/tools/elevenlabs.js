@@ -45,7 +45,8 @@ export async function ensureFlow(host, name) {
 
 export async function addNode(host, flowId, kind, item, label) {
   const p = await call(host, "creative_add_flow_node", { flow_id: flowId, label, ...nodeSpec(kind, item) });
-  const id = p?.node_id ?? p?.node?.id ?? p?.nodes?.[0]?.id;
+  // Observed reply (26 Nov): {success, node_ids:[id], created_nodes:[{id, …}], …}.
+  const id = p?.node_ids?.[0] ?? p?.created_nodes?.[0]?.id ?? p?.node_id ?? p?.node?.id ?? p?.nodes?.[0]?.id;
   if (typeof id !== "string" || !id) throw new Error("ElevenLabs did not return a node id.");
   return id;
 }
@@ -67,7 +68,8 @@ function findCredits(v, depth = 0) {
 // Never generates: estimate_only is always true.
 export async function estimate(host, flowId, nodeId) {
   const p = await call(host, "creative_run_flow_nodes", { flow_id: flowId, node_ids: [nodeId], estimate_only: true, generations_count: 1 });
-  const direct = [p?.credits, p?.estimated_credits, p?.cost?.credits, p?.total_credits].find((n) => typeof n === "number" && Number.isFinite(n));
+  // Observed reply (26 Nov): {estimate:{credits, price_cents, generations_count, …}, notes, …}.
+  const direct = [p?.estimate?.credits, p?.credits, p?.estimated_credits, p?.cost?.credits, p?.total_credits].find((n) => typeof n === "number" && Number.isFinite(n));
   const n = direct ?? findCredits(p);
   return n == null ? null : Math.ceil(n);
 }

@@ -51,6 +51,13 @@ test("nodeSpec score and sfx", () => {
   assert.equal(nodeSig("sfx", { prompt: "p", durationS: 2 }), JSON.stringify(nodeSpec("sfx", { prompt: "p", durationS: 2 })));
 });
 
+test("addNode and estimate read the observed ElevenLabs replies", async () => {
+  const add = setup({ mcp: () => ({ flow_id: "F", flow_created: false, success: true, node_ids: ["u1LK"], created_nodes: [{ id: "u1LK", label: "x", type: "generation" }], node_urls: { u1LK: "https://x" } }) });
+  assert.equal(await addNode(add.host, "F", "sfx", { prompt: "p", durationS: 2 }, "SFX-01"), "u1LK");
+  const est = setup({ mcp: () => ({ flow_id: "F", estimate: { credits: 22, price_cents: 0.4, generations_count: 1, currency: "usd", estimated_runtime_seconds: 8 }, notes: "Estimate only" }) });
+  assert.equal(await estimate(est.host, "F", "u1LK"), 22);
+});
+
 test("ensureFlow and addNode", async () => {
   const t = setup({ mcp: (tool) => (tool === "creative_create_flow" ? { flow_id: "F9" } : { node: { id: "N9" } }) });
   assert.equal(await ensureFlow(t.host, "Film"), "F9");
