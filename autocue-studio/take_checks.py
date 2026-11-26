@@ -330,7 +330,8 @@ _ORDINALS = {
     "one": "first", "two": "second", "three": "third", "five": "fifth",
     "eight": "eighth", "nine": "ninth", "twelve": "twelfth",
 }
-_NUMBER_WORDS = set(_ONES) | set(_TENS[2:]) | {"hundred", "thousand"}
+_SCALES = (("billion", 10 ** 9), ("million", 10 ** 6), ("thousand", 1000))
+_NUMBER_WORDS = set(_ONES) | set(_TENS[2:]) | {"hundred", "thousand", "million", "billion"}
 
 
 def _under_100(n):
@@ -340,20 +341,29 @@ def _under_100(n):
     return [_TENS[tens]] + ([_ONES[ones]] if ones else [])
 
 
-def _cardinal(n):
-    """0-9999 in words, British style but without "and" (it is dropped from
-    numbers before comparing): 320 -> three hundred twenty."""
-    if n < 100:
-        return _under_100(n)
+def _under_1000(n):
     out = []
-    thousands, rest = divmod(n, 1000)
-    if thousands:
-        out += _under_100(thousands) + ["thousand"]
-    hundreds, rest = divmod(rest, 100)
+    hundreds, rest = divmod(n, 100)
     if hundreds:
         out += [_ONES[hundreds], "hundred"]
-    if rest:
+    if rest or not out:
         out += _under_100(rest)
+    return out
+
+
+def _cardinal(n):
+    """Up to the billions in words, British style but without "and" (it is
+    dropped from numbers before comparing): 320 -> three hundred twenty,
+    1200000 -> one million two hundred thousand."""
+    if n < 1000:
+        return _under_1000(n)
+    out = []
+    for word, size in _SCALES:
+        if n >= size:
+            big, n = divmod(n, size)
+            out += _cardinal(big) + [word]
+    if n:
+        out += _under_1000(n)
     return out
 
 
@@ -383,22 +393,37 @@ def _ordinal(n):
     return words
 
 
-_ORDINAL_RE = re.compile(r"^(\d{1,2})(st|nd|rd|th)$")
+_ORDINAL_RE = re.compile(r"^(\d{1,4})(st|nd|rd|th)$")
+_DECADE_RE = re.compile(r"^(\d{2})?(\d)0s$")          # 1850s, 1990s, 50s
+
+
+def _plural(word):
+    return word[:-1] + "ies" if word.endswith("y") else word + "s"
+
+
+def _decade(token):
+    """1850s -> eighteen fifties, 1900s -> nineteen hundreds, 50s -> fifties."""
+    m = _DECADE_RE.match(token)
+    n = int(token[:-1])
+    words = _year_or_number(n) if m.group(1) else _under_100(n)
+    return words[:-1] + [_plural(words[-1])]
 _INT_RE = re.compile(r"^\d+$")
 _PUNCT_RE = re.compile(r"[^\w']+")
 
 
 def _expand(token):
     m = _ORDINAL_RE.match(token)
-    if m and 1 <= int(m.group(1)) <= 31:
+    if m and int(m.group(1)) >= 1:
         return _ordinal(int(m.group(1)))
+    if _DECADE_RE.match(token):
+        return _decade(token)
     if _INT_RE.match(token):
         n = int(token)
         if len(token) == 4 and token[0] != "0":
             return _year_or_number(n)
-        if n <= 9999:
+        if n < 10 ** 12 and not (len(token) > 1 and token[0] == "0"):
             return _cardinal(n)
-        return [_ONES[int(d)] for d in token]  # long numbers: digit by digit
+        return [_ONES[int(d)] for d in token]  # codes and very long numbers: digit by digit
     return [token]
 
 
@@ -408,9 +433,18 @@ def _tokens(word):
     w = w.replace("%", " percent ")
     out = []
     bare = w.strip(".,;:!?\"'()[]")
+    money = re.match(r"^([£$€])(\d[\d,]*(?:\.\d+)?)$", bare)
+    if money:                                       # £5 -> five pounds
+        amount = money.group(2)
+        unit = {"£": "pound", "$": "dollar", "€": "euro"}[money.group(1)]
+        words = _tokens(amount)
+        return words + [unit if amount == "1" else unit + "s"]
+    if re.match(r"^\d[\d,]*\.\d+$", bare):         # 3.5 -> three point five
+        whole, frac = bare.split(".")
+        return _tokens(whole) + ["point"] + [_ONES[int(d)] for d in frac]
     if re.match(r"^\d{1,3}(,\d{3})+$", bare):        # 1,200 is a count, not a year
         n = int(bare.replace(",", ""))
-        return _cardinal(n) if n <= 9999 else [_ONES[int(d)] for d in str(n)]
+        return _cardinal(n) if n < 10 ** 12 else [_ONES[int(d)] for d in str(n)]
     for piece in re.split(r"[-‐-―/]+", w):     # hyphens and dashes
         for part in _PUNCT_RE.split(piece):
             part = part.strip("'_")
@@ -424,7 +458,7 @@ def _drop_number_and(tokens):
     the digits; an ordinary "and" stays a word to check."""
     keep = []
     for i, t in enumerate(tokens):
-        if (t == "and" and keep and keep[-1] in ("hundred", "thousand")
+        if (t == "and" and keep and keep[-1] in ("hundred", "thousand", "million", "billion")
                 and i + 1 < len(tokens) and tokens[i + 1] in _NUMBER_WORDS):
             continue
         keep.append(t)
@@ -439,7 +473,7 @@ def _spoken_lines(text):
 def normalise_words(text):
     """Lower case, no punctuation, numbers in words, hyphens split."""
     out = []
-    for word in _spoken_lines(text).split():
+    for word in _join_digit_groups(_spoken_lines(text)).split():
         out.extend(_tokens(word))
     return _drop_number_and(out)
 
@@ -473,40 +507,59 @@ def _parse_under_100(t, i):
     return None
 
 
-def _parse_cardinal(t):
-    """The whole of t as a cardinal (one thousand five hundred, fifteen
-    hundred, forty seven), or None."""
-    i, total = 0, 0
-    first = _parse_under_100(t, 0)
+def _parse_small(t, i):
+    """(value 1-999, next index) for "seven", "forty two", "three hundred
+    (and) six" at t[i], or None. Also "fifteen hundred" (11-99 hundred)."""
+    first = _parse_under_100(t, i)
     if first is None:
         return None
     v, i = first
-    if i < len(t) and t[i] == "thousand":
+    if i < len(t) and t[i] == "hundred":
         if v == 0:
             return None
-        total, i = v * 1000, i + 1
+        v, i = v * 100, i + 1
         nxt = _parse_under_100(t, i)
-        if nxt is None:
-            return total if i == len(t) else None
-        v, i = nxt
-    if i < len(t) and t[i] == "hundred":
-        if v == 0 or (total and v > 9):
+        if nxt is not None:
+            if nxt[0] == 0:
+                return None
+            v, i = v + nxt[0], nxt[1]
+    return v, i
+
+
+def _parse_cardinal(t):
+    """The whole of t as a cardinal (one thousand five hundred, fifteen
+    hundred, forty seven, one million two hundred thousand), or None."""
+    if t == ["zero"]:
+        return 0
+    i, total, last_scale = 0, 0, None
+    while i < len(t):
+        part = _parse_small(t, i)
+        if part is None:
             return None
-        total, i = total + v * 100, i + 1
-        nxt = _parse_under_100(t, i)
-        if nxt is None:
-            return total if i == len(t) else None
-        v, i = nxt
-    if total and v == 0:
-        return None
-    return total + v if i == len(t) else None
+        v, i = part
+        if v == 0:
+            return None
+        if i < len(t) and t[i] in dict(_SCALES):
+            size = dict(_SCALES)[t[i]]
+            if last_scale is not None and size >= last_scale:
+                return None
+            if v >= 1000:                      # "fifteen hundred thousand": not a reading we accept
+                return None
+            total, last_scale, i = total + v * size, size, i + 1
+            continue
+        if i != len(t):
+            return None
+        if v >= 1000 and total:                # "one thousand fifteen hundred"
+            return None
+        return total + v
+    return total if last_scale is not None else None
 
 
 def _parse_year(t):
     """The whole of t as a year reading (eighteen fifty four, nineteen oh
     five, twenty thirteen), or None."""
     hi = _parse_under_100(t, 0)
-    if hi is None or hi[0] < 11:
+    if hi is None or hi[0] < 10:
         return None
     v, i = hi
     rest = t[i:]
@@ -520,13 +573,52 @@ def _parse_year(t):
     return None
 
 
-_NUM_START = set(_UNITS) | set(_TENS_VAL)
-_NUM_ANY = _NUM_START | {"hundred", "thousand", "oh"}
+_NUM_START = set(_UNITS) | set(_TENS_VAL) | {"half"}
+_NUM_ANY = _NUM_START | {"hundred", "thousand", "million", "billion", "oh", "and", "a", "point"}
+_DIGIT_WORDS = {w: i for i, w in enumerate(_ONES[:10])} | {"oh": 0}
+
+
+def _with_scale(value, rest):
+    """value (as is), or value x thousand/million/billion when rest is one scale word."""
+    if not rest:
+        return value
+    if len(rest) == 1 and rest[0] in dict(_SCALES):
+        return value * dict(_SCALES)[rest[0]]
+    return None
+
+
+def _parse_fraction(t):
+    """half a million; two and a half (thousand); three point five (million)."""
+    scales = dict(_SCALES)
+    if len(t) == 3 and t[0] == "half" and t[1] in ("a", "one") and t[2] in scales:
+        return scales[t[2]] // 2
+    for k in range(1, len(t)):
+        if t[k:k + 3] == ["and", "a", "half"]:
+            whole = _parse_cardinal(t[:k])
+            if whole is None or whole >= 1000:
+                return None
+            return _with_scale(whole + 0.5, t[k + 3:])
+        if t[k] == "point":
+            whole = _parse_cardinal(t[:k]) if t[:k] != ["oh"] else 0
+            j = k + 1
+            while j < len(t) and t[j] in _DIGIT_WORDS:
+                j += 1
+            if whole is None or j == k + 1:
+                return None
+            value = float(f"{whole}." + "".join(str(_DIGIT_WORDS[d]) for d in t[k + 1:j]))
+            return _with_scale(value, t[j:])
+    return None
 
 
 def _parse_number(t):
     v = _parse_cardinal(t)
-    return v if v is not None else _parse_year(t)
+    if v is None:
+        v = _parse_year(t)
+    if v is None:
+        v = _parse_fraction(t)
+    if isinstance(v, float):
+        v = int(v) if v.is_integer() else round(v, 6)
+    return v
 
 
 def _collapse_numbers(items):
@@ -601,8 +693,18 @@ def _spelling(tok):
     return tok
 
 
+def _a_as_one(items):
+    """"a hundred / thousand / million" is "one ...", except in "half a million"."""
+    out = list(items)
+    for i in range(len(out) - 1):
+        if (out[i][0] == "a" and out[i + 1][0] in ("hundred", "thousand", "million", "billion")
+                and not (i > 0 and out[i - 1][0] == "half")):
+            out[i] = ("one",) + tuple(out[i][1:])
+    return out
+
+
 def _compare_form(items):
-    items = _collapse_numbers(_without_number_and(items))
+    items = _collapse_numbers(_a_as_one(_without_number_and(items)))
     out, i = [], 0
     while i < len(items):              # "per cent" -> "percent"
         if (items[i][0] == "per" and i + 1 < len(items) and items[i + 1][0] == "cent"):
@@ -621,15 +723,45 @@ def _pieces(word):
     return [(p, shown) for p in _tokens(word)]
 
 
+# Thousands written with a space between digit groups ("3 100", "1 200 000"),
+# with ordinary, non-breaking or thin spaces: Whisper often writes them so.
+_GROUP_SPACE = "[ \u00a0\u2009\u202f]"
+_GROUPED = re.compile(r"(?<![\d.,])(\d{1,3})((?:" + _GROUP_SPACE + r"\d{3})+)(?![\d])")
+_LEAD = re.compile(r"^\d{1,3}$")
+_GROUP = re.compile(r"^\d{3}(?=[^\w]*$)")
+
+
+def _join_digit_groups(text):
+    """"3 100" -> "3100" inside one string."""
+    return _GROUPED.sub(lambda m: m.group(1) + re.sub(_GROUP_SPACE, "", m.group(2)), text)
+
+
+def _join_grouped_words(words):
+    """Timed words where "3" is followed by "100" (exactly three digits) become one word;
+    "1" "200" "000" chains. A word that is already four or more digits (a year) never
+    takes a following group, so "1854 100" stays two numbers."""
+    out, chain = [], False
+    for w, s, e in words:
+        w = _join_digit_groups(str(w).strip())
+        if out and _GROUP.match(w) and (chain or _LEAD.match(out[-1][0])):
+            pw, ps, _ = out[-1]
+            out[-1] = (pw + w, ps, e)
+            chain = True
+            continue
+        out.append((w, s, e))
+        chain = False
+    return out
+
+
 def _timed_tokens(words):
     """[(token, display, start, end)] for the transcript's words."""
     return _compare_form([(p, d, float(s), float(e))
-                          for w, s, e in words for p, d in _pieces(w)])
+                          for w, s, e in _join_grouped_words(words) for p, d in _pieces(w)])
 
 
 def _expected_tokens(text):
     """[(token, display)] for the line, keeping the line's own spelling."""
-    return _compare_form([pd for w in _spoken_lines(text).split() for pd in _pieces(w)])
+    return _compare_form([pd for w in _join_digit_groups(_spoken_lines(text)).split() for pd in _pieces(w)])
 
 
 def _quote(items):

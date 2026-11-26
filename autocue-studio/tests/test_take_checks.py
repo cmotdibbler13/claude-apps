@@ -900,3 +900,84 @@ class WhisperLoadOptions(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SpaceGroupedNumbers(unittest.TestCase):
+    """Whisper writes thousands with a space between digit groups ("3 100"),
+    sometimes as separate words; Jon's scripts spell them out."""
+
+    LINE = "People lived here from around three thousand one hundred BC to two thousand five hundred BC."
+
+    def flags_for(self, heard):
+        words = [(w, i * 0.4, i * 0.4 + 0.3) for i, w in enumerate(heard.split())]
+        return [f["text"] for f in take_checks.word_flags(self.LINE, words, len(words) * 0.4 + 1.0)]
+
+    def test_space_grouped_thousands_match_words(self):
+        self.assertEqual(self.flags_for("People lived here from around 3 100 BC to 2 500 BC."), [])
+
+    def test_non_breaking_and_thin_spaces(self):
+        self.assertEqual(self.flags_for("People lived here from around 3 100 BC to 2 500 BC."), [])
+
+    def test_grouped_digits_in_one_whisper_word(self):
+        words = [("People", 0, .3), ("lived", .4, .7), ("here", .8, 1.1), ("from", 1.2, 1.5),
+                 ("around", 1.6, 1.9), (" 3 100", 2.0, 2.6), ("BC", 2.7, 3.0), ("to", 3.1, 3.3),
+                 (" 2 500", 3.4, 4.0), ("BC.", 4.1, 4.4)]
+        self.assertEqual([f["text"] for f in take_checks.word_flags(self.LINE, words, 5.5)], [])
+
+    def test_millions_grouped(self):
+        line = "About one million two hundred thousand people."
+        words = [(w, i * 0.4, i * 0.4 + 0.3) for i, w in enumerate("About 1 200 000 people.".split())]
+        self.assertEqual([f["text"] for f in take_checks.word_flags(line, words, 4.0)], [])
+
+    def test_wrong_number_still_flagged(self):
+        self.assertTrue(any("misread" in f for f in self.flags_for("People lived here from around 3 200 BC to 2 500 BC.")))
+
+    def test_separate_small_numbers_not_joined(self):
+        # "3 100-metre" style: a 1-3 digit word then a word that is not exactly three digits stays apart
+        line = "He ran 3 races."
+        words = [(w, i * 0.4, i * 0.4 + 0.3) for i, w in enumerate("He ran 3 races.".split())]
+        self.assertEqual([f["text"] for f in take_checks.word_flags(line, words, 3.0)], [])
+
+
+class SpokenNumberForms(unittest.TestCase):
+    """The ways Jon writes numbers in a script against the ways Whisper writes them."""
+
+    CASES = [
+        ("About a hundred people lived there.", "About 100 people lived there."),
+        ("In ten sixty six the Normans came.", "In 1066 the Normans came."),
+        ("In the eighteen fifties.", "In the 1850s."),
+        ("Through the nineteen nineties.", "Through the 1990s."),
+        ("Two and a half thousand years.", "2,500 years."),
+        ("It cost five pounds.", "It cost £5."),
+        ("Three point five metres.", "3.5 metres."),
+        ("The fortieth anniversary.", "The 40th anniversary."),
+        ("One in a thousand.", "One in 1,000."),
+        ("About one and a half million people.", "About 1.5 million people."),
+        ("Half a million tonnes.", "500,000 tonnes."),
+        ("About one million two hundred thousand people.", "About 1,200,000 people."),
+        ("Around ten thousand years ago.", "Around 10,000 years ago."),
+        ("Some six hundred years.", "Some 600 years."),
+        ("In AD forty seven.", "In AD 47."),
+        ("Nineteen oh five.", "1905."),
+        ("Two thousand and five.", "2005."),
+    ]
+
+    def flags(self, line, heard):
+        words = [(w, i * 0.4, i * 0.4 + 0.3) for i, w in enumerate(heard.split())]
+        return [f["text"] for f in take_checks.word_flags(line, words, len(words) * 0.4 + 1.0)]
+
+    def test_said_right_is_not_flagged(self):
+        for line, heard in self.CASES:
+            with self.subTest(heard=heard):
+                self.assertEqual(self.flags(line, heard), [])
+
+    def test_wrong_numbers_still_flagged(self):
+        for line, heard in [
+            ("In ten sixty six the Normans came.", "In 1067 the Normans came."),
+            ("Two and a half thousand years.", "3,500 years."),
+            ("Three point five metres.", "3.7 metres."),
+            ("In the eighteen fifties.", "In the 1860s."),
+            ("It cost five pounds.", "It cost £6."),
+        ]:
+            with self.subTest(heard=heard):
+                self.assertTrue(any("misread" in f for f in self.flags(line, heard)))
