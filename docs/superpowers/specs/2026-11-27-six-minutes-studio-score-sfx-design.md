@@ -1,0 +1,68 @@
+# Six Minutes Studio: score and sound effects (design)
+
+Agreed with Jon, 27 Nov 2026. This is the first of three builds: (1) score and SFX, generate and review; (2) voiceover join and mix preview; (3) face-to-camera talking head. Main spec: `2026-11-26-six-minutes-studio-design.md`.
+
+## Why
+Music and sound effects are made in a Claude session today. Jon wants them on the app's review board like the b-roll: generated without a session, played, picked, and redone with a note, with the cost clear before credits are spent.
+
+## Goals
+- **Score.** One "Score" card per film.
+  - Claude drafts the score prompt from the script and `part1_handover.md`: genre, instruments, tempo, and a timed energy arc using **estimated** section times (script words at about 150 wpm, plus a 6 s cold-open hold and the end card).
+  - Jon sees the prompt, can edit it, and sees ElevenLabs' **credit estimate** before pressing **Generate 2 takes**.
+  - Each take has ▶, Pick, and Redo with a note.
+- **Sound effects.** One card per cue on the approved Part 1 list, which Claude reads from `part1_handover.md` (prose or table, whatever its layout), 2 takes per cue.
+  - Each cue has a **source switch**, **Stable Audio (free, local)** / **ElevenLabs (credits)**, defaulting to Stable Audio.
+  - A **Loop** option on ambience cues (ElevenLabs only; Stable Audio has none).
+  - Each take shows its source, length and level, and is **flagged when near-silent**.
+- Picked takes are recorded in the film's state for the Part 2 handover (a later build writes the handover).
+
+## Non-goals (this build)
+- Measuring the score against the voiceover sections, beat-fitting, the timing sheet and the mix preview. Those are build 2, which also joins the voiceover.
+- Starting Pinokio or Stable Audio automatically. Jon starts "Small SFX" in Pinokio; the app checks and tells him if it isn't running.
+- ElevenLabs flows the app didn't make.
+
+## Anti-goals
+- Spending credits without Jon seeing the estimate first. Never re-running a paid generation automatically.
+- Replacing or deleting takes.
+- Writing anywhere except the film's `studio\` folder and the app's own root files.
+
+## Constraints
+- **ElevenLabs** through the `mcp` capability, server "ElevenLabs":
+  - `creative_create_flow`, `creative_add_flow_node`, `creative_run_flow_nodes` (with `estimate_only: true` for the cost), `creative_get_flow_run_status`.
+  - Music is node type `music`, model `eleven_music_v2_5`, params `duration_seconds` (3–600), `lyrics_type: "instrumental"`, `instrumental: true`.
+  - SFX is node type `sfx`, model `eleven_text_to_sound_v3`, params `duration_seconds` (0.5–30), `prompt_influence` (0–1, default 0.3), `loop`.
+  - Generations are poll-based. Pass the `generations_count` explicitly. A single take costs about 5,850 credits for a 6:30 score. The result payload shape hasn't been observed yet, so parse it defensively and confirm it on the first real run.
+  - One ElevenLabs flow per film, its id kept in the film's state.
+- **Stable Audio 3 Small SFX** (Pinokio, Gradio 6.3) at `http://127.0.0.1:7860`, per `S:\Youtube video ideas\Stable Audio\api_notes.md`:
+  - POST `/gradio_api/call/generate` with `{"data":[…29 values…]}`, in the exact order given there, with a trailing `null`. Returns `{"event_id"}`.
+  - GET `/gradio_api/call/generate/<event_id>` streams until `event: complete` with `data: [{path, url, …}, …]`. `event: error` means failure.
+  - `seconds_total` must be a **whole number**. Download the `url`, URL-encoding the part after `file=`.
+  - Default steps 8 and CFG 1.0. Seed -1 (random) for each take.
+  - About 1–3 s per take on the GPU. The SFX model must be the one loaded (the page title includes "Small SFX").
+  - All calls via curl with argument lists (no shell), as with ComfyUI.
+- **Files:**
+  - SFX → `<film>\studio\media\<project>_sfx_<cue>_t<n>.wav`, converted to 48 kHz WAV with leading and trailing silence trimmed and 10 ms fades (ffmpeg). The original download is kept beside it as `.orig.<ext>`.
+  - Score → `<film>\studio\media\<project>_score_t<n>.<ext>`, as delivered.
+  - Each take is measured with ffmpeg (length, peak, integrated loudness): near-silent means a peak below -30 dBFS or mean below -50 dB.
+- **Lanes:** Stable Audio is on the GPU lane (shared with ComfyUI and Blender, one at a time). ElevenLabs is on the connector lane.
+- The same take rules as b-roll: new takes are added, never replaced; jobs reconnect after a restart (ElevenLabs by its session id; a Stable Audio take is quick and is marked interrupted).
+
+## Approaches
+There's one sensible way: the app drives both services directly, ElevenLabs through the connector and Stable Audio through its local HTTP API (like ComfyUI). The alternatives (Claude sessions; clicking in Pinokio) bring back exactly what the app replaces.
+
+## Design
+- **State:**
+  - `state.audio = { flowId, score: {prompt, durationS, takes[], chosen, approved}, sfx: [{id:"SFX-01", cue, prompt, durationS, loop, source, takes[], chosen, approved}] }`;
+  - take = `{n, source, prompt, file, status, jobId, note, lengthS, peakDb, meanDb, quiet, error}`.
+- **Making the list:** a "Plan music and sound effects" button. One memoryless Claude call reads the script and `part1_handover.md`, and returns the score prompt and duration plus the SFX cues (id, what it is, prompt, seconds, loop yes/no). Jon can edit any prompt or length before generating.
+- **Costs:** before any ElevenLabs generation the app runs `estimate_only` and shows "This will use about N credits" on the button. Stable Audio shows "Free".
+- **Review board:** a "Score" section and a "Sound effects" section below Narration and above B-roll, with the same card look. Each take has ▶ (one player for the whole screen), a take picker, Approve/Undo and Redo…, and the source tag.
+- **Redo with a note:** Claude rewrites the prompt from the note (tier "quick"); a new take goes beside the old ones.
+- **Live jobs:** "Score take 2: ElevenLabs", "SFX-03 door creak take 1: Stable Audio", with a progress estimate.
+- **Probe:** a "Stable Audio" check: GET `/gradio_api/info` lists `/generate`, and the page title says Small SFX.
+- **Errors:**
+  - Stable Audio not running: "Stable Audio isn't running at 127.0.0.1:7860. Start "Small SFX" in Pinokio, then press Run again, or switch this cue to ElevenLabs."
+  - The Music model loaded instead of SFX: say so.
+
+## Left to the builder
+Module split, the exact ffmpeg filters for trimming and measuring, the poll cadence (ElevenLabs no faster than the returned `poll_after_seconds`; Stable Audio's stream is one request), and copy wording in the house style.
