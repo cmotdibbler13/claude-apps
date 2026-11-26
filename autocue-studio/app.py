@@ -86,7 +86,8 @@ RULE_STRONG = "#647b98"   # borders that carry meaning
 
 ACCENT_GREEN = BRASS      # saved-state confirmations: the brand has no green
 CHECK_OK = "#8fb996"      # a muted green, only for a take check that passed
-CHECK_COLOURS = {"ok": CHECK_OK, "flag": BRASS, "error": BRASS, "loading": INK_MUTED}
+CHECK_COLOURS = {"ok": CHECK_OK, "flag": BRASS, "error": BRASS, "loading": INK_MUTED,
+                 "note": INK_MUTED}
 MUTED = INK_MUTED
 
 THIN_SPACE = " "
@@ -499,11 +500,18 @@ class AutocueApp(ctk.CTk):
             justify="left", anchor="nw",
         )
         self.line_label.grid(row=2, column=0, sticky="nsew", padx=24, pady=(10, 4))
+        mark_row = ctk.CTkFrame(self.line_view, fg_color="transparent")
+        mark_row.grid(row=3, column=0, sticky="ew", padx=24, pady=(0, 4))
         self.check_mark_label = ctk.CTkLabel(
-            self.line_view, text="", anchor="w", justify="left",
+            mark_row, text="", anchor="w", justify="left",
             font=self._small_font,
         )
-        self.check_mark_label.grid(row=3, column=0, sticky="ew", padx=24, pady=(0, 4))
+        self.check_mark_label.pack(side="left")
+        self.check_note_label = ctk.CTkLabel(  # pause/noise notes, muted
+            mark_row, text="", anchor="w", justify="left",
+            font=self._small_font, text_color=INK_MUTED,
+        )
+        self.check_note_label.pack(side="left", padx=(6, 0))
         self.note_label = ctk.CTkLabel(
             self.line_view, text="", text_color=BRASS, anchor="w",
             justify="left", font=ctk.CTkFont(family=self._sans, size=14),
@@ -868,9 +876,10 @@ class AutocueApp(ctk.CTk):
         except AttributeError:
             scale = 1.0
         wrap = max(200, int(event.width / scale) - 60)
-        for label in (self.line_label, self.check_mark_label, self.note_label,
-                      self.next_label):
+        self._wrap = wrap
+        for label in (self.line_label, self.note_label, self.next_label):
             label.configure(wraplength=wrap)
+        self._wrap_check_mark()
 
     def _play_current_take(self) -> None:
         if self.line_mode:
@@ -1052,8 +1061,10 @@ class AutocueApp(ctk.CTk):
                 self._show_line()
 
     def _commit_take(self, temp_path: str, final_path: str) -> str:
-        """Move an earlier take aside, then make the new take the saved one."""
-        try:
+        """Move an earlier take aside, then make the new take the saved one.
+        A PermissionError (a check's ffmpeg still reading the old take) is
+        retried 3 times, 100 ms apart, before the dialog."""
+        def commit():
             if os.path.exists(final_path):
                 old_dir = os.path.join(os.path.dirname(final_path), "superseded")
                 os.makedirs(old_dir, exist_ok=True)
@@ -1061,6 +1072,9 @@ class AutocueApp(ctk.CTk):
                 stamp = datetime.now().strftime("%H-%M-%S")
                 shutil.move(final_path, os.path.join(old_dir, f"{stem}_{stamp}.wav"))
             os.replace(temp_path, final_path)
+
+        try:
+            check_worker.retry_on_permission_error(commit)
             return final_path
         except OSError as exc:
             messagebox.showerror(
@@ -1081,12 +1095,13 @@ class AutocueApp(ctk.CTk):
     def _checks_dir(self) -> str:
         return os.path.join(self._recordings_dir(), "checks")
 
-    def _submit_check(self, index: int) -> None:
-        """Queue a check of a line's take, unless that take is already queued."""
+    def _submit_check(self, index: int) -> bool:
+        """Queue a check of a line's take, unless that take is already queued.
+        True if it was queued now."""
         path = self._take_path(index)
         name = os.path.basename(path)
         if name in self._queued_checks:
-            return
+            return False
         self._queued_checks.add(name)
         self.checker.submit({
             "id": self.script_lines[index]["id"],
@@ -1095,6 +1110,7 @@ class AutocueApp(ctk.CTk):
             "checks_dir": self._checks_dir(),
             "project": self.script_name,
         })
+        return True
 
     def _check_all(self) -> None:
         """Check every saved take with no result, an out-of-date one or an error."""
@@ -1109,8 +1125,7 @@ class AutocueApp(ctk.CTk):
             except OSError:
                 continue  # no take yet
             result = check_worker.read_result(self._checks_dir(), self.script_name, line["id"])
-            if check_worker.needs_check(result, mtime):
-                self._submit_check(i)
+            if check_worker.needs_check(result, mtime) and self._submit_check(i):
                 count += 1
         self.status_label.configure(
             text=check_worker.check_all_message(count), text_color=INK_MUTED
@@ -1192,10 +1207,23 @@ class AutocueApp(ctk.CTk):
         result = check_worker.read_result(self._checks_dir(), self.script_name, line["id"])
         if not check_worker.is_current(result, take):
             result = None
-        text, kind = check_worker.mark_text(result)
+        parts = check_worker.mark_parts(result)
+        text, kind = parts[0] if parts else ("", None)
         self.check_mark_label.configure(
             text=text, text_color=CHECK_COLOURS.get(kind, INK_MUTED)
         )
+        notes = " ".join(t for t, _ in parts[1:])
+        self.check_note_label.configure(text=notes, text_color=CHECK_COLOURS["note"])
+        self._wrap_check_mark()
+
+    def _wrap_check_mark(self) -> None:
+        """The mark and its notes share one row: split the width when both show."""
+        wrap = getattr(self, "_wrap", None)
+        if wrap is None:
+            return
+        both = bool(self.check_note_label.cget("text"))
+        self.check_mark_label.configure(wraplength=wrap // 2 if both else wrap)
+        self.check_note_label.configure(wraplength=max(1, wrap - wrap // 2 - 6))
 
     def _poll_backup(self) -> None:
         """Show the result of the latest server copy (runs on the UI thread)."""

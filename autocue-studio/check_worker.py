@@ -17,8 +17,8 @@ thread (Tk: self.after(0, ...)).
 * On Windows the thread runs below normal priority, so a check on the CPU
   never competes with the recorder.
 
-Also here, so the app stays thin: read_result, is_current, needs_check and the
-status-line and line-mark copy.
+Also here, so the app stays thin: read_result, is_current, needs_check, the
+status-line and line-mark copy and the take-commit retry.
 """
 
 import json
@@ -135,16 +135,40 @@ def status_message(line_id, result):
     return text, "flag"
 
 
-def mark_text(result):
-    """(text, kind) for the mark under the line; ("", None) for no mark."""
+NOTE_KINDS = {"pause", "noise"}
+COMMIT_RETRIES = 3
+COMMIT_RETRY_DELAY_S = 0.1
+
+
+def mark_parts(result):
+    """[(text, kind)] for the mark under the line, kind ok, flag or note:
+    a pass is "✓ checked" (ok), a fail its flags (flag); pause and noise
+    notes follow, muted. [] for no mark."""
     if not result or "error" in result or "ok" not in result:
-        return "", None
-    texts = [f["text"] for f in result.get("flags") or []]
-    if not texts:
-        return "✓ checked", "ok"
+        return []
+    flags = result.get("flags") or []
     if result["ok"]:
-        texts.insert(0, "✓ checked")
-    return " · ".join(texts), "flag"
+        head, notes = [("✓ checked", "ok")], [f["text"] for f in flags]
+    else:
+        severe = [f["text"] for f in flags if f.get("kind") not in NOTE_KINDS]
+        notes = [f["text"] for f in flags if f.get("kind") in NOTE_KINDS]
+        head = [(" · ".join(severe) or "check failed", "flag")]
+    return head + ([("· " + " · ".join(notes), "note")] if notes else [])
+
+
+def retry_on_permission_error(fn, retries=COMMIT_RETRIES, delay_s=COMMIT_RETRY_DELAY_S,
+                              sleep=None):
+    """fn(), tried again up to `retries` times, delay_s apart, while Windows
+    refuses with PermissionError (a check's ffmpeg may still be reading the
+    old take). Other errors, and the last refusal, are raised."""
+    sleep = sleep or time.sleep
+    for attempt in range(retries + 1):
+        try:
+            return fn()
+        except PermissionError:
+            if attempt == retries:
+                raise
+            sleep(delay_s)
 
 
 class CheckWorker:

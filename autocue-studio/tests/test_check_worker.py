@@ -375,12 +375,66 @@ class Copy(unittest.TestCase):
             ("Checks unavailable: ffmpeg not found", "error"))
 
     def test_marks(self):
-        self.assertEqual(check_worker.mark_text(None), ("", None))
-        self.assertEqual(check_worker.mark_text({"error": "x"}), ("", None))
-        self.assertEqual(check_worker.mark_text(ok_body()), ("✓ checked", "ok"))
-        self.assertEqual(check_worker.mark_text(self.flagged("a", "b")), ("a · b", "flag"))
-        self.assertEqual(check_worker.mark_text(self.flagged("room noise", ok=True)),
-                         ("✓ checked · room noise", "flag"))
+        parts = check_worker.mark_parts
+        self.assertEqual(parts(None), [])
+        self.assertEqual(parts({"error": "x"}), [])
+        self.assertEqual(parts(ok_body()), [("✓ checked", "ok")])
+        self.assertEqual(parts(self.flagged("a", "b")), [("a · b", "flag")])
+
+    def test_passed_take_with_notes_is_ok_then_muted_notes(self):
+        r = {"ok": True, "flags": [{"kind": "pause", "text": 'pause of 0.8 s after "x"'},
+                                   {"kind": "noise", "text": "room noise at -50 dBFS"}]}
+        self.assertEqual(check_worker.mark_parts(r), [
+            ("✓ checked", "ok"),
+            ('· pause of 0.8 s after "x" · room noise at -50 dBFS', "note")])
+
+    def test_flagged_take_keeps_its_notes_muted(self):
+        r = {"ok": False, "flags": [{"kind": "cut_off", "text": "ends too abruptly"},
+                                    {"kind": "noise", "text": "room noise at -50 dBFS"}]}
+        self.assertEqual(check_worker.mark_parts(r), [
+            ("ends too abruptly", "flag"), ("· room noise at -50 dBFS", "note")])
+
+
+class PermissionRetry(unittest.TestCase):
+    """_commit_take retries a move that Windows refuses because ffmpeg (the
+    check) still has the old take open."""
+
+    def test_succeeds_after_two_refusals(self):
+        calls, sleeps = [], []
+
+        def move():
+            calls.append(1)
+            if len(calls) < 3:
+                raise PermissionError(13, "in use")
+            return "done"
+
+        self.assertEqual(check_worker.retry_on_permission_error(move, sleep=sleeps.append),
+                         "done")
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(sleeps, [0.1, 0.1])
+
+    def test_gives_up_after_three_retries(self):
+        calls, sleeps = [], []
+
+        def move():
+            calls.append(1)
+            raise PermissionError(13, "in use")
+
+        with self.assertRaises(PermissionError):
+            check_worker.retry_on_permission_error(move, sleep=sleeps.append)
+        self.assertEqual(len(calls), 4)          # the try and three retries
+        self.assertEqual(sleeps, [0.1, 0.1, 0.1])
+
+    def test_other_errors_are_not_retried(self):
+        calls = []
+
+        def move():
+            calls.append(1)
+            raise FileNotFoundError("gone")
+
+        with self.assertRaises(FileNotFoundError):
+            check_worker.retry_on_permission_error(move, sleep=lambda s: None)
+        self.assertEqual(len(calls), 1)
 
 
 class LoadingNoticeSaysWhy(WorkerTestCase):
