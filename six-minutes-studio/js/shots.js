@@ -17,6 +17,25 @@ const KINDS = ["broll", "lineart", "blender"];
 const TOOLS = ["higgsfield", "blender"];
 const filled = (v) => typeof v === "string" && v.trim() !== "";
 
+const shots = (n) => `${n} shot${n === 1 ? "" : "s"}`;
+
+// What the film is waiting on Jon for, from its shots. Written in the same update as every change to them.
+export function deriveWaiting(assets = []) {
+  if (!assets.length) return "Shot list not made yet";
+  const chosen = (a) => a.takes?.find((t) => t.n === a.chosen) ?? null;
+  const busy = (a) => (a.takes ?? []).some((t) => t.status === "queued" || t.status === "running");
+  const review = assets.filter((a) => !a.approved && chosen(a)?.status === "done").length;
+  const redo = assets.filter((a) => !busy(a) && ["failed", "interrupted"].includes(chosen(a)?.status)).length;
+  const parts = [];
+  if (review) parts.push(`${shots(review)} to review`);
+  if (redo) parts.push(`${shots(redo)} need${redo === 1 ? "s" : ""} a redo`);
+  if (parts.length) return parts.join(", ");
+  if (assets.some(busy)) return null; // running, not waiting on Jon
+  if (assets.every((a) => a.approved)) return "All shots approved";
+  const start = assets.filter((a) => !a.approved && !(a.takes ?? []).length).length;
+  return start ? `${shots(start)} to start` : null;
+}
+
 export function orderByScript(assets) {
   return [...assets].sort((a, b) => a.lineIndex - b.lineIndex || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
@@ -66,6 +85,7 @@ export async function buildShotList(host, store, { scriptText, handoverText }) {
   await store.update((d) => {
     if (d.assets.length) throw new ClaudeError("exists", "This film already has a shot list.");
     d.assets = assets;
+    d.waiting = deriveWaiting(assets);
   });
   await store.log(`Shot list made: ${assets.length} shots`);
   return assets;

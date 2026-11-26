@@ -14,7 +14,7 @@ test("creates studio folders and empty state", async () => {
   assert.equal(await h.fs.exists(DIR + "\\studio\\media"), true);
   assert.equal(s.state.v, 1);
   assert.equal(s.state.part, 2);
-  assert.equal(s.state.waiting, null);
+  assert.equal(s.state.waiting, "Shot list not made yet");
   assert.deepEqual(s.state.assets, []);
 });
 
@@ -40,7 +40,7 @@ test("a throwing update changes nothing and rejects", async () => {
   const h = await mk();
   const s = await openFilm(h, DIR);
   await assert.rejects(s.update((d) => { d.waiting = "bad"; throw new Error("boom"); }), /boom/);
-  assert.equal(s.state.waiting, null);
+  assert.equal(s.state.waiting, "Shot list not made yet");
   await s.update((d) => { d.waiting = "ok"; });
   assert.equal(s.state.waiting, "ok");
 });

@@ -219,3 +219,17 @@ test("jobs match a film by folder name, so S: and the UNC copy are the same film
   await tick(); await tick();
   assert.equal(store.state.assets[0].takes[0].status, "done");
 });
+
+test("waiting follows takes: running, ready to review, approved", async () => {
+  const runners = { higgsfield: { start: async () => ({ file: "S:\\out.png" }) } };
+  const { ctx, store } = await setup([hf()], runners);
+  watchJobs(ctx);
+  await startTake(ctx, "HF-01");
+  await tick(); await tick();
+  assert.equal(store.state.assets[0].takes[0].status, "done");
+  assert.equal(store.state.waiting, "1 shot to review");
+  await approve(ctx, "HF-01");
+  assert.equal(store.state.waiting, "All shots approved");
+  await unapprove(ctx, "HF-01");
+  assert.equal(store.state.waiting, "1 shot to review");
+});

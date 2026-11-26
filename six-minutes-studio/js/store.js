@@ -1,7 +1,8 @@
 // Per-film studio state: load, serialised atomic update, append-only log.
 import { join } from "./paths.js";
+import { deriveWaiting } from "./shots.js";
 
-const fresh = () => ({ v: 1, film: "", part: 2, waiting: null, assets: [] });
+const fresh = () => ({ v: 1, film: "", part: 2, waiting: deriveWaiting([]), assets: [] });
 
 export async function openFilm(host, dir) {
   const studio = join(dir, "studio");

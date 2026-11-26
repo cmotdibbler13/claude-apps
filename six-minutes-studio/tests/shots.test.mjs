@@ -57,3 +57,22 @@ test("orderByScript sorts by lineIndex then id", () => {
   const r = orderByScript([{ id: "HF-03", lineIndex: 1 }, { id: "HF-02", lineIndex: 1 }, { id: "HF-09", lineIndex: 0 }]);
   assert.deepEqual(r.map((a) => a.id), ["HF-09", "HF-02", "HF-03"]);
 });
+
+test("waiting says what is waiting on Jon", async () => {
+  const { deriveWaiting } = await import("../js/shots.js");
+  const a = (takes, o = {}) => ({ id: "X", takes, chosen: takes.length, approved: false, ...o });
+  const t = (n, status) => ({ n, status });
+  assert.equal(deriveWaiting([]), "Shot list not made yet");
+  assert.equal(deriveWaiting([a([t(1, "done")]), a([t(1, "done")]), a([t(1, "running")])]), "2 shots to review");
+  assert.equal(deriveWaiting([a([t(1, "done")]), a([t(1, "failed")])]), "1 shot to review, 1 shot needs a redo");
+  assert.equal(deriveWaiting([a([t(1, "failed")]), a([t(1, "interrupted")])]), "2 shots need a redo");
+  assert.equal(deriveWaiting([a([t(1, "done")], { approved: true }), a([t(1, "queued")])]), null);
+  assert.equal(deriveWaiting([a([t(1, "done")], { approved: true }), a([t(1, "done")], { approved: true })]), "All shots approved");
+  assert.equal(deriveWaiting([a([t(1, "done")], { approved: true }), a([])]), "1 shot to start");
+});
+
+test("the shot list writes waiting in the same update", async () => {
+  const { h, store } = await mk([shot({ id: "A" }), shot({ id: "B", lineIndex: 1 })]);
+  await buildShotList(h, store, input);
+  assert.equal(store.state.waiting, "2 shots to start");
+});

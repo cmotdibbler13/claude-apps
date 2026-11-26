@@ -2,6 +2,7 @@
 import { askJson } from "./claude.js";
 import { writeBlenderScript } from "./tools/blender.js";
 import { join, filmKey } from "./paths.js";
+import { deriveWaiting } from "./shots.js";
 
 const REWRITE_INSTRUCTIONS = `You improve one image or video generation prompt for a Six Minutes On... documentary film (dark, calm, precise, British English).
 You get the shot (id, desc, line, kind), the previous prompt and Jon's note. Change the previous prompt to follow the note and keep everything else the same.
@@ -10,6 +11,8 @@ Reply with JSON only: {"prompt": "<the new prompt>"}.`;
 
 const filled = (v) => typeof v === "string" && v.trim() !== "";
 const find = (state, id) => state.assets.find((a) => a.id === id);
+// Every change to the shots also rewrites what the film is waiting on Jon for, in the same update.
+const save = (store, fn) => store.update((d) => { fn(d); d.waiting = deriveWaiting(d.assets); });
 
 export function canStart(asset, assets) {
   if (asset.tool !== "blender") return true;
@@ -73,7 +76,7 @@ export async function startTake(ctx, assetId, { note } = {}) {
   store.pending?.add(key);
   let jobId;
   try {
-    await store.update((d) => {
+    await save(store, (d) => {
       const a = find(d, assetId);
       if (a.takes.length !== n - 1) throw new Error(`${asset.id} changed while the take was being prepared.`);
       a.takes.push(take);
@@ -90,7 +93,7 @@ export async function startTake(ctx, assetId, { note } = {}) {
     });
   } catch (e) {
     const msg = String(e?.message ?? e);
-    await store.update((d) => {
+    await save(store, (d) => {
       const t = find(d, assetId).takes.find((x) => x.n === n);
       if (t) { t.status = "failed"; t.error = msg; }
     });
@@ -141,6 +144,8 @@ function applyJobs(d, dir, list, lines, pending) {
       lines.push(`${a.id} take ${t.n} failed: ${LOST}`);
     }
   }
+  const w = deriveWaiting(d.assets);
+  if (d.waiting !== w) { d.waiting = w; changed = true; }
   return changed;
 }
 
@@ -174,14 +179,14 @@ export async function approve(ctx, assetId) {
   if (!a) throw new Error(`Unknown shot ${assetId}`);
   const t = a.takes.find((x) => x.n === a.chosen);
   if (!t || t.status !== "done") throw new Error(`${assetId} has no finished take to approve.`);
-  await store.update((d) => { find(d, assetId).approved = true; });
+  await save(store, (d) => { find(d, assetId).approved = true; });
   await store.log(`${assetId} take ${t.n} approved`);
 }
 
 export async function unapprove(ctx, assetId) {
   const { store } = ctx;
   if (!find(store.state, assetId)) throw new Error(`Unknown shot ${assetId}`);
-  await store.update((d) => { find(d, assetId).approved = false; });
+  await save(store, (d) => { find(d, assetId).approved = false; });
   await store.log(`${assetId} approval removed`);
 }
 
@@ -190,6 +195,6 @@ export async function choose(ctx, assetId, n) {
   const a = find(store.state, assetId);
   if (!a) throw new Error(`Unknown shot ${assetId}`);
   if (!a.takes.some((t) => t.n === n)) throw new Error(`${assetId} has no take ${n}.`);
-  await store.update((d) => { const x = find(d, assetId); x.chosen = n; x.approved = false; });
+  await save(store, (d) => { const x = find(d, assetId); x.chosen = n; x.approved = false; });
   await store.log(`${assetId} take ${n} chosen`);
 }
