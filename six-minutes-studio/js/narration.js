@@ -56,29 +56,51 @@ async function isFile(host, p) {
   try { return !!(await host.fs.stat(p)).isFile; } catch { return false; }
 }
 
-async function firstIn(host, dir) {
+async function firstIn(host, dir, accept = () => true) {
   let entries = [];
   try { entries = await host.fs.list(dir); } catch { return null; }
-  const hits = entries.filter((e) => !e.isDirectory && /line.*script.*\.txt$/i.test(e.name)).map((e) => e.name).sort();
+  const hits = entries.filter((e) => !e.isDirectory && /line.*script.*\.txt$/i.test(e.name) && accept(e.name)).map((e) => e.name).sort();
   return hits.length ? join(dir, hits[0]) : null;
+}
+
+// "China Clay" -> "china_clay": lower case, every run of other characters one "_".
+const slug = (s) => String(s ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+
+// Autocue Studio's folder holds every film's line script: only one naming this film will do.
+function forFilm(filmDir) {
+  const film = slug(String(filmDir ?? "").replace(/[\\/]+$/, "").split(/[\\/]/).pop());
+  if (!film) return () => false;
+  const bare = film.replace(/_/g, "");
+  return (name) => slug(name).includes(film) || slug(name).replace(/_/g, "").includes(bare);
 }
 
 export async function findLineScript(host, filmDir, handoverText, settings = {}) {
   for (const p of lineScriptPaths(handoverText, filmDir)) if (await isFile(host, p)) return p;
-  const dirs = [filmDir, join(filmDir, "narration")];
-  if (settings?.autocueDir) dirs.push(settings.autocueDir);
-  for (const d of dirs) {
+  for (const d of [filmDir, join(filmDir, "narration")]) {
     const hit = await firstIn(host, d);
     if (hit) return hit;
   }
-  return null;
+  return settings?.autocueDir ? firstIn(host, settings.autocueDir, forFilm(filmDir)) : null;
 }
 
 // Reads and parses the file; the project name falls back to the file name, as in Autocue Studio.
+// Keeps the path and mtime so refreshLineScript can tell when it is edited.
 export async function loadLineScript(host, path) {
+  let mtimeMs = null;
+  try { mtimeMs = (await host.fs.stat(path)).mtimeMs ?? null; } catch { /* read below says why */ }
   const parsed = parseLineScript(await host.fs.read(path, "utf8"));
   const base = String(path).split(/[\\/]/).pop().replace(/\.[^.]*$/, "");
-  return { ...parsed, name: parsed.name ?? base };
+  return { ...parsed, name: parsed.name ?? base, path, mtimeMs };
+}
+
+// One stat: the same object if unchanged, a fresh parse if the file was edited, null if it is gone.
+export async function refreshLineScript(host, ls) {
+  if (!ls?.path) return ls;
+  let st;
+  try { st = await host.fs.stat(ls.path); } catch { return null; }
+  if (!st?.isFile) return null;
+  if ((st.mtimeMs ?? null) === ls.mtimeMs) return ls;
+  return loadLineScript(host, ls.path);
 }
 
 async function readJson(host, p) {
@@ -95,7 +117,8 @@ async function rowFor(host, base, project, ln) {
   if (!take?.isFile) return row;
   const res = await readJson(host, join(base, "checks", `${project}_${ln.id}.json`));
   const takeS = take.mtimeMs / 1000;
-  if (!res || typeof res.take_mtime !== "number" || res.take_mtime < takeS - TOL_S) return { ...row, status: "checking" };
+  if (!res) return { ...row, status: "unchecked" }; // never checked: Check all in Autocue Studio
+  if (typeof res.take_mtime !== "number" || res.take_mtime < takeS - TOL_S) return { ...row, status: "checking" };
   if (res.error) return { ...row, status: "error", flags: [String(res.error)] };
   const all = Array.isArray(res.flags) ? res.flags : [];
   for (const f of all) (FLAG_KINDS.has(f?.kind) ? row.flags : row.notes).push(String(f?.text ?? f?.kind ?? ""));
@@ -110,7 +133,7 @@ export async function narrationStatus(host, settings, lineScript) {
   const n = (s) => rows.filter((r) => r.status === s).length;
   return {
     project, rows,
-    counts: { total: rows.length, recorded: rows.filter((r) => r.status !== "missing").length, ok: n("ok"), flagged: n("flagged") },
+    counts: { total: rows.length, recorded: rows.filter((r) => r.status !== "missing").length, ok: n("ok"), flagged: n("flagged"), unchecked: n("unchecked") },
   };
 }
 
@@ -118,8 +141,9 @@ export function countsLine(c) {
   const parts = [`${c.recorded} of ${c.total} recorded`];
   if (c.ok) parts.push(`${c.ok} ok`);
   if (c.flagged) parts.push(`${c.flagged} flagged`);
+  if (c.unchecked) parts.push(`${c.unchecked} not checked \u2014 press Check all in Autocue Studio`);
   return parts.join(" \u00B7 ");
 }
 
-export const STATUS_LABEL = { missing: "Missing", checking: "Checking\u2026", ok: "OK", flagged: "Flagged", error: "Error" };
+export const STATUS_LABEL = { missing: "Missing", unchecked: "Not checked", checking: "Checking\u2026", ok: "OK", flagged: "Flagged", error: "Error" };
 export const NO_LINE_SCRIPT = "No line script found for this film. Name it in part1_handover.md.";

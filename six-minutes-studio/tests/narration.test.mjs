@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FakeHost } from "./fake-host.mjs";
-import { parseLineScript, findLineScript, narrationStatus, countsLine } from "../js/narration.js";
+import { parseLineScript, findLineScript, loadLineScript, refreshLineScript, narrationStatus, countsLine } from "../js/narration.js";
 
 const SCRIPT = `\uFEFF# name: china_clay
 # a comment
@@ -53,6 +53,20 @@ test("findLineScript order: handover path, film folder, narration folder, autocu
   assert.equal(await findLineScript(new FakeHost(), film, "", settings), null);
 });
 
+test("autocueDir only offers this film's line script, never another film's", async () => {
+  const host = new FakeHost();
+  const settings = { autocueDir: "C:\\Autocue" };
+  await put(host, "C:\\Autocue\\aardvark_line_script.txt", "x"); // alphabetically first
+  await put(host, "C:\\Autocue\\china_clay_line_script.txt", "x");
+  await put(host, "C:\\Autocue\\WhealJane-line-script.txt", "x");
+  assert.equal(await findLineScript(host, "S:\\Films\\China Clay", "", settings), "C:\\Autocue\\china_clay_line_script.txt");
+  assert.equal(await findLineScript(host, "S:\\Films\\Wheal Jane", "", settings), "C:\\Autocue\\WhealJane-line-script.txt"); // slug without "_"
+  assert.equal(await findLineScript(host, "S:\\Films\\Botallack", "", settings), null);
+  // The film's own folders still take any line script.
+  await put(host, "S:\\Films\\Botallack\\narration\\lines_script.txt", "x");
+  assert.equal(await findLineScript(host, "S:\\Films\\Botallack", "", settings), "S:\\Films\\Botallack\\narration\\lines_script.txt");
+});
+
 const LS = { name: "p", lines: [{ id: "01", section: "", text: "a" }, { id: "02", section: "", text: "b" }, { id: "03", section: "", text: "c" }, { id: "04", section: "", text: "d" }, { id: "05", section: "", text: "e" }] };
 const S = { autocueRecordings: "R:\\Rec" };
 // FakeHost stats every file at host.t, so a take's mtime is kept in a side table.
@@ -71,11 +85,11 @@ const result = (host, id, o) => put(host, `R:\\Rec\\p\\checks\\p_${id}.json`, JS
 test("no recordings folder lists all lines missing", async () => {
   const st = await narrationStatus(new FakeHost(), S, LS);
   assert.deepEqual(st.rows.map((r) => r.status), Array(5).fill("missing"));
-  assert.deepEqual(st.counts, { total: 5, recorded: 0, ok: 0, flagged: 0 });
+  assert.deepEqual(st.counts, { total: 5, recorded: 0, ok: 0, flagged: 0, unchecked: 0 });
   assert.equal(countsLine(st.counts), "0 of 5 recorded");
 });
 
-test("statuses: missing, ok, flagged, checking, error; notes vs flags; counts", async () => {
+test("statuses: missing, ok, flagged, unchecked, checking, error; notes vs flags; counts", async () => {
   const host = new FakeHost();
   await take(host, "01", 1_000_000);
   await result(host, "01", { take_mtime: 1000, ok: true, flags: [{ kind: "pause", text: "pause of 0.7 s" }] });
@@ -87,14 +101,50 @@ test("statuses: missing, ok, flagged, checking, error; notes vs flags; counts", 
   await take(host, "05", 5_000_000);
   await result(host, "05", { take_mtime: 5000, error: "model unavailable" });
   const st = await narrationStatus(host, S, { ...LS, lines: [...LS.lines, { id: "06", section: "", text: "f" }] });
-  assert.deepEqual(st.rows.map((r) => r.status), ["ok", "flagged", "checking", "checking", "error", "missing"]);
+  assert.deepEqual(st.rows.map((r) => r.status), ["ok", "flagged", "unchecked", "checking", "error", "missing"]);
   assert.deepEqual(st.rows[0].notes, ["pause of 0.7 s"]);
   assert.deepEqual(st.rows[1].flags, ["ends too abruptly"]);
   assert.deepEqual(st.rows[1].notes, ["room noise"]);
   assert.deepEqual(st.rows[4].flags, ["model unavailable"]);
-  assert.deepEqual(st.counts, { total: 6, recorded: 5, ok: 1, flagged: 1 });
-  assert.equal(countsLine(st.counts), "5 of 6 recorded \u00B7 1 ok \u00B7 1 flagged");
-  assert.equal(countsLine({ total: 4, recorded: 2, ok: 2, flagged: 0 }), "2 of 4 recorded \u00B7 2 ok");
+  assert.deepEqual(st.counts, { total: 6, recorded: 5, ok: 1, flagged: 1, unchecked: 1 });
+  assert.equal(countsLine(st.counts), "5 of 6 recorded \u00B7 1 ok \u00B7 1 flagged \u00B7 1 not checked \u2014 press Check all in Autocue Studio");
+  assert.equal(countsLine({ total: 4, recorded: 2, ok: 2, flagged: 0, unchecked: 0 }), "2 of 4 recorded \u00B7 2 ok");
+  assert.equal(countsLine({ total: 4, recorded: 3, ok: 0, flagged: 0, unchecked: 3 }), "3 of 4 recorded \u00B7 3 not checked \u2014 press Check all in Autocue Studio");
+});
+
+test("a take with no check yet is Not checked; an out-of-date check is Checking", async () => {
+  const { narrationModel } = await import("../js/ui/review.js");
+  const host = new FakeHost();
+  await take(host, "01", 1_000_000); // never checked (e.g. recorded before checks existed)
+  await take(host, "02", 2_000_000);
+  await result(host, "02", { take_mtime: 1990, ok: true, flags: [] }); // re-recorded since
+  const st = await narrationStatus(host, S, { ...LS, lines: LS.lines.slice(0, 2) });
+  const m = narrationModel(st);
+  assert.deepEqual(m.rows.map((r) => [r.status, r.chip]), [["unchecked", "Not checked"], ["checking", "Checking\u2026"]]);
+});
+
+test("refreshLineScript: one stat; re-reads only when the file's mtime changes", async () => {
+  const host = new FakeHost();
+  const p = "S:\\Films\\Clay\\clay_line_script.txt";
+  await put(host, p, "# name: clay\n[01]\nOne.\n");
+  host.t = 1000;
+  const ls = await loadLineScript(host, p);
+  assert.equal(ls.path, p);
+  assert.equal(ls.mtimeMs, 1000);
+  let stats = 0, reads = 0;
+  const { stat, read } = host.fs;
+  host.fs.stat = async (q) => { stats++; return stat(q); };
+  host.fs.read = async (...a) => { reads++; return read(...a); };
+  assert.equal(await refreshLineScript(host, ls), ls);
+  assert.deepEqual([stats, reads], [1, 0]);
+  await host.fs.write(p, "# name: clay\n[01]\nOne.\n[02]\nTwo.\n");
+  host.t = 2000;
+  const again = await refreshLineScript(host, ls);
+  assert.deepEqual(again.lines.map((l) => l.id), ["01", "02"]);
+  assert.equal(again.mtimeMs, 2000);
+  assert.deepEqual([stats, reads], [3, 1]); // the check, then the reload's own stat
+  host.fs.stat = async () => { throw new Error("ENOENT"); };
+  assert.equal(await refreshLineScript(host, again), null); // gone: look for it again
 });
 
 test("review model: counts line, snipped text, flag text, missing line script", async () => {

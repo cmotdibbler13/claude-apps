@@ -3,7 +3,7 @@ import { makeHost } from "./host.js";
 import { accessGate } from "./gate.js";
 import { resolveRoot, join } from "./paths.js";
 import { loadSettings } from "./settings.js";
-import { findLineScript, loadLineScript, narrationStatus } from "./narration.js";
+import { findLineScript, loadLineScript, refreshLineScript, narrationStatus } from "./narration.js";
 import { scanFilms } from "./films.js";
 import { makeFilmSession, readSavedJobs } from "./session.js";
 import { makeJobs } from "./jobs.js";
@@ -242,11 +242,12 @@ const jobsActions = {
   },
 };
 
-// ---- narration (reads only; refreshed every 10 s while Review is open) ----
+// ---- narration (reads only; refreshed every 10 s while Review is open; the line script is re-read when it changes) ----
 async function refreshNarration() {
   const film = app.film, r = app.review;
   if (app.view !== "review" || !film || !app.store || app.host?.fs?.stat === undefined) return;
   try {
+    if (r.lineScript) r.lineScript = await refreshLineScript(app.host, r.lineScript); // one stat; re-read if edited
     if (!r.lineScript) {
       const handover = await readText(join(film.dir, "handover", "part1_handover.md"));
       const path = await findLineScript(app.host, film.dir, handover ?? "", app.settings ?? {});
