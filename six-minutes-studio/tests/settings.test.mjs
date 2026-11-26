@@ -62,3 +62,14 @@ test("an explicit comfy.workflow is kept", async () => {
   await host.fs.write(ROOT + "\\.studio-settings.json", JSON.stringify({ comfy: { workflow: "D:\\w.json" } }));
   assert.equal((await loadSettings(host, ROOT)).comfy.workflow, "D:\\w.json");
 });
+
+test("stableAudio defaults are present and partial overrides keep the rest", async () => {
+  const s = await loadSettings(new FakeHost(), ROOT);
+  assert.equal(s.stableAudio.url, "http://127.0.0.1:7860");
+  const host = new FakeHost();
+  await host.fs.mkdir(ROOT);
+  await host.fs.write(ROOT + "\\.studio-settings.json", JSON.stringify({ stableAudio: { steps: 12 } }));
+  const t = await loadSettings(host, ROOT);
+  assert.equal(t.stableAudio.url, "http://127.0.0.1:7860");
+  assert.equal(t.stableAudio.steps, 12);
+});

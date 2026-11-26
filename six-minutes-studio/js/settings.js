@@ -14,6 +14,10 @@ export const DEFAULT_SETTINGS = {
     },
     lengthUnit: "seconds", width: 1920, height: 1088, seconds: 5, fps: 24, expectedSeconds: 240,
   },
+  stableAudio: {
+    url: "http://127.0.0.1:7860", pterm: "C:\\pinokio\\bin\\npm\\pterm.cmd",
+    app: "C:\\pinokio\\api\\stable-audio-3-small.pinokio.git", steps: 8, cfg: 1.0,
+  },
 };
 
 const isObj = (v) => v && typeof v === "object" && !Array.isArray(v);
@@ -23,7 +27,8 @@ function withDefaults(root, v = {}) {
   const c = isObj(v.comfy) ? v.comfy : {};
   const comfy = { ...d.comfy, ...c, nodes: { ...d.comfy.nodes, ...(isObj(c.nodes) ? c.nodes : {}) } };
   if (!comfy.workflow) comfy.workflow = join(root, "ComfyUI workflows", "broll_ltx.json");
-  return { ...d, ...v, comfy };
+  const stableAudio = { ...d.stableAudio, ...(isObj(v.stableAudio) ? v.stableAudio : {}) };
+  return { ...d, ...v, comfy, stableAudio };
 }
 
 export async function loadSettings(host, root) {

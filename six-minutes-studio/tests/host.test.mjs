@@ -169,6 +169,18 @@ test("makeHost spawn wraps handlers; exec passes cwd and timeout", async () => {
   assert.deepEqual(seen, ["o1", "e2", "x3"]);
 });
 
+test("makeHost spawn passes shell only when opts.shell is true", async () => {
+  const f = fakeClaude();
+  const h = await makeHost(f.claude);
+  h.spawn("a", []);
+  h.spawn("b", [], { shell: "yes" });
+  h.spawn("c", ["x"], { cwd: "S:\\", shell: true });
+  const sp = f.log.filter((e) => Array.isArray(e) && e[0] === "spawn");
+  assert.equal(sp[0][3], undefined);
+  assert.equal(sp[1][3], undefined);
+  assert.deepEqual(sp[2][3], { cwd: "S:\\", shell: true });
+});
+
 test("makeHost has null mcp/claude when those capabilities are absent", async () => {
   const f = fakeClaude();
   const h = await makeHost({ use: async (n) => (n === "mcp" || n === "sample" ? null : f.claude.use(n)) });

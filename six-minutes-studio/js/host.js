@@ -47,7 +47,10 @@ export async function makeHost(claude = globalThis.claude) {
       return childProcess.exec(cmd, o);
     },
     spawn(cmd, args = [], opts = {}) {
-      const p = childProcess.spawn(cmd, args, opts.cwd ? { cwd: opts.cwd } : undefined);
+      const so = {};
+      if (opts.cwd) so.cwd = opts.cwd;
+      if (opts.shell === true) so.shell = true; // only for fixed commands such as pterm
+      const p = childProcess.spawn(cmd, args, Object.keys(so).length ? so : undefined);
       // A refused spawn (e.g. Blender not found) arrives as an 'error' event with no 'exit'.
       // Surface the text to onErr and settle onExit once with code null so callers never hang.
       const errFns = [], exitFns = [];
