@@ -10,6 +10,19 @@ import { LOST } from "../redo.js";
 const WPM = 150;
 const live = (s) => s === "queued" || s === "running";
 const VERB = { VOICEOVER: "Joining…", FIT: "Fitting…", MIX: "Mixing…" };
+const REJOIN = "Waits for the voiceover join to be run again.";
+
+// A take saved after the join started (or re-recorded since) is not in the voiceover.
+export function joinStale(vo, narration) {
+  if (vo?.status !== "done") return false;
+  const since = vo.startedAt ?? vo.at;
+  if (since == null) return false;
+  return (narration?.rows ?? []).some((r) => Number.isFinite(r.takeS) && r.takeS * 1000 > since);
+}
+
+// The mix player is kept across re-renders while it plays the same mix: the same file from the same run.
+export const playerKey = (file, at) => `${file ?? ""}#${at ?? ""}`;
+export const keepPlayer = (current, key) => !!current?.el && current.key === key;
 
 // m:ss, rounded to the second.
 export function mmss(s) {
@@ -65,8 +78,7 @@ function joinStep(state, narration, o) {
     if (missing.length) lock = `Record these first: ${missing.join(", ")}`;
     flaggedIds = narration.rows.filter((r) => r.status === "flagged").map((r) => r.id);
   }
-  // A take recorded (or re-recorded) after the join is not in it.
-  const stale = vo?.status === "done" && vo.at != null && (narration?.rows ?? []).some((r) => Number.isFinite(r.takeS) && r.takeS * 1000 > vo.at);
+  const stale = o.joinStale;
   const s = base("VOICEOVER", vo, { lock, stale, pending: o.pending.has("VOICEOVER"), jobs: o.jobs, error: o.cardErrors.get("VOICEOVER") });
   const again = vo && vo.status !== "queued" && vo.status !== "running";
   const label = flaggedIds.length ? `Join anyway (${flaggedIds.length} flagged)` : again ? "Join again" : "Join voiceover";
@@ -89,9 +101,10 @@ function fitStep(state, o) {
   const fit = state?.mix?.fit ?? null;
   let lock = null;
   if (vo?.status !== "done") lock = "Waits for the voiceover join.";
+  else if (o.joinStale) lock = REJOIN;
   else if (!approvedScore(state)) lock = "Waits for an approved score take (Score card).";
   else if (!o.settings.stemRemixer) lock = MSG_NO_STEM_REMIXER;
-  const stale = fitStale(state);
+  const stale = fitStale(state) || o.joinStale;
   const s = base("FIT", fit, { lock, stale, pending: o.pending.has("FIT"), jobs: o.jobs, error: o.cardErrors.get("FIT") });
   const label = s.state === "done" ? "Fit again with a note" : fit && s.state !== "ready" && s.state !== "locked" ? "Fit again" : "Fit score";
   const out = { ...s, title: "Fit score", run: { label, enabled: s.free && !lock, note: s.state === "done" }, noteOpen: o.noteFor === "FIT",
@@ -120,17 +133,19 @@ function mixStep(state, o) {
   const fit = state?.mix?.fit;
   const x = state?.mix?.mix ?? null;
   let lock = null;
-  if (fit?.status !== "done") lock = "Waits for the score fit.";
+  if (o.joinStale) lock = REJOIN;
+  else if (fit?.status !== "done") lock = "Waits for the score fit.";
   else if (fitStale(state)) lock = "Waits for the score fit to be run again.";
-  const stale = mixStale(state);
+  const stale = mixStale(state) || o.joinStale;
   const s = base("MIX", x, { lock, stale, pending: o.pending.has("MIX"), jobs: o.jobs, error: o.cardErrors.get("MIX") });
   const again = x && s.state !== "ready" && s.state !== "locked";
   const out = { ...s, title: "Mix preview", run: { label: again ? "Make mix again" : "Make mix preview", enabled: s.free && !lock },
-    player: null, playerLabel: null, marks: [], files: [], unplaced: null, approved: false, canApprove: false, approvalNote: null };
+    player: null, playerKey: null, playerLabel: null, marks: [], files: [], unplaced: null, approved: false, canApprove: false, approvalNote: null };
   if (x?.status === "done") {
     const f = x.files ?? {};
     out.player = f.mp3 ?? f.wav ?? null;
     out.playerLabel = out.player ? basename(out.player) : null;
+    out.playerKey = out.player ? playerKey(out.player, x.at) : null;
     out.marks = (fit?.targets?.sections ?? []).map((sec) => ({ t: sec.startS, label: `${mmss(sec.startS)} ${sec.name}` }));
     out.files = ["wav", "mp3", "voice", "music"].filter((k) => f[k]).map((k) => ({ path: f[k], name: basename(f[k]) }));
     if (x.unplaced?.length) out.unplaced = `Not placed (no start time): ${x.unplaced.join(", ")}`;
@@ -143,7 +158,7 @@ function mixStep(state, o) {
 
 // settings: { stemRemixer: bool }. ui: { exports: {files, pick, error, loading}, opened }.
 export function mixModel({ state, narration = null, settings = {}, pending = new Set(), cardErrors = new Map(), noteFor = null, playing = null, jobs = [], ui = {} } = {}) {
-  const o = { settings, pending, cardErrors, noteFor, playing, jobs, ui };
+  const o = { settings, pending, cardErrors, noteFor, playing, jobs, ui, joinStale: joinStale(state?.mix?.voiceover, narration) };
   return { steps: [joinStep(state, narration, o), fitStep(state, o), mixStep(state, o)] };
 }
 
@@ -176,23 +191,34 @@ function sheetTable(rows) {
       h("td", { class: r.lands === "no move found" ? "nomove" : "num", text: r.lands }), h("td", { class: "num", text: r.miss }))))));
 }
 
+// "Use another file…": a full path Jon pastes (useStemRemixerExport checks it is there).
+function otherFile(s, actions) {
+  const key = "mix-other";
+  const inp = h("input", { type: "text", id: key, class: "mother", placeholder: "Use another file… paste its full path", "aria-label": "Use another file: its full path" });
+  inp.value = actions.field(key) ?? "";
+  inp.addEventListener("input", () => actions.setField(key, inp.value));
+  return h("div", { class: "mrow" }, inp,
+    btn("Use this file", () => { if (inp.value.trim()) actions.useExport(inp.value.trim()); }, { ghost: true, disabled: !s.canUseExport }));
+}
+
 function exportsBox(ex, s, actions) {
   if (!ex) return null;
   if (ex.loading) return h("p", { class: "hist", text: "Looking for exports…" });
-  if (ex.error) return h("div", { class: "mexports" }, h("p", { class: "err", text: ex.error }), btn("Close", () => actions.closeExports(), { ghost: true }));
+  if (ex.error) return h("div", { class: "mexports" }, h("p", { class: "err", text: ex.error }), otherFile(s, actions), btn("Close", () => actions.closeExports(), { ghost: true }));
   if (!ex.files.length) {
-    return h("div", { class: "mexports" }, h("p", { class: "hist", text: "No exports newer than the fit. Export the mix in Stem Remixer first (it saves in its own folder unless you pick another)." }),
-      btn("Close", () => actions.closeExports(), { ghost: true }));
+    return h("div", { class: "mexports" }, h("p", { class: "hist", text: "No exports newer than the fit. Export the mix in Stem Remixer first, or paste the file's path below." }),
+      otherFile(s, actions), btn("Close", () => actions.closeExports(), { ghost: true }));
   }
   const pick = ex.files.find((f) => f.picked);
   return h("div", { class: "mexports" },
-    h("p", { class: "hist", text: "Stem Remixer exports newer than the fit, newest first:" }),
+    h("p", { class: "hist", text: "Stem Remixer exports newer than the fit, newest first. Using one makes the mix again from it." }),
     h("ul", { class: "mlist pick", role: "radiogroup", "aria-label": "Stem Remixer exports" }, ex.files.map((f) => h("li", {},
       h("button", { type: "button", role: "radio", "aria-checked": String(f.picked), class: `mpick${f.picked ? " on" : ""}`, onclick: () => actions.pickExport(f.path) },
-        h("span", { class: "mname", text: f.name }), h("span", { class: "hist", text: f.whenText ?? "" }))))),
+        h("span", { class: "mname", text: f.name }), h("span", { class: "hist", text: [f.whereText, f.whenText].filter(Boolean).join(" · ") }))))),
     h("div", { class: "row" },
       btn(pick ? `Use ${pick.name}` : "Use this export", () => pick && actions.useExport(pick.path), { disabled: !pick || !s.canUseExport }),
-      btn("Cancel", () => actions.closeExports(), { ghost: true })));
+      btn("Cancel", () => actions.closeExports(), { ghost: true })),
+    otherFile(s, actions));
 }
 
 function fitBody(s, actions) {
@@ -225,7 +251,7 @@ function fitBody(s, actions) {
 function mixBody(s, actions) {
   const kids = [];
   if (s.player) {
-    kids.push(h("div", { class: "mplayer" }, actions.mixPlayer(s.player, s.playerLabel)));
+    kids.push(h("div", { class: "mplayer" }, actions.mixPlayer(s.player, s.playerKey, s.playerLabel)));
     if (s.marks.length) {
       kids.push(h("div", { class: "mmarks", role: "group", "aria-label": "Section marks" },
         s.marks.map((mk) => h("button", { type: "button", class: "mmark", title: "Play from here", onclick: () => actions.seekMix(mk.t) }, mk.label))));

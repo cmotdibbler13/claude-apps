@@ -741,3 +741,37 @@ test("audio: Starts at is always sent, so a retyped time marks it Jon's; it stay
   assert.equal(m.canEdit, false);
   assert.equal(m.canEditStart, true);
 });
+
+test("mix: a stale join makes the fit and mix out of date and blocks Approve mix", () => {
+  // The take was saved during the join: after it started (190 s) but before it ended (200 s).
+  const n = narr([nrow("01.1", "ok", { takeS: 195 }), nrow("01.2", "ok")]);
+  const m = mm(mstate({ voiceover: vo({ startedAt: 190_000 }), fit: fitH(), mix: mixH() }), { narration: n });
+  const [j, f, x] = m.steps;
+  assert.equal(j.state, "stale");
+  assert.equal(f.state, "stale");
+  assert.equal(f.statusText, OUT_OF_DATE);
+  assert.equal(f.lock, "Waits for the voiceover join to be run again.");
+  assert.equal(f.run.enabled, false);
+  assert.equal(f.canUseExport, false);
+  assert.equal(x.state, "stale");
+  assert.equal(x.statusText, OUT_OF_DATE);
+  assert.equal(x.lock, "Waits for the voiceover join to be run again.");
+  assert.equal(x.canApprove, false);
+  assert.equal(x.run.enabled, false);
+  // Before the join started: still current.
+  const ok = mm(mstate({ voiceover: vo({ startedAt: 190_000 }), fit: fitH(), mix: mixH() }), { narration: narr([nrow("01.1", "ok", { takeS: 189 })]) });
+  assert.deepEqual(ok.steps.map((s) => s.state), ["done", "done", "done"]);
+  assert.equal(ok.steps[2].canApprove, true);
+});
+
+test("mix: the player is keyed on the file and the mix run, so a new run gets a new player", async () => {
+  const { playerKey, keepPlayer } = await import("../js/ui/mix.js");
+  const a = step(mm(mstate({ voiceover: vo(), fit: fitH(), mix: mixH() })), "MIX").playerKey;
+  const b = step(mm(mstate({ voiceover: vo(), fit: fitH(), mix: mixH({ at: 500_000 }) })), "MIX").playerKey;
+  assert.equal(a, playerKey(MIXF.mp3, 400_000));
+  assert.notEqual(a, b);
+  const el = {};
+  assert.equal(keepPlayer({ key: a, el }, a), true);
+  assert.equal(keepPlayer({ key: a, el }, b), false);
+  assert.equal(keepPlayer({ key: a, el: null }, a), false);
+});

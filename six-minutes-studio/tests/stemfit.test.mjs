@@ -112,6 +112,28 @@ test("Open in Stem Remixer reports a spawn that fails straight away", async () =
   await assert.rejects(openInStemRemixer(host, { stemRemixerDir: null }, { score: SCORE }), { message: MSG_NO_STEM_REMIXER });
 });
 
+test("Open in Stem Remixer passes --export-dir when given", async () => {
+  const host = new FakeHost();
+  const spawns = [];
+  host.spawnScript((cmd, args) => { spawns.push(args); });
+  await openInStemRemixer(host, { stemRemixerDir: SR }, { score: SCORE, plan: null, exportDir: MIX + "\\stem-remixer" }, { graceMs: 5 });
+  assert.deepEqual(spawns[0], ["main.py", "--open", SCORE, "--export-dir", MIX + "\\stem-remixer"]);
+});
+
+test("Use this export lists the film's export folder first, then Stem Remixer's, each newest first", async () => {
+  const host = new FakeHost();
+  const ED = MIX + "\\stem-remixer";
+  await host.fs.mkdir(SR); await host.fs.mkdir(ED);
+  const times = { [SR + "\\a.wav"]: 900, [ED + "\\b.wav"]: 300, [ED + "\\c.mp3"]: 400, [ED + "\\old.wav"]: 100 };
+  for (const p of Object.keys(times)) await host.fs.write(p, "x");
+  host.fs.stat = async (p) => ({ isFile: true, isDirectory: false, mtimeMs: times[p] });
+  const list = await listExports(host, { stemRemixerDir: SR }, 150, { exportDir: ED });
+  assert.deepEqual(list.map((f) => f.path), [ED + "\\c.mp3", ED + "\\b.wav", SR + "\\a.wav"]);
+  // A film folder that isn't there yet is skipped.
+  const only = await listExports(host, { stemRemixerDir: SR }, 150, { exportDir: "S:\\nowhere" });
+  assert.deepEqual(only.map((f) => f.path), [SR + "\\a.wav"]);
+});
+
 test("Use this export lists .wav and .mp3 in the Stem Remixer folder newer than the fit, newest first", async () => {
   const host = new FakeHost();
   await host.fs.mkdir(SR);

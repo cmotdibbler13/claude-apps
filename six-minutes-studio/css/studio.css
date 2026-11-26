@@ -214,3 +214,5 @@ textarea{width:100%;background:var(--s0);color:var(--ink);border:1px solid var(-
 .mmark{background:none;border:1px solid var(--rule);color:var(--tide);font-size:12px;padding:3px 8px;font-variant-numeric:tabular-nums}
 .mmark:hover,.mfile:hover{border-color:var(--tide)}
 .mfile{background:none;border:0;border-bottom:1px dotted var(--rs);padding:0;color:var(--mut);font-size:12px;text-align:left;overflow-wrap:anywhere}
+.mrow{display:flex;flex-wrap:wrap;gap:8px;align-self:stretch;align-items:center}
+.mother{flex:1 1 16em;background:var(--s0);color:var(--ink);border:1px solid var(--rule);font:13px Inter,"Helvetica Neue",Arial,sans-serif;padding:6px 8px}

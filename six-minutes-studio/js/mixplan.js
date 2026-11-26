@@ -26,6 +26,7 @@ export function mixJobDone(h, j) {
   const m = j.meta ?? {};
   const copy = (keys) => { for (const k of keys) if (m[k] !== undefined) h[k] = m[k]; };
   h.at = j.endedAt ?? null;
+  h.startedAt = j.startedAt ?? null; // a take saved after this is not in the run
   if (h.id === "VOICEOVER") copy(["wav", "csv", "transcript", "lengthS", "tightened", "extra", "silent"]);
   else if (h.id === "FIT") { if (j.file) h.file = j.file; copy(["lengthS", "measureFile", "turnedDown"]); }
   else if (h.id === "MIX") { copy(["files", "unplaced", "lengthS", "sfx"]); h.approved = false; }

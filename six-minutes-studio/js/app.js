@@ -25,6 +25,7 @@ import { mountProbe } from "./ui/probe.js";
 import * as filmsView from "./ui/films.js";
 import * as jobsView from "./ui/jobs.js";
 import * as reviewView from "./ui/review.js";
+import { keepPlayer } from "./ui/mix.js";
 
 const $ = (id) => document.getElementById(id);
 const msg = (e) => String(e?.message ?? e);
@@ -341,13 +342,14 @@ async function playTake(file) {
 }
 
 // ---- the mix preview: one <audio> with its own scrubber, kept across re-renders so it keeps playing ----
-const mixPlayer = { file: null, el: null };
+const mixPlayer = { key: null, el: null };
 function dropMixPlayer() {
   if (mixPlayer.el) { try { mixPlayer.el.pause(); } catch { /* gone */ } mixPlayer.el.removeAttribute("src"); }
-  mixPlayer.file = null; mixPlayer.el = null;
+  mixPlayer.key = null; mixPlayer.el = null;
 }
-function mixAudioEl(file, label) {
-  if (mixPlayer.file === file && mixPlayer.el) return mixPlayer.el;
+// key = the file and the mix run's time: "Make mix again" writes the same path, so a new run gets a new player.
+function mixAudioEl(file, key, label) {
+  if (keepPlayer(mixPlayer, key)) return mixPlayer.el;
   dropMixPlayer();
   const el = document.createElement("audio");
   el.controls = true;
@@ -356,7 +358,7 @@ function mixAudioEl(file, label) {
   el.setAttribute("aria-label", `Mix preview ${label ?? ""}`.trim());
   // Starting the mix stops a narration or score take that is playing (one sound at a time).
   el.addEventListener("play", () => { if (app.playing) { stopTake(); render(); } });
-  mixPlayer.file = file; mixPlayer.el = el;
+  mixPlayer.key = key; mixPlayer.el = el;
   toBlobUrl(app.host, file).then((url) => { if (mixPlayer.el === el) el.src = url; }, (e) => console.error(e));
   return el;
 }
@@ -489,14 +491,18 @@ async function findExports() {
   const fit = app.store?.state?.mix?.fit;
   r.exports = { loading: true, files: [] }; render();
   try {
-    const files = await listExports(app.host, app.settings ?? {}, fit?.at ?? 0);
+    const files = await listExports(app.host, app.settings ?? {}, fit?.at ?? 0, { exportDir: exportDirOf(app.store) });
     const when = (ms) => { try { return new Date(ms).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" }); } catch { return ""; } };
-    if (app.review === r) r.exports = { files: files.map((f) => ({ ...f, whenText: when(f.when) })), pick: files[0]?.path ?? null };
+    const ed = exportDirOf(app.store).toLowerCase();
+    const where = (p) => (p.toLowerCase().startsWith(ed + "\\") ? "film folder" : "Stem Remixer folder");
+    if (app.review === r) r.exports = { files: files.map((f) => ({ ...f, whenText: when(f.when), whereText: where(f.path) })), pick: files[0]?.path ?? null };
   } catch (e) {
     if (app.review === r) r.exports = { files: [], error: msg(e) };
   }
   render();
 }
+
+const exportDirOf = (store) => join(store.dir, "studio", "mix", "stem-remixer");
 
 async function openStemRemixer() {
   const r = app.review, store = app.store;
@@ -505,7 +511,9 @@ async function openStemRemixer() {
   try {
     const plan = join(store.dir, "studio", "mix", "plan.json");
     const score = fit?.scoreFile ?? null;
-    const text = await openInStemRemixer(app.host, app.settings ?? {}, { score, plan: (await app.host.fs.exists(plan)) ? plan : null });
+    const exportDir = exportDirOf(store);
+    await app.host.fs.mkdir(exportDir);
+    const text = await openInStemRemixer(app.host, app.settings ?? {}, { score, plan: (await app.host.fs.exists(plan)) ? plan : null, exportDir });
     if (app.review === r) r.opened = text;
   } catch (e) {
     if (app.review === r) { r.opened = null; r.cardErrors.set("FIT", msg(e)); }
@@ -615,10 +623,13 @@ const reviewActions = {
     userStarted();
     await useStemRemixerExport(mixCtx(), path);
     app.review.exports = null;
+    fields.delete("mix-other");
+    // Free and local: the mix is made again from the export straight away (its errors show on the Mix step).
+    queueMicrotask(() => { reviewActions.makeMix(); });
   }),
   makeMix: stepAction("MIX", () => { userStarted(); return startMix(mixCtx()); }),
   approveMix: stepAction("MIX", () => approveMix(mixCtx())),
-  mixPlayer: (file, label) => mixAudioEl(file, label),
+  mixPlayer: (file, key, label) => mixAudioEl(file, key, label),
   seekMix,
   field: (k) => fields.get(k),
   setField(k, v) { if (v === undefined) fields.delete(k); else fields.set(k, v); },

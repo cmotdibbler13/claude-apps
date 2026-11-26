@@ -99,6 +99,7 @@ test("startJoin queues a Voiceover join job and mirrors the result onto state.mi
   assert.equal(v.lengthS, 30.5);
   assert.equal(v.tightened.length, 1);
   assert.equal(v.at, s.host.now());
+  assert.equal(v.startedAt, s.host.now(), "the join keeps when it started, for takes saved during it");
   assert.equal(v.jobId, j.id);
   assert.equal(v.takes.length, 1);
   assert.ok(holders(s.store.state).some((h) => h.id === "VOICEOVER"));

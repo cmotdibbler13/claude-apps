@@ -75,11 +75,12 @@ const OPEN_GRACE_MS = 1500;
 
 // Starts Stem Remixer on the score with the fit plan, detached, and never waits for it to close.
 // Only a start that fails within graceMs (pythonw missing, refused) is reported.
-export function openInStemRemixer(host, settings, { score, plan = null }, { graceMs = OPEN_GRACE_MS } = {}) {
+// exportDir: where its Export mix dialog starts (the film's own folder), so "Use this export" finds the file.
+export function openInStemRemixer(host, settings, { score, plan = null, exportDir = null }, { graceMs = OPEN_GRACE_MS } = {}) {
   const dir = settings?.stemRemixerDir;
   if (!dir) return Promise.reject(new Error(MSG_NO_STEM_REMIXER));
   if (typeof score !== "string" || !score) return Promise.reject(new Error("There is no score take to open."));
-  const args = ["main.py", "--open", score, ...(plan ? ["--plan", plan] : [])];
+  const args = ["main.py", "--open", score, ...(plan ? ["--plan", plan] : []), ...(exportDir ? ["--export-dir", exportDir] : [])];
   return new Promise((resolve, reject) => {
     let settled = false, err = "";
     const finish = (fn) => { if (!settled) { settled = true; fn(); } };
@@ -97,13 +98,22 @@ export function openInStemRemixer(host, settings, { score, plan = null }, { grac
   });
 }
 
-// Stem Remixer's Export mix dialog opens in its own folder (the app's working folder): the .wav and .mp3
-// files there newer than sinceMs, newest first.
-export async function listExports(host, settings, sinceMs = 0) {
+// The .wav and .mp3 files newer than sinceMs: first the film's export folder (Studio opens Stem Remixer's
+// Export mix dialog there), then Stem Remixer's own folder (its dialog's usual start), each newest first.
+export async function listExports(host, settings, sinceMs = 0, { exportDir = null } = {}) {
   const dir = settings?.stemRemixerDir;
   if (!dir) throw new Error(MSG_NO_STEM_REMIXER);
+  const out = [];
+  for (const d of [exportDir, dir].filter(Boolean)) out.push(...(await exportsIn(host, d, sinceMs, d === dir)));
+  return out;
+}
+
+async function exportsIn(host, dir, sinceMs, must) {
   let entries;
-  try { entries = await host.fs.list(dir); } catch { throw new Error(`Couldn't read ${dir}.`); }
+  try { entries = await host.fs.list(dir); } catch {
+    if (must) throw new Error(`Couldn't read ${dir}.`);
+    return []; // the film's export folder is made when Stem Remixer is opened from Studio
+  }
   const out = [];
   for (const e of entries) {
     if (e.isDirectory || !/\.(wav|mp3)$/i.test(e.name)) continue;
