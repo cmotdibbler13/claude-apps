@@ -152,3 +152,32 @@ test("failure, repeated status errors and the cap", async () => {
   const cap = setup({ mcp: (tool) => (tool === "creative_run_flow_nodes" ? { session_ids: ["S1"] } : running) });
   await assert.rejects(cap.runner.start(job(), cap.ctx), (e) => e.ambiguous === true && /30 min/.test(e.message));
 });
+
+test("run errors: only a DEFINITE string code is definite", async () => {
+  for (const mk of [() => new Error("x"), () => Object.assign(new Error("x"), { code: 500 })]) {
+    const t = setup({ mcp: () => { throw mk(); } });
+    await assert.rejects(t.runner.start(job(), t.ctx), (e) => e.ambiguous === true);
+  }
+});
+
+test("run without a session id is ambiguous", async () => {
+  const t = setup({ mcp: () => ({}) });
+  await assert.rejects(t.runner.start(job(), t.ctx), (e) => e.ambiguous === true);
+  assert.equal(t.order.some((o) => o.startsWith("setRef")), false);
+});
+
+test("non-403 download failure after a run is ambiguous", async () => {
+  const t = setup({ mcp: ok, spawn: (cmd, args, p) => { p.err("curl: (6) could not resolve"); p.exit(6); } });
+  await assert.rejects(t.runner.start(job(), t.ctx), (e) => e.ambiguous === true && /^The take was made but couldn't be saved: .*Use Check again to download it\.$/.test(e.message));
+  const e403 = setup({ mcp: ok, spawn: (cmd, args, p) => { p.err("403"); p.exit(22); } });
+  await assert.rejects(e403.runner.start(job(), e403.ctx), (e) => !e.ambiguous);
+});
+
+test("estimate ignores balance-like keys", async () => {
+  assert.equal(await estimate(setup({ mcp: () => ({ balance: { credits_remaining: 900 }, cost: { credits: 12 } }) }).host, "F", "N"), 12);
+  assert.equal(await estimate(setup({ mcp: () => ({ credits_remaining: 900 }) }).host, "F", "N"), null);
+});
+
+test("nodeSpec needs a length", () => {
+  for (const d of [undefined, NaN, "x"]) assert.throws(() => nodeSpec("score", { prompt: "p", durationS: d }), /Set a length first\./);
+});

@@ -21,6 +21,7 @@ const parentOf = (p) => String(p).replace(/[\\/][^\\/]*$/, "");
 const call = (host, tool, input) => host.mcp.call("ElevenLabs", tool, input);
 
 export function nodeSpec(kind, { prompt, durationS, loop } = {}) {
+  if (durationS == null || durationS === "" || !Number.isFinite(Number(durationS))) throw new Error("Set a length first.");
   if (kind === "score") {
     return {
       node_type: "music", model_id: "eleven_music_v2_5", prompt,
@@ -52,9 +53,11 @@ export async function addNode(host, flowId, kind, item, label) {
 function findCredits(v, depth = 0) {
   if (!v || typeof v !== "object" || depth > 5) return null;
   for (const [k, x] of Object.entries(v)) {
+    if (/remain|balance|available/i.test(k)) continue;
     if (/credit/i.test(k) && typeof x === "number" && Number.isFinite(x)) return x;
   }
-  for (const x of Object.values(v)) {
+  for (const [k, x] of Object.entries(v)) {
+    if (/remain|balance|available/i.test(k)) continue;
     const r = findCredits(x, depth + 1);
     if (r !== null) return r;
   }
@@ -128,7 +131,12 @@ export function makeElevenRunner({ sleep = realSleep } = {}) {
       if (s.failed) throw new Error(`ElevenLabs failed: ${s.error}`);
       if (s.done) {
         if (!s.url) throw new Error("ElevenLabs finished but returned no result URL.");
-        return download(host, s.url, job.input);
+        try {
+          return await download(host, s.url, job.input);
+        } catch (e) {
+          if (e?.ambiguous || msg(e) === EXPIRED) throw e;
+          throw ambiguous(`The take was made but couldn't be saved: ${msg(e)}. Use Check again to download it.`);
+        }
       }
       pollS = s.poll;
     }
@@ -144,8 +152,8 @@ export function makeElevenRunner({ sleep = realSleep } = {}) {
       if (typeof out !== "string" || !out) throw new Error("This job has no output path; not generating.");
       try { await host.fs.mkdir(parentOf(out)); } catch (e) { throw new Error(`Couldn't make the folder for this take (${msg(e)}); not generating.`); }
       const p = await call(host, "creative_run_flow_nodes", { flow_id: flowId, node_ids: [nodeId], generations_count: 1 }).catch((e) => {
-        const code = typeof e?.code === "string" ? e.code : null;
-        throw code && !DEFINITE.has(code) ? ambiguous(AMBIGUOUS_RUN) : new Error(msg(e));
+        // Only a known "nothing started" code is a definite failure; anything else may have run.
+        throw typeof e?.code === "string" && DEFINITE.has(e.code) ? new Error(msg(e)) : ambiguous(AMBIGUOUS_RUN);
       });
       const sessionId = p?.session_ids?.[0] ?? p?.session_id;
       if (typeof sessionId !== "string" || !sessionId) throw ambiguous(AMBIGUOUS_RUN);
