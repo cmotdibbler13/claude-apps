@@ -82,9 +82,14 @@ export function makeJobs(host, { runners = {}, file } = {}) {
   function pump() {
     for (const lane of Object.keys(CAPS)) {
       let running = jobs.filter((j) => j.status === "running" && laneOf(j) === lane).length;
-      for (const j of jobs) {
+      // Resumes go first and never call start: they must not re-fire a paid or already-submitted job.
+      const queued = jobs.filter((j) => j.status === "queued" && laneOf(j) === lane);
+      for (const j of [...queued.filter((q) => q.resumeNext), ...queued.filter((q) => !q.resumeNext)]) {
         if (running >= CAPS[lane]) break;
-        if (j.status === "queued" && laneOf(j) === lane) { running++; run(j, "start"); }
+        running++;
+        const how = j.resumeNext ? "resume" : "start";
+        delete j.resumeNext;
+        run(j, how);
       }
     }
   }
@@ -97,7 +102,7 @@ export function makeJobs(host, { runners = {}, file } = {}) {
         lane: spec.lane ?? runners[spec.tool]?.lane ?? "connector",
         status: "queued", progress: null, eta: null,
       };
-      delete job.file; delete job.error; delete job.startedAt; delete job.endedAt;
+      delete job.file; delete job.error; delete job.startedAt; delete job.endedAt; delete job.resumeNext;
       jobs.push(job);
       changed();
       pump();
@@ -118,21 +123,21 @@ export function makeJobs(host, { runners = {}, file } = {}) {
       }
       if (job.status !== "failed" && job.status !== "interrupted") throw new Error(`Job ${id} is ${job.status}, not failed or interrupted`);
       delete job.error; delete job.ambiguous; delete job.endedAt;
-      run(job, "resume");
+      job.status = "queued"; job.resumeNext = true;
+      changed();
+      pump();
     },
     list: snap,
     toJSON: snap,
     onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); },
     restore(saved) {
       jobs = (saved ?? []).map((j) => structuredClone(j));
-      const resumable = [];
       for (const j of jobs) {
         if (j.status !== "running") continue;
-        if (j.jobRef && runners[j.tool]?.resume) resumable.push(j);
+        if (j.jobRef && runners[j.tool]?.resume) { j.status = "queued"; j.resumeNext = true; }
         else { j.status = "interrupted"; j.endedAt = host.now(); }
       }
       changed();
-      for (const j of resumable) run(j, "resume");
       pump();
     },
     // Resolves once every change so far is written. Mainly for tests and clean shutdown.

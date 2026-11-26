@@ -310,3 +310,59 @@ test("check re-polls a failed gpu job with a jobRef", async () => {
   assert.equal(jobs.list()[0].status, "done");
   assert.equal(jobs.list()[0].file, "c.mp4");
 });
+
+test("check on a gpu job waits for the running gpu job, then resumes without start", async () => {
+  const d = deferred(), starts = [];
+  const comfy = {
+    lane: "gpu",
+    start: async (j, ctx) => { starts.push("comfy"); ctx.setRef("P1"); const e = new Error("lost"); e.ambiguous = true; throw e; },
+    resume: async () => ({ file: "c.mp4" }),
+  };
+  const blender = { lane: "gpu", start: () => { starts.push("blender"); return d.promise; } };
+  const { jobs } = await setup({ comfy, blender });
+  const c = jobs.add(spec("comfy"));
+  await tick(); await tick(); await tick();
+  jobs.add(spec("blender"));
+  await tick();
+  assert.deepEqual(statuses(jobs), ["failed", "running"]);
+  jobs.check(c);
+  await tick();
+  assert.deepEqual(statuses(jobs), ["queued", "running"]);
+  assert.equal(jobs.list()[0].resumeNext, true);
+  d.resolve({ file: "b" });
+  await tick(); await tick(); await tick();
+  assert.deepEqual(statuses(jobs), ["done", "done"]);
+  assert.equal(jobs.list()[0].resumeNext, undefined);
+  assert.deepEqual(starts, ["comfy", "blender"]);
+});
+
+test("restore with two running gpu jobs resumes one at a time", async () => {
+  const ds = [], resumed = [];
+  const comfy = { lane: "gpu", start: async () => { throw new Error("must not start"); }, resume: (j) => { resumed.push(j.jobRef); const d = deferred(); ds.push(d); return d.promise; } };
+  const { jobs } = await setup({ comfy });
+  const base = { film: "F", assetId: "a", take: 1, what: "w", why: "y", tool: "comfy", lane: "gpu" };
+  jobs.restore([{ ...base, id: "c1", status: "running", jobRef: "P1" }, { ...base, id: "c2", status: "running", jobRef: "P2" }]);
+  await tick();
+  assert.deepEqual(statuses(jobs), ["running", "queued"]);
+  assert.deepEqual(resumed, ["P1"]);
+  ds[0].resolve({ file: "1" });
+  await tick(); await tick(); await tick();
+  assert.deepEqual(resumed, ["P1", "P2"]);
+  ds[1].resolve({ file: "2" });
+  await tick(); await tick(); await tick();
+  assert.deepEqual(statuses(jobs), ["done", "done"]);
+});
+
+test("a restored queued resumeNext job resumes ahead of fresh jobs and never starts", async () => {
+  const order = [];
+  const comfy = { lane: "gpu", start: async () => { order.push("comfy-start"); return {}; }, resume: async () => { order.push("comfy-resume"); return {}; } };
+  const blender = { lane: "gpu", start: async () => { order.push("blender-start"); return {}; } };
+  const { jobs } = await setup({ comfy, blender });
+  const base = { film: "F", assetId: "a", take: 1, what: "w", why: "y", lane: "gpu" };
+  jobs.restore([
+    { ...base, id: "b1", tool: "blender", status: "queued" },
+    { ...base, id: "c1", tool: "comfy", status: "queued", resumeNext: true, jobRef: "P1" },
+  ]);
+  await tick(); await tick(); await tick(); await tick();
+  assert.deepEqual(order, ["comfy-resume", "blender-start"]);
+});
