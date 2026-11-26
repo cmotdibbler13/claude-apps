@@ -160,3 +160,29 @@ test("toJSON round-trips through restore", async () => {
   assert.equal(json[0].status, "running");
   assert.doesNotThrow(() => JSON.stringify(json));
 });
+
+test("persist failure is reported, queue keeps running, and clears on next good write", async () => {
+  const d = deferred();
+  let ctx;
+  const higgsfield = { lane: "connector", start: (j, c) => { ctx = c; return d.promise; } };
+  const { host, jobs } = await setup({ higgsfield });
+  const errs = [];
+  const off = jobs.onPersistError((m) => errs.push(m));
+  const { write } = host.fs;
+  host.fs.write = async () => { throw new Error("S: not mapped"); };
+  jobs.add(spec("higgsfield"));
+  await tick();
+  ctx.setRef("R9");
+  await jobs.flush();
+  assert.equal(jobs.persistError, "S: not mapped");
+  assert.ok(errs.length >= 1);
+  assert.equal(jobs.list()[0].status, "running");
+  assert.equal(jobs.list()[0].jobRef, "R9");
+  host.fs.write = write;
+  ctx.progress(0.2);
+  await jobs.flush();
+  assert.equal(jobs.persistError, null);
+  assert.equal(JSON.parse(await host.fs.read(FILE, "utf8"))[0].jobRef, "R9");
+  off();
+  d.resolve({ file: "f" });
+});

@@ -7,6 +7,8 @@ export function makeJobs(host, { runners = {}, file } = {}) {
   let counter = 0;
   const listeners = new Set();
   let chain = Promise.resolve();
+  let persistError = null;
+  const errListeners = new Set();
 
   const snap = () => jobs.map((j) => structuredClone(j));
   const changed = () => {
@@ -21,7 +23,12 @@ export function makeJobs(host, { runners = {}, file } = {}) {
         const tmp = file + ".tmp";
         await host.fs.write(tmp, JSON.stringify(jobs, null, 2));
         await host.fs.rename(tmp, file);
-      } catch { /* keep the queue running; the next change writes again */ }
+        persistError = null;
+      } catch (e) {
+        // Keep the queue running, but make the failure visible: a lost jobRef means a paid job cannot reconnect.
+        persistError = String(e?.message ?? e);
+        for (const fn of [...errListeners]) { try { fn(persistError); } catch { /* ignore */ } }
+      }
     });
   }
 
@@ -115,6 +122,9 @@ export function makeJobs(host, { runners = {}, file } = {}) {
     },
     // Resolves once every change so far is written. Mainly for tests and clean shutdown.
     flush: () => chain,
+    // Last write failure (null once a later write succeeds).
+    get persistError() { return persistError; },
+    onPersistError(fn) { errListeners.add(fn); return () => errListeners.delete(fn); },
   };
   return api;
 }
