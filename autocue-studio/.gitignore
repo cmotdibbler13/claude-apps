@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 Recordings/
 *_line_script.txt
+autocue_settings.json

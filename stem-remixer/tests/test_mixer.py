@@ -430,11 +430,12 @@ def test_saved_sections():
     for i in range(20):
         mixer.set_loop(i * 4000, i * 4000 + 5000)
         mixer.save_section()
-    assert len(mixer.sections) == 9
+    assert len(mixer.sections) == 22  # no cap any more
     junk = {"sections": [{"start": 5, "end": 6}, {"start": "x"}, "no", {"start": 0, "end": 9e9},
                          {"start": 100, "end": 9000, "name": 7}]}
     other.apply_settings(junk)
-    assert other.sections == [{"name": "7", "start": 100.0, "end": 9000.0}]
+    assert other.sections == [{"name": "7", "start": 100.0, "end": 9000.0,
+                               "tempo": 1.0, "xfade": 0.0}]
 
 
 def chain_mixer():
@@ -524,3 +525,173 @@ def test_levels_follow_what_is_heard():
     mixer.render_block(64)
     assert mixer.levels[0] == pytest.approx(0.25) and mixer.levels[1] == 0
     assert mixer.master_level == pytest.approx(0.25)
+
+
+# ------------------------------------------- per-section tempo and crossfades
+
+def test_section_tempo_and_crossfade_are_saved():
+    mixer, n = ramp_mixer()
+    mixer.set_loop(10000, 20000)
+    index = mixer.save_section("verse")
+    assert mixer.sections[index] == {"name": "verse", "start": 10000.0, "end": 20000.0,
+                                     "tempo": 1.0, "xfade": 0.0}
+    assert mixer.set_section(index, tempo=0.95, xfade=0.03)
+    other, _ = ramp_mixer()
+    other.apply_settings(mixer.settings())
+    assert other.sections[0]["tempo"] == 0.95 and other.sections[0]["xfade"] == 0.03
+    assert other.settings() == mixer.settings()
+    old = {"sections": [{"name": "old", "start": 100, "end": 9000}]}
+    other.apply_settings(old)
+    assert other.sections[0]["tempo"] == 1.0 and other.sections[0]["xfade"] == 0.0
+    other.apply_settings({"sections": [{"start": 100, "end": 9000, "tempo": 9, "xfade": -2}]})
+    assert other.sections[0]["tempo"] == 1.5 and other.sections[0]["xfade"] == 0.0
+
+
+def test_twelve_sections_can_be_saved():
+    from mixer import NUMBER_KEYS
+    assert NUMBER_KEYS == 9
+    mixer, n = ramp_mixer(4.0)
+    for i in range(12):
+        mixer.set_loop(i * 10000, i * 10000 + 8000)
+        assert mixer.save_section() == i
+    other, _ = ramp_mixer(4.0)
+    other.apply_settings(mixer.settings())
+    assert len(other.sections) == 12
+
+
+def score_mixer():
+    """A sine score with two sections: 0 crossfades into what follows, 1 plays faster."""
+    mixer = Mixer([Stem("a", tone(440, 4.0)), Stem("b", tone(660, 4.0, level=0.2))], RATE)
+    mixer.set_loop(0.5 * RATE, 1.5 * RATE)
+    mixer.save_section("A")
+    mixer.set_loop(2.0 * RATE, 3.0 * RATE)
+    mixer.save_section("B")
+    mixer.clear_loop()
+    mixer.set_section(0, xfade=0.03)
+    mixer.set_section(1, tempo=1.05)
+    mixer.set_chain([0, 1, 0])
+    return mixer
+
+
+def test_render_chain_uses_section_tempo_and_crossfades():
+    mixer = score_mixer()
+    audio, factor = mixer.render_chain()
+    assert factor == 1.0   # nothing went over full scale, so nothing was turned down
+    assert np.abs(audio).max() <= 1.0
+    assert len(audio) == pytest.approx(mixer.chain_length_s() * RATE, abs=1)
+    part = int(np.ceil(RATE / 1.0)), int(np.ceil(RATE / 1.05))
+    overlap = round(0.03 * RATE)   # 0 into 1 only; 1 into 0 is the 128-frame dip
+    assert len(audio) == 2 * part[0] + part[1] - overlap
+    mixer.tempo = 0.9   # the global tempo multiplies in
+    longer, _ = mixer.render_chain()
+    assert len(longer) == pytest.approx(mixer.chain_length_s() * RATE, abs=1)
+    assert len(longer) > len(audio) * 1.1
+
+
+def test_equal_power_crossfade_keeps_the_level():
+    mixer = Mixer([Stem("n", np.full((RATE * 2, 2), 0.3, np.float32))], RATE)
+    mixer.set_loop(0, RATE // 2)
+    mixer.save_section()
+    mixer.set_loop(RATE, RATE * 3 // 2)
+    mixer.save_section()
+    mixer.set_section(0, xfade=0.05)
+    mixer.set_chain([0, 1])
+    audio, _ = mixer.render_chain()
+    middle = audio[RATE // 2 - round(0.05 * RATE): RATE // 2, 0]
+    gains = middle / 0.3
+    # The same steady level in both parts, at cos and sin gains.
+    t = (np.arange(len(gains)) + 0.5) / len(gains)
+    assert np.allclose(gains, np.cos(t * np.pi / 2) + np.sin(t * np.pi / 2), atol=1e-4)
+    mixer.set_section(0, xfade=10.0)   # longer than half a part: clamped
+    assert mixer.chain_length_s() == pytest.approx(0.75, abs=1 / RATE)
+
+
+def play_chain_once(mixer, block=441):
+    total = int(round(mixer.chain_length_s() * RATE))
+    assert mixer.start_chain()
+    blocks = []
+    while sum(len(b) for b in blocks) < total + block:
+        blocks.append(mixer.render_block(block))
+    return np.concatenate(blocks), total
+
+
+@pytest.mark.parametrize("tempo,pitch", [(1.0, 0), (0.9, 0), (1.0, 2)])
+def test_live_chain_plays_exactly_what_render_chain_makes(tempo, pitch):
+    mixer = score_mixer()
+    mixer.tempo, mixer.pitch = tempo, pitch
+    whole, _ = mixer.render_chain()
+    played, total = play_chain_once(mixer)
+    assert len(whole) == total
+    assert np.abs(played[:total] - whole).max() < 1e-4
+    # It goes round: the next time through is the same again.
+    assert np.abs(played[total:] - whole[:len(played) - total]).max() < 1e-4
+
+
+def test_live_chain_follows_a_section_tempo_change():
+    mixer = score_mixer()
+    mixer.start_chain()
+    mixer.render_block(441)
+    mixer.set_section(0, tempo=0.8)
+    mixer.set_section(1, xfade=0.5)
+    whole, _ = mixer.render_chain()
+    played, total = play_chain_once(mixer)
+    assert len(whole) == total
+    assert np.abs(played[:total] - whole).max() < 1e-4
+
+
+def biggest_step(audio):
+    return float(np.abs(np.diff(audio[:, 0])).max())
+
+
+def test_changing_tempo_during_a_chain_does_not_click():
+    def mixer_220():
+        mixer = Mixer([Stem("a", tone(220, 4.0, level=0.5))], RATE)
+        for start in (0.5, 2.0):
+            mixer.set_loop(start * RATE, (start + 1.0) * RATE)
+            mixer.save_section()
+        mixer.clear_loop()
+        mixer.set_section(0, xfade=0.03)
+        mixer.set_chain([0, 1])
+        mixer.start_chain()
+        return mixer
+
+    steady = mixer_220()
+    played = np.concatenate([steady.render_block(441) for _ in range(300)])
+    calm = biggest_step(played[1000:])
+    nudged = mixer_220()
+    blocks = []
+    for i in range(300):
+        nudged.tempo = 1.0 + 0.001 * (i % 40)   # nudged every block, going up and back
+        blocks.append(nudged.render_block(441))
+    assert biggest_step(np.concatenate(blocks)[1000:]) < max(0.05, 2 * calm)
+    for i in range(20):   # also while the section's own tempo and crossfade change
+        nudged.set_section(i % 2, tempo=1.0 + 0.002 * i, xfade=0.01 * i)
+        blocks.append(nudged.render_block(441))
+    assert biggest_step(np.concatenate(blocks)[1000:]) < max(0.05, 2 * calm)
+
+
+def test_quick_changes_during_a_chain_overlap_their_fades():
+    # Two tones, so the old and new sounds are out of step when a change lands,
+    # and sound-card blocks shorter than a fade, so changes come mid-fade.
+    def two_tone():
+        mixer = Mixer([Stem("a", tone(220, 4.0, level=0.3) + tone(331, 4.0, level=0.3))], RATE)
+        for start in (0.5, 2.0):
+            mixer.set_loop(start * RATE, (start + 1.0) * RATE)
+            mixer.save_section()
+        mixer.clear_loop()
+        mixer.set_section(0, xfade=0.03)
+        mixer.set_chain([0, 1])
+        mixer.start_chain()
+        return mixer
+
+    steady = two_tone()
+    calm = biggest_step(np.concatenate([steady.render_block(32) for _ in range(3000)])[1000:])
+    nudged = two_tone()
+    blocks = []
+    for i in range(3000):
+        nudged.tempo = 1.0 + 0.001 * (i % 40)
+        blocks.append(nudged.render_block(32))
+    assert biggest_step(np.concatenate(blocks)[1000:]) < max(0.05, 2 * calm)
+    nudged.loop_on, nudged.chain_on = False, False   # leaving the chain drops the fades
+    nudged.render_block(32)
+    assert nudged._chain_old == []

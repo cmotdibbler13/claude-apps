@@ -20,8 +20,8 @@ import customtkinter as ctk
 
 import separator
 import updater
-from mixer import (MAX_EQ, MAX_PITCH, MAX_SECTIONS, MAX_TEMPO, MAX_VOLUME, MIN_TEMPO, Mixer, Player, Stem,
-                   waveform_peaks, write_audio)
+from mixer import (MAX_EQ, MAX_PITCH, MAX_TEMPO, MAX_VOLUME, MIN_TEMPO, NUMBER_KEYS, Mixer, Player,
+                   Stem, waveform_peaks, write_audio)
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 STEMS_DIR = os.path.join(APP_DIR, "Stems")
@@ -61,6 +61,32 @@ def time_left(seconds: float) -> str:
         return "under a minute left"
     minutes = round(seconds / 60)
     return f"about {minutes} minute{'s' if minutes != 1 else ''} left"
+
+
+SECTION_TEMPO_RANGE = (90, 110)     # per cent, for a saved section's own tempo
+CROSSFADES = [("None", 0.0), ("30 ms", 0.03), ("2.5 s", 2.5)]   # into the next section
+
+
+def section_text(section: dict, rate: int) -> str:
+    """A saved section's name (or its times), then its own tempo and its
+    crossfade when they are set: "Intro · 97 % · xf 30 ms"."""
+    parts = [section.get("name") or
+             f"{clock(section['start'] / rate)} to {clock(section['end'] / rate)}"]
+    tempo = float(section.get("tempo", 1.0))
+    if abs(tempo - 1.0) > 1e-9:
+        parts.append(f"{round(tempo * 100, 1):g} %")
+    xfade = float(section.get("xfade", 0.0))
+    if xfade > 0:
+        parts.append(f"xf {round(xfade * 1000):g} ms" if xfade < 1 else f"xf {round(xfade, 2):g} s")
+    return " · ".join(parts)
+
+
+def parse_chain(text: str, count: int) -> list:
+    """Section indices from the Chain box. Up to nine sections, each digit is
+    a section ("1223" is 1 2 2 3, as before); with more, whole numbers."""
+    if count <= NUMBER_KEYS:
+        return [int(digit) - 1 for digit in re.findall(r"[1-9]", text)]
+    return [int(number) - 1 for number in re.findall(r"\d+", text) if int(number) > 0]
 
 
 def meter_fraction(level: float) -> float:
@@ -362,9 +388,11 @@ class StemLane:
 
 
 class StemRemixerApp(ctk.CTk):
-    def __init__(self, store_python: bool = False):
+    def __init__(self, store_python: bool = False, export_dir=None):
         super().__init__()
         self._store_python = store_python
+        # Where Export mix's Save dialog starts (given by Six Minutes Studio); None keeps the usual folder.
+        self._export_dir = export_dir if export_dir and os.path.isdir(export_dir) else None
         ctk.set_appearance_mode("dark")
         self.title(f"Stem Remixer {updater.local_version()}")
         self.geometry("1180x760")
@@ -396,7 +424,7 @@ class StemRemixerApp(ctk.CTk):
         self._build()
         self.bind("<space>", self._on_space)
         self.bind("<l>", lambda _e: self._typing() or self._on_loop())
-        for number in range(1, MAX_SECTIONS + 1):
+        for number in range(1, NUMBER_KEYS + 1):
             self.bind(str(number), lambda _e, i=number - 1: self._typing() or self._on_section(i))
         # Clicking anywhere else takes the keyboard back from the chain box.
         self.bind_all("<Button-1>", self._on_any_click, add="+")
@@ -454,31 +482,35 @@ class StemRemixerApp(ctk.CTk):
                                            fg_color=SURFACE_200, progress_color=BRASS)
         self.cancel_btn = self._button(status, "Cancel", self._on_cancel, width=80)
 
-        # Saved sections: shown once a song is open.
+        # Saved sections: shown once a song is open. The section buttons
+        # scroll sideways when there are more than fit.
         self.sections_row = ctk.CTkFrame(self, fg_color="transparent")
         ctk.CTkLabel(self.sections_row, text="Sections", text_color=INK_FAINT).pack(
             side="left", padx=(0, 8))
-        self.chips_frame = ctk.CTkFrame(self.sections_row, fg_color="transparent")
-        self.chips_frame.pack(side="left")
-        self.save_section_btn = ctk.CTkButton(
-            self.sections_row, text="+  Save section", command=self._on_save_section,
-            width=110, height=26, corner_radius=0, fg_color=SURFACE_200,
-            hover_color=SURFACE_300, text_color=INK, border_width=1, border_color=RULE)
-        self.save_section_btn.pack(side="left")
-        self.chips = []
-        ctk.CTkLabel(self.sections_row, text="Chain", text_color=INK_FAINT).pack(
-            side="left", padx=(24, 8))
-        self.chain_entry = ctk.CTkEntry(
-            self.sections_row, width=150, height=26, corner_radius=0, border_width=1,
-            border_color=RULE, fg_color=SURFACE_100, text_color=INK,
-            placeholder_text="e.g. 1 2 2 3", placeholder_text_color=INK_FAINT)
-        self.chain_entry.pack(side="left")
-        self.chain_entry.bind("<Return>", lambda _e: self._on_chain(start=True))
         self.chain_btn = ctk.CTkButton(
             self.sections_row, text="Play chain", command=self._on_chain, width=90, height=26,
             corner_radius=0, fg_color=SURFACE_200, hover_color=SURFACE_300, text_color=INK,
             border_width=1, border_color=RULE)
-        self.chain_btn.pack(side="left", padx=(6, 0))
+        self.chain_btn.pack(side="right", padx=(6, 0))
+        self.chain_entry = ctk.CTkEntry(
+            self.sections_row, width=150, height=26, corner_radius=0, border_width=1,
+            border_color=RULE, fg_color=SURFACE_100, text_color=INK,
+            placeholder_text="e.g. 1 2 2 3", placeholder_text_color=INK_FAINT)
+        self.chain_entry.pack(side="right")
+        self.chain_entry.bind("<Return>", lambda _e: self._on_chain(start=True))
+        ctk.CTkLabel(self.sections_row, text="Chain", text_color=INK_FAINT).pack(
+            side="right", padx=(24, 8))
+        self.save_section_btn = ctk.CTkButton(
+            self.sections_row, text="+  Save section", command=self._on_save_section,
+            width=110, height=26, corner_radius=0, fg_color=SURFACE_200,
+            hover_color=SURFACE_300, text_color=INK, border_width=1, border_color=RULE)
+        self.save_section_btn.pack(side="right")
+        self.chips_frame = ctk.CTkScrollableFrame(
+            self.sections_row, orientation="horizontal", height=28, corner_radius=0,
+            border_width=0, fg_color=SURFACE_000, scrollbar_fg_color=SURFACE_000,
+            scrollbar_button_color=SURFACE_300, scrollbar_button_hover_color=RULE)
+        self.chips_frame.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self.chips = []
 
         self.body = ctk.CTkFrame(self, fg_color=SURFACE_000, corner_radius=0)
         self.body.grid(row=3, column=0, sticky="nsew", padx=16)
@@ -589,6 +621,41 @@ class StemRemixerApp(ctk.CTk):
             messagebox.showinfo("Stem Remixer", "There are no WAV stems in that folder.")
             return
         self._load(folder, project)
+
+    def open_file(self, path, plan_path=None):
+        """Open one file as it is, as a single stem (no split). With a fit plan,
+        its sections and chain replace the saved ones and the chain is on.
+        Used by --open and --plan."""
+        if self._splitting:
+            return
+        name = os.path.basename(path)
+        if not os.path.isfile(path):
+            self._set_status(f"Couldn't find {name}.", WARN)
+            messagebox.showerror("Stem Remixer", f"Couldn't find that file.\n\n({path})")
+            return
+        self._save_mix()
+        self.player.stop()
+        self._play_label()
+        self._set_status(f"Opening {name}…")
+        self.update_idletasks()
+        try:
+            folder, project = separator.open_single(path, STEMS_DIR, plan_path)
+        except Exception as err:   # bad audio, a bad plan, a disk error: say so, don't crash
+            self._set_status(f"Couldn't open {name}.", WARN)
+            messagebox.showerror("Stem Remixer", f"Couldn't open {name}.\n\n{err}")
+            return
+        kept, self.project = self.project, None   # saved above; don't save it over the new mix
+        self._load(folder, project)
+        if self.mixer is None or self.folder != folder:
+            self.project = kept   # it didn't open: carry on with the song that was open
+            return
+        if plan_path and self.mixer.start_chain():
+            self._show_loop()
+            self.place_playheads()
+            order = " ".join(str(i + 1) for i in self.mixer.chain)
+            self._set_status(f"Opened {name} with its fit: the chain {order} is on. Press Play to "
+                             "hear it. Right-click a section to change its tempo or crossfade, "
+                             "then Export mix saves the chain once through.")
 
     def _start_split(self, path, folder, model):
         self._save_mix()
@@ -729,7 +796,7 @@ class StemRemixerApp(ctk.CTk):
         self._set_status("Space plays and pauses. Click a waveform to jump. "
                          "M mutes a part, S plays it alone, EQ shapes its tone. "
                          "Shift+drag marks a section to loop.")
-        self.sections_row.grid(row=2, column=0, sticky="w", padx=16, pady=(0, 8))
+        self.sections_row.grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 8))
         self._refresh_sections()
         self._show_chain_text()
         if self.mixer.loop_start is not None or self.mixer.chaining:
@@ -831,10 +898,8 @@ class StemRemixerApp(ctk.CTk):
     # ------------------------------------------------------ saved sections
 
     def _section_label(self, index: int) -> str:
-        section = self.mixer.sections[index]
-        rate = self.mixer.samplerate
-        name = section["name"] or f"{clock(section['start'] / rate)} to {clock(section['end'] / rate)}"
-        return f"  {index + 1}   {name}  "
+        text = section_text(self.mixer.sections[index], self.mixer.samplerate)
+        return f"  {index + 1}   {text}  "
 
     def _refresh_sections(self):
         """Rebuild the row of saved-section buttons."""
@@ -877,14 +942,13 @@ class StemRemixerApp(ctk.CTk):
             self._set_status("Mark a section first: hold Shift and drag across a waveform "
                              "(or drag with the right mouse button). Then save it.")
             return
-        if mixer.active_section() is None and len(mixer.sections) >= MAX_SECTIONS:
-            self._set_status(f"A song can keep {MAX_SECTIONS} sections. Right-click one to delete it.")
-            return
         index = mixer.save_section()
         self._refresh_sections()
         self._save_mix()
-        self._set_status(f"Saved as section {index + 1}. Press {index + 1} to come back to it; "
-                         "double-click it to name it, right-click to delete it.")
+        back = (f"Press {index + 1} or click it to come back to it"
+                if index < NUMBER_KEYS else "Click it to come back to it")
+        self._set_status(f"Saved as section {index + 1}. {back}; double-click it to name it, "
+                         "right-click for its tempo, crossfade or to delete it.")
 
     def _on_chain(self, start=None):
         """Play chain button (toggles), or Enter in the chain box (starts)."""
@@ -897,7 +961,7 @@ class StemRemixerApp(ctk.CTk):
             self._show_loop()
             self._set_status("Chain off.")
             return
-        steps = [int(digit) - 1 for digit in re.findall(r"[1-9]", self.chain_entry.get())]
+        steps = parse_chain(self.chain_entry.get(), len(mixer.sections))
         chain = mixer.set_chain(steps)
         self._show_chain_text()
         if not chain:
@@ -926,8 +990,19 @@ class StemRemixerApp(ctk.CTk):
             self.place_playheads()
 
     def _section_menu(self, event, index: int):
+        if self.mixer is None or index >= len(self.mixer.sections):
+            return
+        section = self.mixer.sections[index]
         menu = tk.Menu(self, tearoff=0)
         menu.add_command(label="Rename…", command=lambda: self._rename_section(index))
+        menu.add_command(label="Tempo…", command=lambda: self._section_tempo(index))
+        fades = tk.Menu(menu, tearoff=0)
+        self._fade_choice = tk.DoubleVar(value=section.get("xfade", 0.0))
+        for label, seconds in CROSSFADES:
+            fades.add_radiobutton(label=label, value=seconds, variable=self._fade_choice,
+                                  command=lambda s=seconds: self._section_xfade(index, s))
+        menu.add_cascade(label="Crossfade…", menu=fades)
+        menu.add_separator()
         menu.add_command(label="Delete", command=lambda: self._delete_section(index))
         try:
             menu.tk_popup(event.x_root, event.y_root)
@@ -944,6 +1019,38 @@ class StemRemixerApp(ctk.CTk):
             section["name"] = name.strip()[:24]
             self._refresh_sections()
             self._save_mix()
+
+    def _section_tempo(self, index: int):
+        """Ask for a section's own tempo, as a percentage."""
+        if self.mixer is None or index >= len(self.mixer.sections):
+            return
+        low, high = SECTION_TEMPO_RANGE
+        now = round(self.mixer.sections[index].get("tempo", 1.0) * 100, 1)
+        value = simpledialog.askfloat(
+            "Stem Remixer", f"Tempo for section {index + 1}, in per cent ({low} to {high}).\n"
+            "100 plays it as it is. It is on top of the Tempo slider.",
+            initialvalue=f"{now:g}", minvalue=low, maxvalue=high, parent=self)
+        if value is None:
+            return
+        self.mixer.set_section(index, tempo=value / 100)
+        self._section_changed(index)
+
+    def _section_xfade(self, index: int, seconds: float):
+        if self.mixer is None or index >= len(self.mixer.sections):
+            return
+        self.mixer.set_section(index, xfade=seconds)
+        self._section_changed(index)
+
+    def _section_changed(self, index: int):
+        self._refresh_sections()
+        self._save_mix()
+        section = self.mixer.sections[index]
+        fade = next((label for label, s in CROSSFADES if abs(s - section["xfade"]) < 1e-9),
+                    f"{section['xfade']:g} s")
+        fade = "no crossfade" if section["xfade"] <= 0 else f"a {fade} crossfade"
+        self._set_status(
+            f"Section {index + 1} plays at {round(section['tempo'] * 100, 1):g} %, with {fade} "
+            "into the next section in a chain.")
 
     def _delete_section(self, index: int):
         if self.mixer is None:
@@ -1150,6 +1257,7 @@ class StemRemixerApp(ctk.CTk):
                 section = (self.mixer.loop_start, self.mixer.loop_end)
         path = filedialog.asksaveasfilename(
             title="Export mix", defaultextension=".wav",
+            **({"initialdir": self._export_dir} if self._export_dir else {}),
             initialfile=f"{self.song_name} ({'chain' if chain else 'loop' if section else 'remix'})",
             filetypes=[("WAV, full quality", "*.wav"), ("MP3, 320 kbps", "*.mp3")])
         if not path:

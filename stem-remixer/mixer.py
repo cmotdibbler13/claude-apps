@@ -15,7 +15,8 @@ MAX_TEMPO = 1.5
 MAX_PITCH = 6         # semitones up or down
 EXPORT_CEILING = 0.98  # exports louder than full scale are turned down to this
 MIN_LOOP_SECONDS = 0.1
-MAX_SECTIONS = 9       # saved sections per song: one for each number key
+NUMBER_KEYS = 9        # number keys that pick a saved section; a song can keep more
+MAX_SECTIONS = NUMBER_KEYS   # old name, kept for the window's number keys (no longer a cap)
 _LOOP_FADE = 128       # frames faded either side of the loop join, so it doesn't click
 _EXPORT_CHUNK = 1 << 18
 
@@ -149,6 +150,111 @@ class Stretcher:
         return out
 
 
+class _Part:
+    """One step of a chain: its section read front to back at its own tempo,
+    a few frames at a time, the same way however the frames are asked for."""
+
+    def __init__(self, mixer, first: float, tempo: float, ratio: float, offset: int):
+        self.mixer, self.first, self.tempo, self.ratio = mixer, float(first), tempo, ratio
+        self.done = int(offset)   # frames of this part made so far
+        self.stretch = None if Mixer._plain(tempo, ratio) else Stretcher(first + offset * tempo)
+        self.ready = np.zeros((0, 2), dtype=np.float32)
+
+    def pull(self, frames: int, previous: np.ndarray, target: np.ndarray) -> np.ndarray:
+        if self.stretch is None:
+            out = self.mixer._mix(self.first + self.done * self.ratio, frames, self.ratio,
+                                  previous, target)
+        else:
+            fetch = self.mixer._fetcher(target)
+            made, count = [self.ready], len(self.ready)
+            while count < frames:
+                made.append(self.stretch.hop(fetch, self.tempo, self.ratio))
+                count += Stretcher.HOP
+            audio = np.concatenate(made) if len(made) > 1 else made[0]
+            out, self.ready = audio[:frames].copy(), audio[frames:]
+        self.done += frames
+        return out
+
+
+class _ChainStream:
+    """The chain, once through, made on demand. Each step plays at its section's
+    tempo; a step with a crossfade overlaps the next by that much (equal power),
+    and every other join, and both ends, get the few-millisecond dip. Exports
+    pull it all at once and playback a block at a time, so both hear the same."""
+
+    def __init__(self, mixer, plan: list, step: int = 0, offset: int = 0):
+        self.mixer, self.plan = mixer, plan
+        self.starts, at = [], 0
+        for _section, _tempo, length, overlap in plan:
+            self.starts.append(at)
+            at += length - overlap
+        self.total = at
+        self.low = step                # steps before this are done (or skipped by a seek)
+        self.pos = self.starts[step] + offset if plan else 0   # frame of the chain output
+        self.parts = {}
+        self.key = None   # what it was made from (Mixer._chain_key), for playback
+
+    def _envelope(self, step: int, first: int, count: int) -> np.ndarray:
+        length = self.plan[step][2]
+        where = np.arange(first, first + count)
+        gain = np.ones(count, dtype=np.float64)
+        incoming = self.plan[step - 1][3] if step > 0 else 0
+        head = incoming or min(_LOOP_FADE, length // 2)
+        tail = self.plan[step][3] or min(_LOOP_FADE, length // 2)
+        if head:
+            inside = where < head
+            if incoming:
+                gain[inside] = np.sin((where[inside] + 0.5) / head * np.pi / 2)
+            else:
+                gain[inside] = where[inside] / max(1, head - 1)
+        if tail:
+            back = where - (length - tail)   # 0 .. tail-1 within the tail
+            inside = back >= 0
+            if self.plan[step][3]:
+                gain[inside] = np.cos((back[inside] + 0.5) / tail * np.pi / 2)
+            else:
+                gain[inside] = (tail - 1 - back[inside]) / max(1, tail - 1)
+        return gain.astype(np.float32)[:, None]
+
+    def pull(self, frames: int, previous: np.ndarray, target: np.ndarray) -> tuple:
+        """Up to `frames` more frames of the chain. Returns (audio, frames made)."""
+        a = self.pos
+        b = min(a + frames, self.total)
+        out = np.zeros((frames, 2), dtype=np.float32)
+        for step in range(self.low, len(self.plan)):
+            start, length = self.starts[step], self.plan[step][2]
+            if start >= b:
+                break
+            lo, hi = max(a, start), min(b, start + length)
+            if hi > lo:
+                part = self.parts.get(step)
+                if part is None:
+                    section, tempo = self.plan[step][0], self.plan[step][1]
+                    part = self.parts[step] = _Part(self.mixer, section["start"], tempo,
+                                                    self.mixer.pitch_ratio, lo - start)
+                piece = part.pull(hi - lo, previous, target)
+                out[lo - a:hi - a] += piece * self._envelope(step, lo - start, hi - lo)
+            if start + length <= b:
+                self.parts.pop(step, None)
+                if step == self.low:
+                    self.low += 1
+        self.pos = b
+        return out, b - a
+
+    def where(self) -> tuple:
+        """(chain step, song frame) of the newest step playing now."""
+        step = max(self.low, 0)
+        for index in range(self.low, len(self.plan)):
+            if self.starts[index] <= self.pos:
+                step = index
+            else:
+                break
+        step = min(step, len(self.plan) - 1)
+        section, tempo, length, _ = self.plan[step]
+        local = min(self.pos - self.starts[step], length)
+        return step, min(section["start"] + local * tempo, section["end"])
+
+
 class Mixer:
     def __init__(self, stems: list, samplerate: int):
         if not stems:
@@ -169,7 +275,7 @@ class Mixer:
         self.loop_start = None   # the marked section, in song frames (None = none marked)
         self.loop_end = None
         self.loop_on = False
-        self.sections = []       # saved sections: [{"name", "start", "end"}]
+        self.sections = []       # saved sections: [{"name", "start", "end", "tempo", "xfade"}]
         self.chain = []          # saved sections to play one after another, by index
         self.chain_on = False
         self.chain_step = 0      # which entry of the chain is playing
@@ -177,6 +283,9 @@ class Mixer:
         self.master_level = 0.0                                # and of the whole mix
         self._last_gains = None
         self._stretch = None
+        self._chain = None    # the chain being played (a _ChainStream)
+        self._chain_old = []     # [stream, gain, frames faded]: older chains fading out
+        self._chain_in = _LOOP_FADE   # frames the current chain has faded in (done at _LOOP_FADE)
         self._lock = threading.Lock()   # the sound card and the window both move the playhead
 
     # ------------------------------------------------------------- settings
@@ -209,14 +318,19 @@ class Mixer:
             self.position = float(np.clip(frame, 0, max(0, self.length - 1)))
             self.ended = False
             self._stretch = None
+            self._drop_chain()
             if self.chaining:
-                # Carry on from the chain entry that was clicked into, if any.
+                # Carry on from the chain entry that was clicked into, else
+                # from the start of the chain.
                 order = [self.chain_step] + list(range(len(self.chain)))
                 for step in order:
                     section = self.sections[self.chain[step % len(self.chain)]]
                     if section["start"] <= self.position < section["end"]:
                         self.chain_step = step % len(self.chain)
                         break
+                else:
+                    self.chain_step = 0
+                    self.position = float(self.sections[self.chain[0]]["start"])
 
     @property
     def chaining(self) -> bool:
@@ -292,16 +406,44 @@ class Mixer:
 
     def save_section(self, name: str = ""):
         """Keep the marked section. Returns its index, or None if nothing is
-        marked or the song already has MAX_SECTIONS."""
+        marked."""
         if self.loop_start is None:
             return None
         already = self.active_section()
         if already is not None:
             return already
-        if len(self.sections) >= MAX_SECTIONS:
-            return None
-        self.sections.append({"name": name, "start": self.loop_start, "end": self.loop_end})
+        self.sections.append({"name": name, "start": self.loop_start, "end": self.loop_end,
+                              "tempo": 1.0, "xfade": 0.0})
         return len(self.sections) - 1
+
+    @staticmethod
+    def _section_tempo(value) -> float:
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return 1.0
+        return float(np.clip(value, MIN_TEMPO, MAX_TEMPO)) if np.isfinite(value) else 1.0
+
+    @staticmethod
+    def _section_xfade(value) -> float:
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        return max(0.0, value) if np.isfinite(value) else 0.0
+
+    def set_section(self, index: int, tempo=None, xfade=None) -> bool:
+        """Change a saved section's own tempo (times the song's tempo) or its
+        crossfade, in seconds, into whatever follows it in a chain."""
+        with self._lock:
+            if not 0 <= index < len(self.sections):
+                return False
+            section = self.sections[index]
+            if tempo is not None:
+                section["tempo"] = self._section_tempo(tempo)
+            if xfade is not None:
+                section["xfade"] = self._section_xfade(xfade)
+        return True
 
     def select_section(self, index: int) -> bool:
         """Mark a saved section, loop it, and jump to its start."""
@@ -354,10 +496,11 @@ class Mixer:
             except (TypeError, KeyError, ValueError):
                 continue
             fits = 0 <= start and end <= self.length
-            if fits and end - start >= MIN_LOOP_SECONDS * self.samplerate \
-                    and len(self.sections) < MAX_SECTIONS:
+            if fits and end - start >= MIN_LOOP_SECONDS * self.samplerate:
                 self.sections.append({"name": str(section.get("name", "")),
-                                      "start": start, "end": end})
+                                      "start": start, "end": end,
+                                      "tempo": self._section_tempo(section.get("tempo", 1.0)),
+                                      "xfade": self._section_xfade(section.get("xfade", 0.0))})
         chain = values.get("chain")
         if isinstance(chain, dict) and isinstance(chain.get("steps"), list):
             try:
@@ -443,11 +586,18 @@ class Mixer:
             target = self.gains()
             last = self.length - 1
             loop = self.region()
-            if self._plain(tempo, ratio):
+            if self.chaining:
+                self._stretch = None
+                previous = self._last_gains if self._last_gains is not None else target
+                out, position = self._chain_block(frames, previous, target)
+                position = min(position, last - 1.0)   # a chain goes round; it never ends
+            elif self._plain(tempo, ratio):
+                self._drop_chain()
                 self._stretch = None
                 previous = self._last_gains if self._last_gains is not None else target
                 out, position = self._plain_block(frames, ratio, previous, target, loop)
             else:
+                self._drop_chain()
                 stretch = self._stretch
                 if stretch is None:
                     stretch = self._stretch = Stretcher(self.position)
@@ -519,25 +669,125 @@ class Mixer:
                 position = start + over % (end - start)
         return out, position
 
+    def _chain_block(self, frames, previous, target) -> tuple:
+        """A block of the chain, made by the same _ChainStream as render_chain,
+        going round to the start again at the end. Returns (audio, position)."""
+        key = self._chain_key()
+        stream = self._chain
+        if stream is not None and stream.key != key:
+            # A tempo, pitch or section change while it plays: carry on from
+            # here with the new settings, crossfading out of the old sound.
+            self._chain_old.append([stream, self._fade_in_gain(self._chain_in), 0])
+            self._chain_in = 0
+            stream = None
+        if stream is None:
+            stream = self._chain = self._chain_here(key)
+        out = np.zeros((frames, 2), dtype=np.float32)
+        done = 0
+        while done < frames:
+            audio, count = stream.pull(frames - done, previous, target)
+            out[done:done + count] = audio[:count]
+            done += count
+            previous = target
+            if stream.pos >= stream.total:
+                stream = self._chain = _ChainStream(self, stream.plan)
+                stream.key = key
+                if stream.total <= 0:
+                    break
+        if self._chain_in < _LOOP_FADE or self._chain_old:
+            self._blend_fades(out)
+        self.chain_step, position = stream.where()
+        return out, position
+
+    @staticmethod
+    def _fade_in_gain(frames):
+        """Gain of a chain that has faded in for `frames` (equal-power curve)."""
+        return np.sin(np.minimum((np.asarray(frames, dtype=np.float64) + 0.5) / _LOOP_FADE, 1.0)
+                      * (np.pi / 2))
+
+    def _drop_chain(self) -> None:
+        self._chain = None
+        self._chain_old = []
+        self._chain_in = _LOOP_FADE
+
+    def _blend_fades(self, out: np.ndarray) -> None:
+        """After a change rebuilt the chain, fade the new sound in and each
+        older one out over _LOOP_FADE frames. An older sound starts its fade
+        from whatever gain it had, so quick changes overlap without a jump."""
+        frames = len(out)
+        if self._chain_in < _LOOP_FADE:
+            gain = self._fade_in_gain(np.arange(self._chain_in, self._chain_in + frames))
+            out *= gain.astype(np.float32)[:, None]
+            self._chain_in = min(_LOOP_FADE, self._chain_in + frames)
+        previous = self._last_gains if self._last_gains is not None else self.gains()
+        target = self.gains()
+        still = []
+        for entry in self._chain_old:
+            old, start_gain, faded = entry
+            count = min(frames, _LOOP_FADE - faded)
+            audio, _made = old.pull(count, previous, target)
+            t = (np.arange(faded, faded + count) + 0.5) / _LOOP_FADE * (np.pi / 2)
+            out[:count] += audio[:count] * (start_gain * np.cos(t)).astype(np.float32)[:, None]
+            entry[2] = faded + count
+            if entry[2] < _LOOP_FADE:
+                still.append(entry)
+        self._chain_old = still
+
+    def _chain_key(self) -> tuple:
+        """Everything a chain's sound is made from, apart from the gains."""
+        return (tuple(self.chain), self.tempo, self.pitch,
+                tuple((s["start"], s["end"], s.get("tempo", 1.0), s.get("xfade", 0.0))
+                      for s in (self.sections[i] for i in self.chain)))
+
+    def _chain_here(self, key) -> _ChainStream:
+        """A chain stream from the playhead: the current step, from where in
+        its section the playhead is."""
+        plan = self._chain_plan()
+        step = self.chain_step % len(plan)
+        section, tempo, length, _ = plan[step]
+        offset = 0
+        if section["start"] <= self.position < section["end"]:
+            offset = int(min(length - 1, (self.position - section["start"]) / tempo))
+        stream = _ChainStream(self, plan, step, offset)
+        stream.key = key
+        return stream
+
+    def _chain_plan(self) -> list:
+        """[section, tempo, frames out, frames overlapped with the next step]
+        for each step of the chain."""
+        plan = []
+        for index in self.chain:
+            section = self.sections[index]
+            tempo = self.tempo * section.get("tempo", 1.0)
+            frames = int(np.ceil((section["end"] - section["start"]) / tempo))
+            plan.append([section, tempo, frames, 0])
+        for step, following in zip(plan, plan[1:]):
+            wanted = int(round(step[0].get("xfade", 0.0) * self.samplerate))
+            step[3] = max(0, min(wanted, step[2] // 2, following[2] // 2))
+        return plan
+
+    def chain_length_s(self) -> float:
+        """How long render_chain's audio is, in seconds."""
+        plan = self._chain_plan()
+        return (sum(p[2] for p in plan) - sum(p[3] for p in plan)) / self.samplerate
+
     def forget_gains(self) -> None:
         """Call when playback (re)starts, so it doesn't glide from stale gains
         or carry on from a stale stretch."""
         self._last_gains = None
         self._stretch = None
+        self._drop_chain()
 
     def render_chain(self) -> tuple:
-        """The chain, once through, for an export. Each join gets the same
-        few-millisecond dip as it has when playing."""
+        """The chain, once through, for an export: each section at its own
+        tempo, joined with its crossfade (or the few-millisecond dip), exactly
+        as it plays."""
+        gains = self.gains()
+        stream = _ChainStream(self, self._chain_plan())
         parts = []
-        for index in self.chain:
-            section = self.sections[index]
-            audio = self._render((section["start"], section["end"]))
-            fade = min(_LOOP_FADE, len(audio) // 2)
-            if fade:
-                ramp = np.linspace(0.0, 1.0, fade, dtype=np.float32)[:, None]
-                audio[:fade] *= ramp
-                audio[-fade:] *= ramp[::-1]
-            parts.append(audio)
+        while stream.pos < stream.total:
+            audio, count = stream.pull(min(_EXPORT_CHUNK, stream.total - stream.pos), gains, gains)
+            parts.append(audio[:count])
         audio = np.concatenate(parts) if parts else np.zeros((0, 2), np.float32)
         return self._ceiling(audio)
 
