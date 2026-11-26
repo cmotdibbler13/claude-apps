@@ -45,7 +45,7 @@ export function makeBlenderRunner({ settings = DEFAULT_SETTINGS } = {}) {
       if (await host.fs.exists(out)) await host.fs.rename(out, out.replace(/\.mp4$/i, "") + `.stale-${host.now()}.mp4`);
       return new Promise((resolve, reject) => {
         const tail = [];
-        let partial = "", errText = "";
+        let partial = "", errText = "", last = -1;
         const feed = (chunk) => {
           partial += String(chunk);
           const lines = partial.split(/\r?\n|\r/);
@@ -55,7 +55,10 @@ export function makeBlenderRunner({ settings = DEFAULT_SETTINGS } = {}) {
             tail.push(line);
             if (tail.length > 20) tail.shift();
             for (const m of line.matchAll(FRA)) {
-              if (frames > 0) ctx.progress(Math.min(1, Math.max(0, Number(m[1]) / frames)));
+              if (!(frames > 0)) continue;
+              const p = Math.min(1, Math.max(0, Number(m[1]) / frames));
+              // Blender prints several lines per frame: report only moves of 1 % or more (and the end).
+              if (p - last >= 0.01 || (p === 1 && last !== 1)) { last = p; ctx.progress(p); }
             }
           }
         };

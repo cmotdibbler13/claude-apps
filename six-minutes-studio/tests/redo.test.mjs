@@ -160,3 +160,26 @@ test("jobs.add failure marks the take failed and rethrows", async () => {
   host.claudeScript(() => ({ prompt: "again" }));
   assert.equal((await startTake(ctx, "HF-01")).n, 2);
 });
+
+test("a 200-frame Blender render writes state.json and the jobs file only a few times", async () => {
+  const { makeBlenderRunner } = await import("../js/tools/blender.js");
+  const host = new FakeHost();
+  await host.fs.mkdir(DIR);
+  const store = await openFilm(host, DIR);
+  await store.update((d) => { d.assets = [bl({ takes: [{ n: 1, status: "queued", at: 1 }], chosen: 1 })]; });
+  const writes = { state: 0, jobs: 0 };
+  const w = host.fs.write;
+  host.fs.write = async (p, x) => { if (/state\.json\.tmp$/i.test(p)) writes.state++; if (/studio-jobs\.json\.tmp$/i.test(p)) writes.jobs++; return w(p, x); };
+  host.spawnScript((cmd, args, o, ctl) => {
+    for (let i = 1; i <= 200; i++) ctl.out(`Fra:${i} Mem:1M | Rendering\nFra:${i} Mem:1M | Sample 1/64\n`);
+    host.files.set(args.at(-1), "x");
+    ctl.exit(0);
+  });
+  const jobs = makeJobs(host, { runners: { blender: makeBlenderRunner() }, file: "S:\\Youtube video ideas\\.studio-jobs.json" });
+  watchJobs({ host, store, jobs });
+  jobs.add({ film: DIR, assetId: "HF-02", take: 1, tool: "blender", input: { script: "s.py", sourceFile: "a.png", out: DIR + "\\studio\\media\\HF-02_t1.mp4", frames: 200 } });
+  await new Promise((r) => setTimeout(r, 100)); await jobs.flush(); await tick();
+  assert.equal(store.state.assets[0].takes[0].status, "done");
+  assert.ok(writes.state <= 10, `state.json written ${writes.state} times`);
+  assert.ok(writes.jobs <= 10, `jobs file written ${writes.jobs} times`);
+});

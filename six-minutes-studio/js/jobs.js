@@ -1,4 +1,5 @@
-// Job queue: gpu lane runs one at a time, connector lane up to three. Persisted after every change.
+// Job queue: gpu lane runs one at a time, connector lane up to three. Persisted after every status,
+// jobRef or structural change; progress-only changes notify listeners but are not written.
 // A failed or interrupted job is never retried automatically; retry(id) adds a fresh job on request.
 const CAPS = { gpu: 1, connector: 3 };
 
@@ -11,8 +12,8 @@ export function makeJobs(host, { runners = {}, file } = {}) {
   const errListeners = new Set();
 
   const snap = () => jobs.map((j) => structuredClone(j));
-  const changed = () => {
-    persist();
+  const changed = (save = true) => {
+    if (save) persist();
     const s = snap();
     for (const fn of [...listeners]) { try { fn(s); } catch { /* a bad listener must not stop the queue */ } }
   };
@@ -45,7 +46,7 @@ export function makeJobs(host, { runners = {}, file } = {}) {
       progress(p, eta) {
         job.progress = p ?? null;
         if (eta !== undefined) job.eta = eta ?? null;
-        changed();
+        changed(false);
       },
       setRef(ref) { job.jobRef = ref; changed(); },
     };

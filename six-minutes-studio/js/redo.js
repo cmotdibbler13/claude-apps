@@ -101,37 +101,50 @@ export async function startTake(ctx, assetId, { note } = {}) {
   return structuredClone(store.state.assets.find((a) => a.id === assetId).takes.find((t) => t.n === n));
 }
 
+// Mirror job status onto takes. Each sync reconciles against the current job list and writes
+// state.json only when some take actually changes (progress alone never writes).
+function applyJobs(d, dir, list, lines) {
+  // Latest job per (asset, take): a retry replaces the earlier failed one.
+  const latest = new Map();
+  for (const j of list) if (j.film === dir) latest.set(`${j.assetId}\u0000${j.take}`, j);
+  let changed = false;
+  for (const j of latest.values()) {
+    const t = find(d, j.assetId)?.takes.find((x) => x.n === j.take);
+    if (!t) continue;
+    if (j.id !== t.jobId) { t.jobId = j.id; changed = true; }
+    if (!["queued", "running", "done", "failed", "interrupted"].includes(j.status) || t.status === j.status) continue;
+    changed = true;
+    t.status = j.status;
+    if (j.status === "done") { t.file = j.file; delete t.error; lines.push(`${j.assetId} take ${j.take} ready`); }
+    else if (j.status === "failed" || j.status === "interrupted") {
+      t.error = j.error ?? (j.status === "interrupted" ? "Interrupted" : "Failed");
+      lines.push(`${j.assetId} take ${j.take} failed: ${t.error}`);
+    } else delete t.error;
+  }
+  return changed;
+}
+
 export function watchJobs(ctx) {
   const { store, jobs } = ctx;
   let chain = Promise.resolve();
-  const sync = (list) => {
-    // Latest job per (asset, take): a retry replaces the earlier failed one.
-    const latest = new Map();
-    for (const j of list) if (j.film === store.dir) latest.set(`${j.assetId}\u0000${j.take}`, j);
-    const wanted = [...latest.values()];
-    if (!wanted.length) return;
-    chain = chain.then(async () => {
-      const lines = [];
-      await store.update((d) => {
-        lines.length = 0;
-        for (const j of wanted) {
-          const t = find(d, j.assetId)?.takes.find((x) => x.n === j.take);
-          if (!t) continue;
-          if (j.id !== t.jobId) t.jobId = j.id;
-          if (!["queued", "running", "done", "failed", "interrupted"].includes(j.status) || t.status === j.status) continue;
-          t.status = j.status;
-          if (j.status === "done") { t.file = j.file; delete t.error; lines.push(`${j.assetId} take ${j.take} ready`); }
-          else if (j.status === "failed" || j.status === "interrupted") {
-            t.error = j.error ?? (j.status === "interrupted" ? "Interrupted" : "Failed");
-            lines.push(`${j.assetId} take ${j.take} failed: ${t.error}`);
-          } else delete t.error;
-        }
-      });
-      for (const l of lines) await store.log(l);
-    }).catch(() => {});
+  let queued = false;
+  const run = async () => {
+    queued = false;
+    if (!applyJobs(structuredClone(store.state), store.dir, jobs.list(), [])) return;
+    const lines = [];
+    await store.update((d) => {
+      lines.length = 0;
+      applyJobs(d, store.dir, jobs.list(), lines);
+    });
+    for (const l of lines) await store.log(l);
+  };
+  const sync = () => {
+    if (queued) return; // one pending reconcile covers every change since it was queued
+    queued = true;
+    chain = chain.then(run).catch(() => {});
   };
   const off = jobs.onChange(sync);
-  sync(jobs.list());
+  sync();
   return off;
 }
 

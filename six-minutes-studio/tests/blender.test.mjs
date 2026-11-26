@@ -125,3 +125,16 @@ test("a pre-existing output is moved aside and cannot make a failed run pass", a
   const stale = DIR + "\\studio\\media\\HF-03_t2.stale-" + t.host.now() + ".mp4";
   assert.equal(await t.host.fs.read(stale, "utf8"), "partial");
 });
+
+test("progress is reported only when it moves by at least 1 %", async () => {
+  const t = setup(async (p, host) => {
+    for (let i = 1; i <= 200; i++) p.out(`Fra:${i} Mem:1M | Rendering\nFra:${i} Mem:1M | Sample 1/64\n`);
+    await host.fs.mkdir(DIR + "\\studio\\media");
+    await host.fs.write(OUT, "x");
+    p.exit(0);
+  });
+  t.job.input.frames = 200;
+  await t.runner.start(t.job, t.ctx);
+  assert.ok(t.progress.length <= 101, `reported ${t.progress.length} times`);
+  assert.equal(t.progress.at(-1), 1);
+});
