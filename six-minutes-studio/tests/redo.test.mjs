@@ -135,3 +135,27 @@ test("approve requires a done take", async () => {
   assert.equal(store.state.assets[1].approved, false);
   await assert.rejects(() => choose(ctx, "HF-03", 9), /no take 9/);
 });
+
+test("watchJobs syncs at subscribe: interrupted after restore frees the take", async () => {
+  const { ctx, host, store, jobs } = await setup([hf({ takes: [{ n: 1, prompt: "p", status: "running", jobId: "j1", at: 1 }], chosen: 1 })], idle);
+  jobs.restore([{ id: "j1", film: DIR, assetId: "HF-01", take: 1, tool: "blender", lane: "gpu", status: "running", input: {} }]);
+  watchJobs(ctx);
+  await tick();
+  const t = store.state.assets[0].takes[0];
+  assert.equal(t.status, "interrupted");
+  assert.ok(t.error);
+  host.claudeScript(() => ({ prompt: "again prompt" }));
+  assert.equal((await startTake(ctx, "HF-01", { note: "again" })).n, 2);
+});
+
+test("jobs.add failure marks the take failed and rethrows", async () => {
+  const { ctx, store, jobs } = await setup([hf()], idle);
+  jobs.add = () => { throw new Error("queue broke"); };
+  await assert.rejects(() => startTake(ctx, "HF-01"), /queue broke/);
+  const t = store.state.assets[0].takes[0];
+  assert.equal(t.status, "failed");
+  assert.equal(t.error, "queue broke");
+  assert.ok((await store.readLog()).some((l) => /take 1 failed: queue broke/.test(l.text)));
+  jobs.add = () => "jx";
+  assert.equal((await startTake(ctx, "HF-01")).n, 2);
+});

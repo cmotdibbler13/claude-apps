@@ -76,12 +76,23 @@ export async function startTake(ctx, assetId, { note } = {}) {
     a.chosen = n;
     a.approved = false;
   });
-  const jobId = jobs.add({
-    film: store.dir, assetId, take: n, tool: asset.tool,
-    what: `${asset.id}: ${asset.desc}`,
-    why: hasNote ? `Take ${n}, from your note "${note}"` : "First take",
-    input,
-  });
+  let jobId;
+  try {
+    jobId = jobs.add({
+      film: store.dir, assetId, take: n, tool: asset.tool,
+      what: `${asset.id}: ${asset.desc}`,
+      why: hasNote ? `Take ${n}, from your note "${note}"` : "First take",
+      input,
+    });
+  } catch (e) {
+    const msg = String(e?.message ?? e);
+    await store.update((d) => {
+      const t = find(d, assetId).takes.find((x) => x.n === n);
+      if (t) { t.status = "failed"; t.error = msg; }
+    });
+    await store.log(`${asset.id} take ${n} failed: ${msg}`);
+    throw e;
+  }
   await store.update((d) => {
     const t = find(d, assetId).takes.find((x) => x.n === n);
     if (t && !t.jobId) t.jobId = jobId;
@@ -119,7 +130,9 @@ export function watchJobs(ctx) {
       for (const l of lines) await store.log(l);
     }).catch(() => {});
   };
-  return jobs.onChange(sync);
+  const off = jobs.onChange(sync);
+  sync(jobs.list());
+  return off;
 }
 
 export async function approve(ctx, assetId) {
