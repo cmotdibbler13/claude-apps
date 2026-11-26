@@ -25,6 +25,7 @@ from datetime import datetime
 import customtkinter as ctk
 
 from audio_recorder import AudioRecorder
+from server_backup import ServerBackup
 
 try:
     from mic_gain import MicGainController
@@ -252,6 +253,9 @@ class AutocueApp(ctk.CTk):
         self._countdown_font = ctk.CTkFont(family=light, size=130)
 
         self.recorder = AudioRecorder(RECORDINGS_DIR)
+        # Copy takes to the home server in the background (see server_backup.py).
+        self.backup = ServerBackup(RECORDINGS_DIR)
+        self._backup_seen = None
 
         self.font_size = DEFAULT_FONT_SIZE
         self.scroll_speed = ctk.DoubleVar(value=DEFAULT_SPEED)
@@ -287,6 +291,8 @@ class AutocueApp(ctk.CTk):
         self._refresh_recordings()
         self._poll_meter()
         self._bind_keys()
+        self.backup.request()  # catch up anything not yet on the server
+        self._poll_backup()
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -1002,6 +1008,7 @@ class AutocueApp(ctk.CTk):
             self.status_label.configure(
                 text=f"Saved  {os.path.basename(path)}", text_color=ACCENT_GREEN
             )
+            self.backup.request()
             if self.line_mode and self.auto_advance.get():
                 if self.line_index < len(self.script_lines) - 1:
                     self.line_index += 1
@@ -1024,6 +1031,22 @@ class AutocueApp(ctk.CTk):
                 f"The take is still in:\n{temp_path}\n\n{exc}",
             )
             return temp_path
+
+    def _poll_backup(self) -> None:
+        """Show the result of the latest server copy (runs on the UI thread)."""
+        result = self.backup.last_result
+        if result is not None and result is not self._backup_seen:
+            self._backup_seen = result
+            busy = self.recorder.is_recording or self._counting_down
+            text = self.status_label.cget("text")
+            if result[0] == "error" and not busy:
+                self.status_label.configure(
+                    text=f"{text}  ·  server copy failed, will retry after the next take",
+                    text_color=BRASS,
+                )
+            elif result[0] == "ok" and result[1] and not busy and text.startswith("Saved"):
+                self.status_label.configure(text=f"{text}  ·  copied to server ✓")
+        self.after(1000, self._poll_backup)
 
     def _reset_controls(self) -> None:
         self.record_btn.configure(state="normal")
