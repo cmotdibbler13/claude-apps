@@ -209,3 +209,8 @@ test("film rows and job rows match jobs by folder name, not by full path", () =>
   const m = jobsModel({ jobs: [job({ id: "a", status: "failed" }), job({ id: "b", film: unc, status: "running" })], log: null, retried: new Set() });
   assert.equal(m.rows.find((r) => r.id === "a").canRetry, false);
 });
+
+test("state save error banner", async () => {
+  const { stateErrorBanner } = await import("../js/ui/jobs.js");
+  assert.equal(stateErrorBanner("S:\\Youtube video ideas\\Skara Brae", "EACCES"), "Couldn't save Skara Brae's state: EACCES");
+});

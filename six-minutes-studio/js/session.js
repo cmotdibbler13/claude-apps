@@ -43,7 +43,7 @@ export function makeFilmSession({ host, jobs, open = openFilm, watch = watchJobs
         const store = await storeFor(dir);
         if (my !== seq) return null; // a later open (or close) won: never subscribe this store
         current?.unwatch();
-        current = { key, dir: store.dir, store, unwatch: watch({ host, store, jobs, onError: onSaveError }) };
+        current = { key, dir: store.dir, store, unwatch: watch({ host, store, jobs, onError: (m) => onSaveError(m, store.dir) }) };
         return store;
       })().finally(() => { if (inflight?.promise === promise) inflight = null; });
       inflight = { key, promise };

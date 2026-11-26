@@ -149,18 +149,26 @@ function applyJobs(d, dir, list, lines, pending) {
   return changed;
 }
 
+// ctx.onError(message) reports a failed state write (null once a later reconcile succeeds).
 export function watchJobs(ctx) {
-  const { store, jobs } = ctx;
+  const { store, jobs, onError = () => {} } = ctx;
   let chain = Promise.resolve();
   let queued = false;
   const run = async () => {
     queued = false;
     if (!applyJobs(structuredClone(store.state), store.dir, jobs.list(), [], store.pending)) return;
     const lines = [];
-    await store.update((d) => {
-      lines.length = 0;
-      applyJobs(d, store.dir, jobs.list(), lines, store.pending);
-    });
+    try {
+      await store.update((d) => {
+        lines.length = 0;
+        applyJobs(d, store.dir, jobs.list(), lines, store.pending);
+      });
+    } catch (e) {
+      console.error(`Couldn't save ${store.dir} state`, e);
+      try { onError(String(e?.message ?? e)); } catch { /* reporting must not stop the watcher */ }
+      return;
+    }
+    try { onError(null); } catch { /* ignore */ }
     for (const l of lines) await store.log(l);
   };
   const sync = () => {

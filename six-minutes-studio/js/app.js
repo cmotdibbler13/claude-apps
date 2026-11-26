@@ -22,7 +22,7 @@ const LAYOUT_KEY = "six-minutes-studio.reviewLayout";
 
 const app = {
   host: null, root: null, jobs: null, films: [], view: "films",
-  film: null, store: null, session: null, retried: new Set(), movedAside: null,
+  film: null, store: null, session: null, retried: new Set(), movedAside: null, stateError: null,
   review: { making: false, listError: null, cardErrors: new Map(), pending: new Set(), noteFor: null, draft: "" },
   previews: new Map(),
   layout: (() => { try { return localStorage.getItem(LAYOUT_KEY) || "script"; } catch { return "script"; } })(),
@@ -129,6 +129,9 @@ async function renderNow() {
   const moved = $("moved-banner");
   moved.hidden = !app.movedAside;
   moved.textContent = app.movedAside ? jobsView.movedAsideBanner(app.movedAside.name) : "";
+  const se = app.stateError;
+  $("state-banner").hidden = !se;
+  $("state-banner").textContent = se ? jobsView.stateErrorBanner(se.film, se.message) : "";
 
   if (app.view === "films") {
     paint("films", $("view-films"), filmsView.filmsModel({ root: app.root, films: app.films, jobs: list }), filmsView, filmsActions);
@@ -159,7 +162,10 @@ async function loadRoot() {
       file,
     });
     const saved = await readSavedJobs(host, file, { onMovedAside: (name) => { app.movedAside = { name }; } });
-    app.session = makeFilmSession({ host, jobs: app.jobs, onSaved: () => render() });
+    app.session = makeFilmSession({
+      host, jobs: app.jobs, onSaved: () => render(),
+      onSaveError: (message, film) => { app.stateError = message ? { film, message } : null; render(); },
+    });
     app.jobs.onChange((list) => { onJobsChanged(list); render(); });
     app.jobs.onPersistError(() => render());
     app.jobs.restore(saved);

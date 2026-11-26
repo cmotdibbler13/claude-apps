@@ -42,6 +42,8 @@ export const movedAsideBanner = (name) => name
   ? `The job list couldn't be read and was saved as ${name}. Jobs that were running may not reconnect.`
   : "The job list couldn't be read. Jobs that were running may not reconnect.";
 
+export const stateErrorBanner = (film, message) => `Couldn't save ${basename(film)}'s state: ${message}`;
+
 export function jobsModel({ jobs = [], log = null, retried = new Set(), persistError = null }) {
   const rows = jobs.map((j, i) => jobRow(j, i, jobs, retried)).reverse();
   return {

@@ -233,3 +233,24 @@ test("waiting follows takes: running, ready to review, approved", async () => {
   await unapprove(ctx, "HF-01");
   assert.equal(store.state.waiting, "1 shot to review");
 });
+
+test("a failed state write from the job watcher is logged and reported, then cleared", async () => {
+  const runners = { higgsfield: { start: async () => ({ file: "S:\\out.png" }) } };
+  const { host, store, jobs } = await setup([hf({ takes: [{ n: 1, prompt: "p", status: "queued", at: 1 }], chosen: 1 })], runners);
+  const errors = [], logged = [];
+  const ce = console.error;
+  console.error = (...a) => logged.push(a);
+  try {
+    const w = host.fs.write;
+    host.fs.write = async () => { throw new Error("EACCES: denied"); };
+    watchJobs({ host, store, jobs, onError: (m) => errors.push(m) });
+    await tick();
+    assert.deepEqual(errors, ["EACCES: denied"]);
+    assert.equal(logged.length, 1);
+    host.fs.write = w;
+    jobs.add({ film: DIR, assetId: "HF-01", take: 1, tool: "higgsfield", input: {} });
+    await tick(); await tick();
+    assert.equal(errors.at(-1), null);
+    assert.equal(store.state.assets[0].takes[0].status, "done");
+  } finally { console.error = ce; }
+});
