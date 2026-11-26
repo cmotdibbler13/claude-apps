@@ -14,7 +14,7 @@ From the script and the part 1 handover below, make a shot list. Answer with a J
 Cover the whole script in order.`;
 
 const KINDS = ["broll", "lineart", "blender"];
-const TOOLS = ["higgsfield", "blender"];
+const TOOLS = ["higgsfield", "blender", "comfyui"];
 const filled = (v) => typeof v === "string" && v.trim() !== "";
 
 const shots = (n) => `${n} shot${n === 1 ? "" : "s"}`;
@@ -56,6 +56,7 @@ function validateShots(list) {
     if (!TOOLS.includes(s.tool)) throw new Error(`${at} has a bad tool`);
     if (!filled(s.prompt)) throw new Error(`${at} has no prompt`);
     if ((s.kind === "blender") !== (s.tool === "blender")) throw new Error(`${at} tool does not match kind`);
+    if (s.tool === "comfyui" && s.kind !== "broll") throw new Error(`${at} tool does not match kind`);
   });
   for (const s of list) {
     if (s.kind !== "blender") continue;
@@ -74,10 +75,11 @@ export async function buildShotList(host, store, { scriptText, handoverText }) {
   });
   const ordered = orderByScript(list);
   const newId = new Map(ordered.map((s, i) => [s.id, `HF-${String(i + 1).padStart(2, "0")}`]));
+  const comfy = !!store.state.prefs?.preferComfy;
   const assets = ordered.map((s) => {
     const a = {
       id: newId.get(s.id), kind: s.kind, line: s.line, lineIndex: s.lineIndex, desc: s.desc,
-      tool: s.tool, draftPrompt: s.prompt, takes: [], chosen: 0, approved: false,
+      tool: comfy && s.kind === "broll" ? "comfyui" : s.tool, draftPrompt: s.prompt, takes: [], chosen: 0, approved: false,
     };
     if (s.kind === "blender") a.sourceId = newId.get(s.sourceId);
     return a;

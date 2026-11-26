@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { FakeHost } from "./fake-host.mjs";
 import { openFilm } from "../js/store.js";
 import { makeJobs } from "../js/jobs.js";
-import { startTake, watchJobs, approve, unapprove, choose, canStart } from "../js/redo.js";
+import { startTake, watchJobs, approve, unapprove, choose, canStart, setTool, setPreferComfy } from "../js/redo.js";
 
 const DIR = "S:\\Youtube video ideas\\Film A";
 const hf = (o = {}) => ({ id: "HF-01", kind: "lineart", line: "L", lineIndex: 0, desc: "A lighthouse", tool: "higgsfield", draftPrompt: "draft prompt", takes: [], chosen: 0, approved: false, ...o });
@@ -253,4 +253,70 @@ test("a failed state write from the job watcher is logged and reported, then cle
     assert.equal(errors.at(-1), null);
     assert.equal(store.state.assets[0].takes[0].status, "done");
   } finally { console.error = ce; }
+});
+
+const br = (o = {}) => hf({ id: "HF-03", kind: "broll", lineIndex: 2, ...o });
+const idle3 = { ...idle, comfyui: { lane: "gpu", start: () => new Promise(() => {}) } };
+
+test("setTool switches a broll shot, logs it, and a same-tool call is a no-op", async () => {
+  const { ctx, store } = await setup([br({ approved: true })], idle3);
+  await setTool(ctx, "HF-03", "comfyui");
+  assert.equal(store.state.assets[0].tool, "comfyui");
+  assert.equal(store.state.assets[0].approved, true);
+  assert.ok((await store.readLog()).some((l) => l.text === "HF-03 now uses ComfyUI"));
+  const before = (await store.readLog()).length;
+  const st = store.state;
+  await setTool(ctx, "HF-03", "comfyui");
+  assert.equal(store.state, st);
+  assert.equal((await store.readLog()).length, before);
+  await setTool(ctx, "HF-03", "higgsfield");
+  assert.ok((await store.readLog()).some((l) => l.text === "HF-03 now uses Higgsfield"));
+});
+
+test("setTool refuses while a take is busy", async () => {
+  const { ctx, store } = await setup([br()], idle3);
+  await startTake(ctx, "HF-03");
+  await assert.rejects(() => setTool(ctx, "HF-03", "comfyui"), /has a take in progress/);
+  assert.equal(store.state.assets[0].tool, "higgsfield");
+  const { ctx: c2, store: s2 } = await setup([br()], idle3);
+  s2.pending.add("HF-03#1");
+  await assert.rejects(() => setTool(c2, "HF-03", "comfyui"), /has a take in progress/);
+});
+
+test("setTool rejects comfyui on lineart or blender, and unknown shots or tools", async () => {
+  const { ctx } = await setup([hf(), bl(), br()], idle3);
+  await assert.rejects(() => setTool(ctx, "HF-01", "comfyui"), /b-roll/);
+  await assert.rejects(() => setTool(ctx, "HF-02", "comfyui"), /b-roll/);
+  await assert.rejects(() => setTool(ctx, "HF-09", "comfyui"), /Unknown shot/);
+  await assert.rejects(() => setTool(ctx, "HF-03", "blender"), /tool/i);
+});
+
+test("setPreferComfy changes only broll shots without takes", async () => {
+  const done = { n: 1, prompt: "p", status: "done", file: "x.mp4" };
+  const { ctx, store } = await setup([
+    hf(), br({ id: "HF-04" }), br({ id: "HF-05", takes: [done], chosen: 1 }), br({ id: "HF-06" }),
+  ], idle3);
+  store.pending.add("HF-06#1");
+  await setPreferComfy(ctx, true);
+  const t = Object.fromEntries(store.state.assets.map((a) => [a.id, a.tool]));
+  assert.deepEqual(t, { "HF-01": "higgsfield", "HF-04": "comfyui", "HF-05": "higgsfield", "HF-06": "higgsfield" });
+  assert.equal(store.state.prefs.preferComfy, true);
+  assert.ok((await store.readLog()).some((l) => l.text === "Prefer ComfyUI for b-roll: on (1 shots switched)"));
+  await setPreferComfy(ctx, false);
+  assert.equal(store.state.assets.find((a) => a.id === "HF-04").tool, "higgsfield");
+  assert.equal(store.state.prefs.preferComfy, false);
+});
+
+test("startTake on a comfyui shot adds a comfyui job with an .mp4 out", async () => {
+  const { ctx, host, jobs, store } = await setup([br({ tool: "comfyui" })], idle3);
+  host.claudeScript(() => { throw new Error("no Claude call for a first take"); });
+  const t = await startTake(ctx, "HF-03");
+  assert.equal(t.prompt, "draft prompt");
+  const [j] = jobs.list();
+  assert.equal(j.tool, "comfyui");
+  assert.deepEqual(j.input, { kind: "broll", prompt: "draft prompt", out: DIR + "\\studio\\media\\HF-03_t1.mp4" });
+  host.claudeScript(() => ({ prompt: "again" }));
+  store.state.assets[0].takes[0].status = "done";
+  const t2 = await startTake(ctx, "HF-03", { note: "slower" });
+  assert.equal(t2.prompt, "again");
 });

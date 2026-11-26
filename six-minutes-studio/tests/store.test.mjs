@@ -87,3 +87,14 @@ test("corrupt state.json is renamed state.bad-<t>.json and a fresh state is star
   assert.equal(log.length, 1);
   assert.match(log[0].text, /state\.bad-555\.json/);
 });
+
+test("a fresh film has prefs.preferComfy false, and an old state.json without prefs reads as false", async () => {
+  const h = new FakeHost();
+  await h.fs.mkdir("S:\\F");
+  const s = await openFilm(h, "S:\\F");
+  assert.equal(s.state.prefs.preferComfy, false);
+  const old = { ...s.state }; delete old.prefs;
+  await h.fs.write("S:\\F\\studio\\state.json", JSON.stringify(old));
+  const s2 = await openFilm(h, "S:\\F");
+  assert.equal(!!s2.state.prefs?.preferComfy, false);
+});

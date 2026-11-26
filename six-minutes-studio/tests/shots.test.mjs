@@ -76,3 +76,21 @@ test("the shot list writes waiting in the same update", async () => {
   await buildShotList(h, store, input);
   assert.equal(store.state.waiting, "2 shots to start");
 });
+
+test("prefer flag makes broll shots comfyui, others unchanged", async () => {
+  const { h, store } = await mk([
+    shot({ id: "a", lineIndex: 0 }),
+    shot({ id: "b", kind: "lineart", lineIndex: 1 }),
+    shot({ id: "c", kind: "blender", tool: "blender", sourceId: "b", lineIndex: 2 }),
+  ]);
+  await store.update((d) => { d.prefs = { preferComfy: true }; });
+  const r = await buildShotList(h, store, input);
+  assert.deepEqual(r.map((a) => a.tool), ["comfyui", "higgsfield", "blender"]);
+});
+
+test("without the flag broll stays higgsfield; comfyui from Claude is accepted only for broll", async () => {
+  const { h, store } = await mk([shot({ tool: "comfyui" })]);
+  assert.equal((await buildShotList(h, store, input))[0].tool, "comfyui");
+  const bad = await mk([shot({ kind: "lineart", tool: "comfyui" })]);
+  await assert.rejects(buildShotList(bad.h, bad.store, input), (e) => e.code === "invalid");
+});

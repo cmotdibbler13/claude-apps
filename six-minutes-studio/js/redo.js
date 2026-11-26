@@ -66,7 +66,7 @@ export async function startTake(ctx, assetId, { note } = {}) {
       prompt = r.prompt;
     }
     take = { n, prompt };
-    input = { kind: asset.kind, prompt, out: base };
+    input = { kind: asset.kind, prompt, out: asset.tool === "comfyui" ? base + ".mp4" : base };
   }
   if (hasNote) take.note = note;
   take.status = "queued";
@@ -205,4 +205,38 @@ export async function choose(ctx, assetId, n) {
   if (!a.takes.some((t) => t.n === n)) throw new Error(`${assetId} has no take ${n}.`);
   await save(store, (d) => { const x = find(d, assetId); x.chosen = n; x.approved = false; });
   await store.log(`${assetId} take ${n} chosen`);
+}
+
+const TOOL_LABEL = { higgsfield: "Higgsfield", comfyui: "ComfyUI" };
+const busy = (a) => (a.takes ?? []).some((t) => t.status === "queued" || t.status === "running");
+const starting = (store, id) => [...(store.pending ?? [])].some((k) => k.startsWith(`${id}#`));
+
+// Switch a b-roll shot between Higgsfield and ComfyUI. Approval is unchanged.
+export async function setTool(ctx, assetId, tool) {
+  const { store } = ctx;
+  const a = find(store.state, assetId);
+  if (!a) throw new Error(`Unknown shot ${assetId}`);
+  if (a.kind !== "broll") throw new Error(`${assetId} is not b-roll, so its tool can't change.`);
+  if (!TOOL_LABEL[tool]) throw new Error(`${tool} is not a tool for b-roll.`);
+  if (a.tool === tool) return;
+  if (busy(a) || starting(store, assetId)) throw new Error(`${assetId} has a take in progress.`);
+  await save(store, (d) => { find(d, assetId).tool = tool; });
+  await store.log(`${assetId} now uses ${TOOL_LABEL[tool]}`);
+}
+
+// Remember the preference and move b-roll shots that have not started yet.
+export async function setPreferComfy(ctx, on) {
+  const { store } = ctx;
+  const want = on ? "comfyui" : "higgsfield";
+  let n = 0;
+  await save(store, (d) => {
+    d.prefs = { ...d.prefs, preferComfy: !!on };
+    n = 0;
+    for (const a of d.assets) {
+      if (a.kind !== "broll" || (a.takes ?? []).length || starting(store, a.id) || a.tool === want) continue;
+      a.tool = want;
+      n++;
+    }
+  });
+  await store.log(`Prefer ComfyUI for b-roll: ${on ? "on" : "off"} (${n} shots switched)`);
 }

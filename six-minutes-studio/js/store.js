@@ -2,7 +2,7 @@
 import { join } from "./paths.js";
 import { deriveWaiting } from "./shots.js";
 
-const fresh = () => ({ v: 1, film: "", part: 2, waiting: deriveWaiting([]), assets: [] });
+const fresh = () => ({ v: 1, film: "", part: 2, waiting: deriveWaiting([]), assets: [], prefs: { preferComfy: false } });
 
 export async function openFilm(host, dir) {
   const studio = join(dir, "studio");
@@ -32,6 +32,8 @@ export async function openFilm(host, dir) {
     await host.fs.write(tmp, JSON.stringify(state, null, 2));
     await host.fs.rename(tmp, file);
   }
+
+  state.prefs = { ...state.prefs, preferComfy: !!state.prefs?.preferComfy };
 
   // pending: takes being started right now ("<assetId>#<n>"), whose job is not in the queue yet.
   const store = { state, dir, pending: new Set() };
