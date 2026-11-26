@@ -74,6 +74,17 @@ export async function estimate(host, flowId, nodeId) {
   return n == null ? null : Math.ceil(n);
 }
 
+// The run reply's session id: session_ids[0] or session_id, else any key named like that, at any depth.
+export function findSession(p, depth = 0) {
+  if (!p || typeof p !== "object" || depth > 4) return null;
+  const pick = (v) => (typeof v === "string" && v ? v : Array.isArray(v) && typeof v[0] === "string" && v[0] ? v[0] : null);
+  const first = pick(p.session_ids) ?? pick(p.session_id);
+  if (first) return first;
+  for (const [k, v] of Object.entries(p)) if (/^session_?ids?$/i.test(k) && pick(v)) return pick(v);
+  for (const v of Object.values(p)) { const r = findSession(v, depth + 1); if (r) return r; }
+  return null;
+}
+
 export function parseStatus(p) {
   const failed = p?.has_failures === true;
   const done = !failed && p?.all_completed === true;
@@ -157,8 +168,11 @@ export function makeElevenRunner({ sleep = realSleep } = {}) {
         // Only a known "nothing started" code is a definite failure; anything else may have run.
         throw typeof e?.code === "string" && DEFINITE.has(e.code) ? new Error(msg(e)) : ambiguous(AMBIGUOUS_RUN);
       });
-      const sessionId = p?.session_ids?.[0] ?? p?.session_id;
-      if (typeof sessionId !== "string" || !sessionId) throw ambiguous(AMBIGUOUS_RUN);
+      const sessionId = findSession(p);
+      if (!sessionId) {
+        let raw = ""; try { raw = JSON.stringify(p) ?? ""; } catch { /* ignore */ }
+        throw ambiguous(`${AMBIGUOUS_RUN} (ElevenLabs replied: ${raw.slice(0, 300)})`);
+      }
       ctx.setRef(JSON.stringify({ flowId, sessionId }));
       return wait(job, ctx, flowId, sessionId);
     },

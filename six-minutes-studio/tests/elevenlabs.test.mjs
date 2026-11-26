@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FakeHost } from "./fake-host.mjs";
-import { nodeSpec, nodeSig, ensureFlow, addNode, estimate, parseStatus, makeElevenRunner } from "../js/tools/elevenlabs.js";
+import { nodeSpec, nodeSig, ensureFlow, addNode, estimate, parseStatus, makeElevenRunner, findSession } from "../js/tools/elevenlabs.js";
 
 const OUT = "S:\\Film A\\studio\\media\\SC-01_t1";
 const URL = "https://elevenlabsusercontent.com/database/workspace/abc/content_generation/S1/G1/content.mp3?Expires=1795734000&KeyName=assets-cdn-key-1&Signature=Y5Dht5T-7GhizIOj4La2yn0jOOI=";
@@ -208,4 +208,12 @@ test("estimate ignores balance-like keys", async () => {
 
 test("nodeSpec needs a length", () => {
   for (const d of [undefined, NaN, "x"]) assert.throws(() => nodeSpec("score", { prompt: "p", durationS: d }), /Set a length first\./);
+});
+
+test("findSession reads the session id from any reasonable run reply", () => {
+  assert.equal(findSession({ session_ids: ["S1"] }), "S1");
+  assert.equal(findSession({ session_id: "S2" }), "S2");
+  assert.equal(findSession({ run: { sessionIds: ["S3"] } }), "S3");
+  assert.equal(findSession({ runs: [{ session_id: "S4" }] }), "S4");
+  assert.equal(findSession({ flow_id: "F", success: true }), null);
 });
