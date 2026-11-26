@@ -115,10 +115,11 @@ def _run_ffmpeg(args, path):
     return proc.stdout
 
 
-def decode(path):
-    """The take as mono float32 at 16 kHz: (samples, 16000)."""
-    raw = _run_ffmpeg(["-ac", "1", "-ar", str(RATE), "-f", "f32le"], path)
-    return np.frombuffer(raw, dtype="<f4").astype(np.float32), RATE
+def decode(path, rate=RATE):
+    """The take as mono float32: (samples, rate). 16 kHz (for the
+    transcriber) unless another rate is asked for."""
+    raw = _run_ffmpeg(["-ac", "1", "-ar", str(int(rate)), "-f", "f32le"], path)
+    return np.frombuffer(raw, dtype="<f4").astype(np.float32), int(rate)
 
 
 Decoded = collections.namedtuple(

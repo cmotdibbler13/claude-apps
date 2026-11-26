@@ -213,6 +213,26 @@ class CheckMarkColours(AppTestCase):
         self.assertEqual(self.win.check_note_label.cget("text"), "")
 
 
+class LineScriptParser(unittest.TestCase):
+    def test_app_uses_the_shared_parser(self):
+        # (_import_app's patch.dict drops modules first imported inside it,
+        # so the function objects differ; the source module is what counts.)
+        self.assertEqual(app.parse_line_script.__module__, "line_script")
+
+    def test_parses_name_sections_ids_and_notes(self):
+        fd, path = tempfile.mkstemp(suffix=".txt")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write("# name: demo\n# comment\n## Opening\n[01.1] (soft)\nFirst\npart.\n"
+                     "> a note\n[01.2]\n\n## Next\n[02.1]\nLast line.\n")
+        self.addCleanup(os.remove, path)
+        name, lines = app.parse_line_script(path)
+        self.assertEqual(name, "demo")
+        self.assertEqual(lines, [
+            {"id": "01.1", "section": "Opening", "text": "First part.", "notes": ["a note"]},
+            {"id": "02.1", "section": "Next", "text": "Last line.", "notes": []},
+        ])
+
+
 class StubsDoNotLeak(unittest.TestCase):
     def test_real_modules_untouched(self):
         self.assertNotIn("app", sys.modules)
