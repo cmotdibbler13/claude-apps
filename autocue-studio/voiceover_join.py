@@ -26,13 +26,29 @@ Values (the voicestudio-narration skill's own-voice values, verbatim):
 
 Take files are named <project>_<id>.wav, where project is the line script's
 "# name:". The clip of an id is the part before the dot ("05" for "05.2").
+
+The command (main) joins a film's takes:
+
+  python voiceover_join.py --script <line script> --takes <dir> --out <dir>
+      [--allow-flagged] [--model medium.en] [--device auto]
+
+It prints one JSON object per line: {"progress": 0..1, "text": ...} while it
+works, then {"done": true, ...} or {"error": ...}. Exit codes: 0 done, 2
+refused (bad arguments, missing takes, a take with no speech), 1 failed.
 """
 
+import argparse
+import csv
+import json
 import math
+import os
 import re
+import sys
+from datetime import datetime
 
 import numpy as np
 
+import line_script
 import take_checks
 from take_checks import (FLOOR_DBFS, FRAME_S, NOISE_FRACTION, NOISE_FRAME_S,
                          PAUSE_DBFS, PAUSE_MIN_S, TRANSIENT_MAX_S,
@@ -61,6 +77,10 @@ TAIL_S = 0.5
 LIMIT = 0.84
 LIMIT_ATTACK_MS = 2.0
 LIMIT_RELEASE_MS = 50.0
+
+TRANSCRIBE_RATE = take_checks.RATE   # whisper wants 16 kHz
+RESAMPLE_TAPS = 127
+RESAMPLE_CUTOFF_HZ = 7200.0
 
 TEMP_SUFFIX = ".recording.tmp.wav"
 SUPERSEDED_DIR = "superseded"
@@ -395,3 +415,298 @@ def plan_join(script_lines, take_files, project=None):
                   if len(matches.get(i, ())) > 1]
     return {"clips": clips, "missing": [i for i in ids if i not in files],
             "extra": sorted(extra), "files": files, "duplicates": duplicates}
+
+
+# --------------------------------------------------------------- transcript ----
+
+def resample_16k(x, rate=RATE):
+    """48 kHz to 16 kHz for the transcriber: a windowed-sinc low-pass at
+    7.2 kHz (Blackman, 127 taps), then every third sample. float32."""
+    x = _as_float(x)
+    factor = int(round(rate / TRANSCRIBE_RATE))
+    if factor * TRANSCRIBE_RATE != rate:
+        raise ValueError(f"can only resample whole multiples of {TRANSCRIBE_RATE} Hz")
+    if factor == 1 or not len(x):
+        return x.astype(np.float32)
+    n = np.arange(RESAMPLE_TAPS) - (RESAMPLE_TAPS - 1) / 2
+    fc = RESAMPLE_CUTOFF_HZ / rate
+    h = 2 * fc * np.sinc(2 * fc * n) * np.blackman(RESAMPLE_TAPS)
+    h /= h.sum()
+    y = np.convolve(x, h, mode="same")
+    return y[::factor].astype(np.float32)
+
+
+def transcript_for(parts_with_offsets, transcriber, rate=RATE, on_part=None):
+    """The word transcript of a voiceover. parts_with_offsets is
+    [(sentence id, 48 kHz audio of that part as it is in the voiceover,
+    its start in the voiceover in seconds)]. Each part is transcribed on its
+    own (at 16 kHz) and its word times are moved to voiceover time, kept
+    inside the part. on_part(i, sentence id) is called after each part.
+
+    Returns {"sentences": [{sentence, text, start, end}],
+             "words": [{word, start, end, sentence}]}."""
+    sentences, words = [], []
+    for i, (sentence, audio, offset) in enumerate(parts_with_offsets):
+        audio = _as_float(audio)
+        start = float(offset)
+        end = start + len(audio) / rate
+        text, found = transcriber.transcribe(resample_16k(audio, rate), TRANSCRIBE_RATE)
+        sentences.append({"sentence": sentence, "text": (text or "").strip(),
+                          "start": round(start, 3), "end": round(end, 3)})
+        for word, w0, w1 in found or []:
+            word = str(word).strip()
+            if not word:
+                continue
+            a = min(max(start + float(w0), start), end)
+            b = min(max(start + float(w1), a), end)
+            words.append({"word": word, "start": round(a, 3), "end": round(b, 3),
+                          "sentence": sentence})
+        if on_part:
+            on_part(i, sentence)
+    return {"sentences": sentences, "words": words}
+
+
+# ------------------------------------------------------------------ outputs ----
+
+CSV_HEADER = ["clip", "section", "name", "start_s", "end_s", "timecode"]
+
+
+def timecode(seconds):
+    """MM:SS.cc (minutes can run past 99)."""
+    cs = int(round(float(seconds) * 100))
+    minutes, rest = divmod(cs, 6000)
+    return f"{minutes:02d}:{rest // 100:02d}.{rest % 100:02d}"
+
+
+def output_names(project):
+    """{kind: file name} for the three outputs."""
+    return {"wav": f"{project}_voiceover.wav",
+            "csv": f"{project}_voiceover_timings.csv",
+            "transcript": f"{project}_voiceover_transcript.json"}
+
+
+def write_wav24(path, x, rate=RATE):
+    """Mono 24-bit PCM WAV."""
+    import wave
+    pcm = np.round(np.clip(_as_float(x), -1.0, 1.0) * 8388607).astype("<i4")
+    data = pcm.view(np.uint8).reshape(-1, 4)[:, :3].tobytes()
+    with wave.open(path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(3)
+        w.setframerate(rate)
+        w.writeframes(data)
+
+
+def write_timings(path, timings):
+    with open(path, "w", encoding="utf-8", newline="") as fh:
+        out = csv.writer(fh, lineterminator="\n")
+        out.writerow(CSV_HEADER)
+        for t in timings:
+            out.writerow([t["clip"], t["section"], t["name"], f"{t['start_s']:.3f}",
+                          f"{t['end_s']:.3f}", timecode(t["start_s"])])
+
+
+def write_json(path, data):
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2, ensure_ascii=False)
+
+
+def aside_names(out_dir, names, now=None):
+    """{final path: path to move it to} for the outputs already in out_dir:
+    <name>.old-<YYYYmmdd-HHMMSS>.<ext>, with -2, -3 ... added when a set from
+    the same second is already there. One suffix for the whole set."""
+    stamp = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
+    present = [n for n in names if os.path.exists(os.path.join(out_dir, n))]
+    if not present:
+        return {}
+    n = 1
+    while True:
+        tag = stamp if n == 1 else f"{stamp}-{n}"
+        moves = {}
+        for name in present:
+            base, ext = os.path.splitext(name)
+            moves[os.path.join(out_dir, name)] = os.path.join(out_dir, f"{base}.old-{tag}{ext}")
+        if not any(os.path.exists(p) for p in moves.values()):
+            return moves
+        n += 1
+
+
+def write_outputs(out_dir, project, x, timings, transcript):
+    """Write the three outputs to temp names, move any earlier outputs aside,
+    then rename the temps into place. Returns ({kind: path}, [moved-aside
+    paths]). Nothing earlier is ever deleted."""
+    os.makedirs(out_dir, exist_ok=True)
+    names = output_names(project)
+    finals = {k: os.path.join(out_dir, n) for k, n in names.items()}
+    temps = {k: p + ".tmp" for k, p in finals.items()}
+    try:
+        write_wav24(temps["wav"], x)
+        write_timings(temps["csv"], timings)
+        write_json(temps["transcript"], transcript)
+    except BaseException:
+        for p in temps.values():
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        raise
+    moves = aside_names(out_dir, names.values())
+    for src, dst in moves.items():
+        os.rename(src, dst)   # never over an existing file
+    for k in finals:
+        os.replace(temps[k], finals[k])
+    return finals, sorted(moves.values())
+
+
+# ------------------------------------------------------------------ command ----
+
+class Refused(Exception):
+    """The join will not run: printed as {"error": ...} with exit 2."""
+
+    def __init__(self, message, **extra):
+        super().__init__(message)
+        self.extra = extra
+
+
+class _Parser(argparse.ArgumentParser):
+    def error(self, message):
+        raise Refused(message)
+
+
+def _emit(obj):
+    print(json.dumps(obj), flush=True)
+
+
+def _progress(fraction, text):
+    _emit({"progress": round(min(max(fraction, 0.0), 1.0), 4), "text": text})
+
+
+def _take_files(takes_dir, skip_dir=None):
+    """Every file under takes_dir, top folder first, in name order."""
+    skip = os.path.normcase(os.path.abspath(skip_dir)) if skip_dir else None
+    files = []
+    for root, dirs, names in os.walk(takes_dir):
+        dirs.sort()
+        if skip:
+            dirs[:] = [d for d in dirs
+                       if os.path.normcase(os.path.abspath(os.path.join(root, d))) != skip]
+        files += [os.path.join(root, n) for n in sorted(names)]
+    return files
+
+
+def _parser():
+    p = _Parser(prog="voiceover_join.py",
+                description="Join a line script's takes into one voiceover, with "
+                            "timings and a word transcript.")
+    p.add_argument("--script", required=True, help="the line script")
+    p.add_argument("--takes", required=True, help="the folder of takes")
+    p.add_argument("--out", required=True, help="the folder for the voiceover files")
+    p.add_argument("--allow-flagged", action="store_true",
+                   help="join takes with no speech found instead of refusing")
+    p.add_argument("--model", default=None,
+                   help="speech model (default: autocue_settings.json, else medium.en)")
+    p.add_argument("--device", default=None,
+                   help="auto, cuda or cpu (default: autocue_settings.json, else auto)")
+    return p
+
+
+def _make_transcriber(args):
+    settings = take_checks.load_settings(os.path.dirname(os.path.abspath(__file__)))
+    return take_checks.WhisperTranscriber(args.model or settings["check_model"],
+                                          args.device or settings["check_device"])
+
+
+def join(args, transcriber=None):
+    """Run the join for parsed arguments. Returns the done JSON (a dict).
+    Raises Refused, take_checks.CheckError or OSError."""
+    try:
+        project, lines = line_script.parse_line_script(args.script)
+    except OSError as e:
+        raise Refused(f"Could not read the line script: {e}") from None
+    if not lines:
+        raise Refused("The line script has no lines")
+    if not os.path.isdir(args.takes):
+        raise Refused(f"Takes folder not found: {args.takes}")
+
+    plan = plan_join((project, lines), _take_files(args.takes, args.out), project=project)
+    if plan["missing"]:
+        raise Refused("Missing takes: " + ", ".join(plan["missing"]))
+
+    ids = [i for c in plan["clips"] for i in c["ids"]]
+    total = 2 * len(ids)
+    parts, tightened, silent = {}, [], []
+    for n, line_id in enumerate(ids):
+        try:
+            x = decode48(plan["files"][line_id])
+        except take_checks.CheckError as e:
+            raise take_checks.CheckError(f"Could not read take {line_id}: {e}") from None
+        y, info = trim_take(highpass(x), RATE)
+        if not info["speech"]:
+            silent.append(line_id)
+        y, stalls = tighten_stalls(y, RATE)
+        for st in stalls:
+            tightened.append({"id": line_id, "at_s": round(st["at_s"] + info["head_s"], 3),
+                              "from_s": round(st["from_s"], 3),
+                              "to_s": round(st["to_s"], 3)})
+        parts[line_id] = y
+        _progress((n + 1) / total, f"Processed take {line_id}")
+    if silent and not args.allow_flagged:
+        raise Refused("No speech found in takes: " + ", ".join(silent), silent=silent)
+
+    clips = [(c["clip"], level_clip(build_clip([parts[i] for i in c["ids"]])))
+             for c in plan["clips"]]
+    x, timings = assemble(clips, [c["section"] for c in plan["clips"]], project=project)
+
+    # Where each sentence part sits in the voiceover (build_clip and
+    # level_clip keep lengths, so the offsets follow from the part lengths).
+    gap = int(round(SENTENCE_GAP_S * RATE))
+    placed = []
+    for c, t in zip(plan["clips"], timings):
+        pos = int(round(t["start_s"] * RATE))
+        for line_id in c["ids"]:
+            m = len(parts[line_id])
+            placed.append((line_id, x[pos:pos + m], pos / RATE))
+            pos += m + gap
+
+    if transcriber is None:
+        transcriber = _make_transcriber(args)
+    if not getattr(transcriber, "loaded", True):
+        _progress(len(ids) / total, "Loading the speech model")
+    transcript = transcript_for(
+        placed, transcriber,
+        on_part=lambda i, sid: _progress((len(ids) + i + 1) / total, f"Transcribed {sid}"))
+
+    paths, moved = write_outputs(args.out, project, x, timings, transcript)
+    done = {"done": True, "wav": paths["wav"], "csv": paths["csv"],
+            "transcript": paths["transcript"], "length_s": round(len(x) / RATE, 3),
+            "tightened": tightened, "extra": plan["extra"], "clips": len(clips),
+            "silent": silent, "duplicates": plan["duplicates"], "moved_aside": moved}
+    used = getattr(transcriber, "device_used", None)
+    if used:
+        done["transcribed_on"] = used
+    return done
+
+
+def main(argv=None, transcriber=None):
+    """The command line. transcriber replaces whisper (tests). Returns the
+    exit code: 0 done, 2 refused, 1 failed."""
+    try:
+        args = _parser().parse_args(sys.argv[1:] if argv is None else argv)
+        _emit(join(args, transcriber))
+        return 0
+    except Refused as e:
+        _emit({"error": str(e), **e.extra})
+        return 2
+    except take_checks.CheckError as e:
+        _emit({"error": str(e)})
+        return 1
+    except OSError as e:
+        _emit({"error": f"Could not write the voiceover: {e}"})
+        return 1
+    except Exception as e:   # Studio reads stdout: always end with a JSON line
+        _emit({"error": f"The join failed: {type(e).__name__}: {e}"})
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

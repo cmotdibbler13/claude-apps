@@ -1,6 +1,7 @@
 """Tests for voiceover_join: synthetic audio only (tones, noise, silence)."""
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -341,6 +342,273 @@ class Decode48Test(unittest.TestCase):
         z, rate = take_checks.decode(path)
         self.assertEqual(rate, 16000)
         self.assertAlmostEqual(len(z) / 16000, len(x) / 44100, delta=0.005)
+
+
+
+# ------------------------------------------------------------ the command ----
+
+import contextlib
+import csv
+import io
+import json
+import shutil
+
+
+class StubTranscriber:
+    """Says the same two words for every part; records what it was given."""
+
+    def __init__(self):
+        self.calls = []
+
+    def transcribe(self, samples, rate):
+        self.calls.append((len(samples), rate))
+        return "hello there", [("hello", 0.10, 0.30), ("there", 0.40, 0.60)]
+
+
+def write_wav(path, x, rate=44100):
+    """A 16-bit mono WAV of x (given at 48 kHz, resampled crudely by index)."""
+    idx = np.round(np.arange(int(len(x) * rate / RATE)) * RATE / rate).astype(int)
+    pcm = (np.clip(x[np.minimum(idx, len(x) - 1)], -1, 1) * 32767).astype("<i2")
+    with wave.open(path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(pcm.tobytes())
+
+
+def take_audio(seconds=0.6, freq=200.0):
+    return np.concatenate([noise(0.3), tone(seconds, -14.0, freq), noise(0.3)])
+
+
+class JoinCommandTest(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir)
+        self.script = os.path.join(self.dir, "demo_line_script.txt")
+        with open(self.script, "w", encoding="utf-8") as fh:
+            fh.write(SCRIPT)
+        self.takes = os.path.join(self.dir, "Recordings", "demo")
+        os.makedirs(self.takes)
+        self.out = os.path.join(self.dir, "studio", "voiceover")
+        for i, line_id in enumerate(("01.1", "01.2", "02.1")):
+            write_wav(self.take(line_id), take_audio(0.5 + 0.1 * i, 150.0 + 50 * i))
+
+    def take(self, line_id):
+        return os.path.join(self.takes, f"demo_{line_id}.wav")
+
+    def run_join(self, *extra, transcriber=None):
+        self.stub = transcriber or StubTranscriber()
+        buf = io.StringIO()
+        argv = ["--script", self.script, "--takes", self.takes, "--out", self.out, *extra]
+        with contextlib.redirect_stdout(buf):
+            code = vj.main(argv, transcriber=self.stub)
+        lines = [json.loads(ln) for ln in buf.getvalue().splitlines() if ln.strip()]
+        return code, lines
+
+    def outputs(self):
+        return sorted(os.listdir(self.out)) if os.path.isdir(self.out) else []
+
+    def test_join_writes_the_three_files(self):
+        code, lines = self.run_join()
+        self.assertEqual(code, 0, lines[-1])
+        done = lines[-1]
+        self.assertTrue(done["done"])
+        self.assertEqual(self.outputs(), ["demo_voiceover.wav", "demo_voiceover_timings.csv",
+                                          "demo_voiceover_transcript.json"])
+        self.assertEqual(done["wav"], os.path.join(self.out, "demo_voiceover.wav"))
+        self.assertEqual(done["csv"], os.path.join(self.out, "demo_voiceover_timings.csv"))
+        self.assertEqual(done["transcript"],
+                         os.path.join(self.out, "demo_voiceover_transcript.json"))
+        self.assertEqual(done["clips"], 2)
+        self.assertEqual(done["extra"], [])
+        self.assertEqual(done["silent"], [])
+        self.assertEqual(done["duplicates"], [])
+
+        with wave.open(done["wav"]) as w:
+            self.assertEqual((w.getframerate(), w.getnchannels()), (48000, 1))
+            self.assertAlmostEqual(w.getnframes() / 48000, done["length_s"], delta=0.001)
+
+        with open(done["csv"], encoding="utf-8", newline="") as fh:
+            text = fh.read()
+        self.assertEqual(text.splitlines()[0], "clip,section,name,start_s,end_s,timecode")
+        rows = list(csv.DictReader(io.StringIO(text)))
+        self.assertEqual([r["clip"] for r in rows], ["01", "02"])
+        self.assertEqual([r["section"] for r in rows], ["Opening", "The middle"])
+        self.assertEqual([r["name"] for r in rows], ["demo_01", "demo_02"])
+        self.assertEqual(rows[0]["start_s"], "0.000")
+        self.assertEqual(rows[0]["timecode"], "00:00.00")
+        self.assertAlmostEqual(float(rows[1]["start_s"]) - float(rows[0]["end_s"]), 1.2,
+                               delta=0.001)
+        self.assertAlmostEqual(done["length_s"] - float(rows[1]["end_s"]), 0.5, delta=0.001)
+        self.assertEqual(rows[1]["timecode"], vj.timecode(float(rows[1]["start_s"])))
+
+        with open(done["transcript"], encoding="utf-8") as fh:
+            tr = json.load(fh)
+        self.assertEqual([s["sentence"] for s in tr["sentences"]], ["01.1", "01.2", "02.1"])
+        self.assertEqual([w["sentence"] for w in tr["words"]],
+                         ["01.1", "01.1", "01.2", "01.2", "02.1", "02.1"])
+        # each part is transcribed on its own, at 16 kHz, and its words are
+        # moved to its place in the voiceover
+        self.assertEqual([r for _, r in self.stub.calls], [16000] * 3)
+        s1, s2, s3 = tr["sentences"]
+        self.assertAlmostEqual(s1["start"], 0.0, delta=0.001)
+        self.assertAlmostEqual(s2["start"] - s1["end"], 0.55, delta=0.001)
+        self.assertAlmostEqual(s3["start"], float(rows[1]["start_s"]), delta=0.001)
+        for s, (n16, _) in zip(tr["sentences"], self.stub.calls):
+            self.assertAlmostEqual(s["end"] - s["start"], n16 / 16000, delta=0.001)
+        w5 = tr["words"][4]
+        self.assertEqual(w5["word"], "hello")
+        self.assertAlmostEqual(w5["start"], s3["start"] + 0.10, delta=0.001)
+        self.assertEqual(s3["text"], "hello there")
+
+    def test_progress_lines_come_first_and_rise_to_one(self):
+        code, lines = self.run_join()
+        self.assertEqual(code, 0)
+        progress = [ln for ln in lines if "progress" in ln]
+        self.assertEqual(lines[:len(progress)], progress)
+        self.assertEqual(len(progress), 6)   # three takes, three sentences
+        values = [p["progress"] for p in progress]
+        self.assertEqual(values, sorted(values))
+        self.assertTrue(all(0 <= v <= 1 for v in values))
+        self.assertAlmostEqual(values[-1], 1.0)
+        self.assertTrue(all(p["text"] for p in progress))
+
+    def test_a_missing_take_is_refused(self):
+        os.remove(self.take("01.2"))
+        code, lines = self.run_join()
+        self.assertEqual(code, 2)
+        self.assertEqual(lines[-1], {"error": "Missing takes: 01.2"})
+        self.assertEqual(self.outputs(), [])
+        self.assertEqual(self.stub.calls, [])
+
+    def test_two_missing_takes_are_named_in_script_order(self):
+        os.remove(self.take("02.1"))
+        os.remove(self.take("01.1"))
+        code, lines = self.run_join()
+        self.assertEqual(code, 2)
+        self.assertEqual(lines[-1], {"error": "Missing takes: 01.1, 02.1"})
+
+    def test_a_second_run_moves_the_first_outputs_aside(self):
+        self.assertEqual(self.run_join()[0], 0)
+        with open(os.path.join(self.out, "demo_voiceover_timings.csv"), "rb") as fh:
+            first_csv = fh.read()
+        code, lines = self.run_join()
+        self.assertEqual(code, 0)
+        names = self.outputs()
+        self.assertEqual(len(names), 6)
+        for base, ext in (("demo_voiceover", "wav"), ("demo_voiceover_timings", "csv"),
+                          ("demo_voiceover_transcript", "json")):
+            self.assertIn(f"{base}.{ext}", names)
+            old = [n for n in names if re.fullmatch(
+                re.escape(base) + r"\.old-\d{8}-\d{6}(-\d+)?\." + ext, n)]
+            self.assertEqual(len(old), 1, names)
+        old_csv = next(n for n in names if n.startswith("demo_voiceover_timings.old-"))
+        with open(os.path.join(self.out, old_csv), "rb") as fh:
+            self.assertEqual(fh.read(), first_csv)
+        self.assertEqual(sorted(lines[-1]["moved_aside"]),
+                         sorted(os.path.join(self.out, n) for n in names if ".old-" in n))
+        # a third run in the same second does not overwrite the second's set
+        self.assertEqual(self.run_join()[0], 0)
+        self.assertEqual(len(self.outputs()), 9)
+
+    def test_takes_are_only_read(self):
+        before = {n: os.stat(os.path.join(self.takes, n)).st_mtime for n in os.listdir(self.takes)}
+        self.run_join()
+        after = {n: os.stat(os.path.join(self.takes, n)).st_mtime for n in os.listdir(self.takes)}
+        self.assertEqual(before, after)
+
+    def test_extra_and_duplicate_takes_are_reported(self):
+        write_wav(os.path.join(self.takes, "demo_09.9.wav"), take_audio())
+        os.makedirs(os.path.join(self.takes, "spare"))
+        dup = os.path.join(self.takes, "spare", "demo_02.1.wav")
+        write_wav(dup, take_audio())
+        os.makedirs(os.path.join(self.takes, "superseded"))
+        write_wav(os.path.join(self.takes, "superseded", "demo_01.1.wav"), take_audio())
+        code, lines = self.run_join()
+        self.assertEqual(code, 0)
+        self.assertEqual(lines[-1]["extra"], ["demo_09.9.wav"])
+        self.assertEqual(lines[-1]["duplicates"],
+                         [{"id": "02.1", "files": [self.take("02.1"), dup]}])
+
+    def test_a_stall_is_tightened_and_reported_in_take_time(self):
+        x = np.concatenate([noise(0.4), tone(0.5, -14.0), silence(0.9), tone(0.5, -14.0),
+                            noise(0.3)])
+        write_wav(self.take("01.2"), x)
+        code, lines = self.run_join()
+        self.assertEqual(code, 0)
+        tight = lines[-1]["tightened"]
+        self.assertEqual([t["id"] for t in tight], ["01.2"])
+        self.assertAlmostEqual(tight[0]["at_s"], 0.9, delta=0.02)
+        self.assertAlmostEqual(tight[0]["from_s"], 0.9, delta=0.02)
+        self.assertAlmostEqual(tight[0]["to_s"], 0.3, delta=0.001)
+
+    def test_a_take_with_no_speech_is_refused_unless_allowed(self):
+        write_wav(self.take("01.2"), noise(1.0, -60.0))
+        code, lines = self.run_join()
+        self.assertEqual(code, 2)
+        self.assertEqual(lines[-1], {"error": "No speech found in takes: 01.2",
+                                     "silent": ["01.2"]})
+        self.assertEqual(self.outputs(), [])
+
+        code, lines = self.run_join("--allow-flagged")
+        self.assertEqual(code, 0)
+        self.assertTrue(lines[-1]["done"])
+        self.assertEqual(lines[-1]["silent"], ["01.2"])
+        with open(lines[-1]["transcript"], encoding="utf-8") as fh:
+            self.assertIn("01.2", [s["sentence"] for s in json.load(fh)["sentences"]])
+
+    def test_an_unreadable_take_is_an_error(self):
+        with open(self.take("01.2"), "wb") as fh:
+            fh.write(b"not audio")
+        code, lines = self.run_join()
+        self.assertEqual(code, 1)
+        self.assertIn("01.2", lines[-1]["error"])
+        self.assertEqual(self.outputs(), [])
+
+    def test_a_transcriber_failure_is_an_error_and_writes_nothing(self):
+        class Broken:
+            def transcribe(self, samples, rate):
+                raise take_checks.CheckError("Checks unavailable: no model")
+        code, lines = self.run_join(transcriber=Broken())
+        self.assertEqual(code, 1)
+        self.assertEqual(lines[-1], {"error": "Checks unavailable: no model"})
+        self.assertEqual(self.outputs(), [])
+
+    def test_bad_arguments_are_a_json_error(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+            code = vj.main(["--script", self.script], transcriber=StubTranscriber())
+        self.assertEqual(code, 2)
+        self.assertIn("error", json.loads(buf.getvalue().splitlines()[-1]))
+
+
+class TranscriptForTest(unittest.TestCase):
+    def test_each_part_is_offset_to_its_place(self):
+        stub = StubTranscriber()
+        parts = [("01.1", tone(0.9), 0.0), ("02.1", tone(0.6), 3.25)]
+        tr = vj.transcript_for(parts, stub)
+        self.assertEqual(stub.calls, [(int(0.9 * 16000), 16000), (int(0.6 * 16000), 16000)])
+        self.assertEqual(tr["sentences"], [
+            {"sentence": "01.1", "text": "hello there", "start": 0.0, "end": 0.9},
+            {"sentence": "02.1", "text": "hello there", "start": 3.25, "end": 3.85}])
+        self.assertEqual(tr["words"][2], {"word": "hello", "start": 3.35, "end": 3.55,
+                                          "sentence": "02.1"})
+
+    def test_resample_keeps_a_speech_tone_and_drops_above_8k(self):
+        y = vj.resample_16k(tone(1.0, -12.0, 1000.0))
+        self.assertEqual(len(y), 16000)
+        self.assertEqual(y.dtype, np.float32)
+        self.assertAlmostEqual(vj.rms_db(y[1000:-1000]), -12.0, delta=0.3)
+        hiss = vj.resample_16k(tone(1.0, -12.0, 12000.0))
+        self.assertLess(vj.rms_db(hiss[1000:-1000]), -50.0)
+
+
+class TimecodeTest(unittest.TestCase):
+    def test_minutes_seconds_hundredths(self):
+        self.assertEqual(vj.timecode(0.0), "00:00.00")
+        self.assertEqual(vj.timecode(65.456), "01:05.46")
+        self.assertEqual(vj.timecode(59.999), "01:00.00")
+        self.assertEqual(vj.timecode(6125.5), "102:05.50")
 
 
 if __name__ == "__main__":

@@ -77,6 +77,36 @@ normal while a check runs.
 
   prints the result as JSON.
 
+## Joining the voiceover
+
+`voiceover_join.py` joins a film's takes into one voiceover. Six Minutes
+Studio runs it for you, but it works on its own too:
+
+```
+python voiceover_join.py --script china_clay_line_script.txt --takes Recordings\china_clay --out <film>\studio\voiceover
+```
+
+- **Every line needs a take.** If any are missing it stops and names them,
+  e.g. `Missing takes: 01.2, 03.4`. Takes that match no line are left out
+  and listed as `extra`. Takes in `superseded\` are ignored.
+- **Each take** is high-passed at 80 Hz and trimmed (0.05 s kept before the
+  speech, 0.15 s after it, with a short fade). Pauses longer than 0.6 s are
+  shortened to 0.3 s and listed as `tightened`, timed in the take.
+- **Levels:** each line at -13.5 dB RMS, 0.55 s apart within a clip, then a
+  limiter. Each clip ends up at -13.8 dB RMS. Clips are 0.6 s apart, 1.2 s
+  across a section change, with 0.5 s of silence at the end.
+- **A take with no speech found** stops the join and is listed as `silent`.
+  `--allow-flagged` joins it anyway, untrimmed.
+- **It writes three files** in `--out`: `<name>_voiceover.wav` (48 kHz,
+  24-bit), `<name>_voiceover_timings.csv` (one row per clip) and
+  `<name>_voiceover_transcript.json` (every word with the id of its line).
+  Files from an earlier run are renamed to `<name>.old-<date>-<time>.<ext>`,
+  never deleted. The takes themselves are only read.
+- **The transcript** uses the same speech model as the take checks
+  (`autocue_settings.json`); `--model` and `--device` override it.
+- **Output** is one JSON object per line: progress while it works, then a
+  final line with `done` or `error`.
+
 ## Line-script format
 
 ```
@@ -97,6 +127,8 @@ desktop autocue/
 ├── audio_recorder.py   # sounddevice capture → WAV writer thread
 ├── take_checks.py      # checks one take (also a calibration CLI)
 ├── check_worker.py     # runs the checks on a background thread
+├── line_script.py      # reads line scripts (no UI)
+├── voiceover_join.py   # joins the takes into a voiceover (a CLI)
 ├── china_clay_line_script.txt   # line script for re-recording China Clay
 ├── requirements.txt
 └── Recordings/         # created automatically on first run
