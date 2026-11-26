@@ -13,20 +13,29 @@ const mkSettings = (over = {}) => ({ ...DEFAULT_SETTINGS, comfy: { ...DEFAULT_SE
 const job = (extra = {}) => ({ id: "j1", assetId: "HF-05", take: 2, tool: "comfyui", input: { kind: "broll", prompt: "a magpie", out: OUT }, ...extra });
 const hist = (over = {}) => JSON.stringify({ P1: { status: { status_str: "success", completed: true, messages: [] }, outputs: { 9999: { images: [{ filename: "clip_00001_.mp4", subfolder: "broll", type: "output" }] } }, ...over } });
 
-function setup({ settings = mkSettings(), post, history = [hist()], withWf = true } = {}) {
+const inQueue = JSON.stringify({ queue_running: [[0, "P1", {}, {}, []]], queue_pending: [] });
+const inPending = JSON.stringify({ queue_running: [], queue_pending: [[1, "P1", {}, {}, []]] });
+const notInQueue = JSON.stringify({ queue_running: [[0, "OTHER", {}, {}, []]], queue_pending: [] });
+
+function setup({ settings = mkSettings(), post, history = [hist()], queue = [inQueue], withWf = true } = {}) {
   const host = new FakeHost();
   host.t = 1_000_000;
   if (withWf) host.files.set(WF, JSON.stringify(ltx()));
   host.files.set(comfyOut, "ORIGINAL");
   host.dirs.add(DEFAULT_SETTINGS.comfy.outputDir + "\\broll");
   const spawns = [], refs = [], progress = [], bodies = [];
-  let h = 0;
+  let h = 0, q = 0;
   host.spawnScript(async (cmd, args, o, p) => {
     spawns.push({ cmd, args });
     if (cmd === "curl" && args.includes("POST")) {
       bodies.push(await host.fs.read(args[args.indexOf("--data-binary") + 1].slice(1), "utf8"));
       if (post) return post(p);
       p.out(JSON.stringify({ prompt_id: "P1" }) + "\n200"); return p.exit(0);
+    }
+    if (cmd === "curl" && args.at(-1).endsWith("/queue")) {
+      const v = queue[Math.min(q++, queue.length - 1)];
+      if (v === null) { p.err("connection refused"); return p.exit(7); }
+      p.out(v); return p.exit(0);
     }
     if (cmd === "curl") {
       const v = history[Math.min(h++, history.length - 1)];
@@ -81,18 +90,18 @@ test("not-running message on a curl failure at submit", async () => {
   assert.deepEqual(t.refs, []);
 });
 
-test("submit writes a temp body under studio\\tmp, uses an arg list, then trashes it", async () => {
+test("submit writes the body to studio\\tmp\\comfy_body.json, uses an arg list, and leaves it (no Recycle Bin)", async () => {
   const t = setup();
   await t.runner.start(job(), t.ctx);
   const post = t.spawns[0];
   assert.deepEqual(post.args.slice(0, 5), ["-sS", "-X", "POST", "-H", "Content-Type: application/json"]);
-  assert.equal(post.args[6], "@" + FILM + "\\studio\\tmp\\comfy_j1.json");
+  assert.equal(post.args[6], "@" + FILM + "\\studio\\tmp\\comfy_body.json");
   assert.deepEqual(post.args.slice(7), ["-w", "\n%{http_code}", "http://127.0.0.1:8188/prompt"]);
   assert.ok(!post.args.includes("--fail"));
   const body = JSON.parse(t.bodies[0]);
   assert.match(body.prompt[9999].inputs.filename_prefix, /^broll\/sixmin_Film_A_HF-05_t2_\d+$/);
   assert.equal(body.prompt[339].inputs.noise_seed, 1073741824);
-  assert.equal(t.host.files.has(FILM + "\\studio\\tmp\\comfy_j1.json"), false);
+  assert.equal(t.host.files.has(FILM + "\\studio\\tmp\\comfy_body.json"), true);
 });
 
 test("setRef before the first poll", async () => {
@@ -230,6 +239,43 @@ test("60-min cap is ambiguous", async () => {
   const t = setup({ history: ["{}"] });
   await assert.rejects(t.runner.resume(job({ jobRef: "P1" }), t.ctx), (e) => e.ambiguous === true && /60 min/.test(e.message));
   assert.ok(t.sleeps.length >= 720 && t.sleeps.length <= 721);
+});
+
+test("empty history and the prompt absent from the queue twice running fails plainly", async () => {
+  const t = setup({ history: ["{}"], queue: [notInQueue] });
+  await assert.rejects(t.runner.resume(job({ jobRef: "P1" }), t.ctx), (e) => !e.ambiguous && e.message === "ComfyUI no longer has this render (was it restarted?). Run again.");
+  assert.equal(t.sleeps.length, 2);
+  const q = t.spawns.filter((s) => s.args.at(-1) === "http://127.0.0.1:8188/queue");
+  assert.equal(q.length, 2);
+  assert.ok(q[0].args.includes("--fail") && q[0].args.includes("-sS"));
+});
+
+test("empty history with the prompt pending in the queue keeps waiting", async () => {
+  const t = setup({ history: ["{}", "{}", "{}", hist()], queue: [inPending] });
+  assert.deepEqual(await t.runner.resume(job({ jobRef: "P1" }), t.ctx), { file: OUT });
+});
+
+test("absent from the queue once, then present, keeps waiting (the count resets)", async () => {
+  const t = setup({ history: ["{}", "{}", "{}", "{}", hist()], queue: [notInQueue, inQueue, notInQueue, inQueue] });
+  assert.deepEqual(await t.runner.resume(job({ jobRef: "P1" }), t.ctx), { file: OUT });
+});
+
+test("a failing /queue call counts as a failed poll (5 strikes, ambiguous)", async () => {
+  const t = setup({ history: ["{}"], queue: [null] });
+  await assert.rejects(t.runner.resume(job({ jobRef: "P1" }), t.ctx), (e) => e.ambiguous === true && /Couldn't reach ComfyUI/.test(e.message));
+  assert.equal(t.sleeps.length, 5);
+});
+
+test("fillWorkflow throws on a bad node map entry and accepts the node.input string form", () => {
+  const wf = { 6: { inputs: {} }, 3: { inputs: {} } };
+  const base = { ...DEFAULT_SETTINGS.comfy, nodes: { prompt: "6.text", seed: ["3", "seed"] } };
+  const r = fillWorkflow(wf, base, { prompt: "p", seed: 4, prefix: "a" });
+  assert.equal(r[6].inputs.text, "p");
+  assert.equal(r[3].inputs.seed, 4);
+  for (const bad of [{ prompt: "nodot" }, { prompt: ["6"] }, { prompt: [6, "text"] }, { prompt: {} }, { prompt: 5 }, { prompt: ["6", "text", "x"] }]) {
+    assert.throws(() => fillWorkflow(wf, { ...base, nodes: bad }, { prompt: "p", seed: 1, prefix: "a" }), /Bad ComfyUI node map entry for prompt/);
+  }
+  assert.doesNotThrow(() => fillWorkflow(wf, { ...base, nodes: { prompt: ["6", "text"], width: null } }, { prompt: "p", seed: 1, prefix: "a" }));
 });
 
 test("lane is gpu", () => assert.equal(makeComfyRunner({ settings: mkSettings() }).lane, "gpu"));

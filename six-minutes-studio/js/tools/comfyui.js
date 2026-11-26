@@ -19,8 +19,16 @@ const excerpt = (v) => { let s; try { s = typeof v === "string" ? v : JSON.strin
 const parentOf = (p) => String(p).replace(/[\\/][^\\/]*$/, "");
 const baseOf = (p) => String(p).split(/[\\/]/).pop();
 
-function setInput(wf, ref, value) {
-  if (!Array.isArray(ref) || ref.length < 2) return;
+// A node-map entry is null/undefined (unmapped), [node, input], or "node.input".
+function setInput(wf, ref, value, key) {
+  if (ref === null || ref === undefined) return;
+  if (typeof ref === "string") {
+    const dot = ref.indexOf(".");
+    ref = dot > 0 ? [ref.slice(0, dot), ref.slice(dot + 1)] : null;
+  }
+  if (!Array.isArray(ref) || ref.length !== 2 || typeof ref[0] !== "string" || typeof ref[1] !== "string" || !ref[0] || !ref[1]) {
+    throw new Error(`Bad ComfyUI node map entry for ${key}`);
+  }
   const [node, input] = ref;
   const n = wf[node];
   if (!n) throw new Error(`Workflow has no node ${node}`);
@@ -35,13 +43,13 @@ export function fillWorkflow(workflow, comfy, { prompt, seed, prefix }) {
   const seconds = Number(comfy.seconds), fps = Number(comfy.fps);
   let length = seconds;
   if (comfy.lengthUnit === "frames") length = 4 * Math.round((Math.round(seconds * fps) - 1) / 4) + 1;
-  setInput(wf, m.prompt, prompt);
-  setInput(wf, m.width, comfy.width);
-  setInput(wf, m.height, comfy.height);
-  setInput(wf, m.length, length);
-  setInput(wf, m.fps, fps);
-  setInput(wf, m.seed, seed);
-  setInput(wf, m.output, prefix);
+  setInput(wf, m.prompt, prompt, "prompt");
+  setInput(wf, m.width, comfy.width, "width");
+  setInput(wf, m.height, comfy.height, "height");
+  setInput(wf, m.length, length, "length");
+  setInput(wf, m.fps, fps, "fps");
+  setInput(wf, m.seed, seed, "seed");
+  setInput(wf, m.output, prefix, "output");
   return wf;
 }
 
@@ -108,7 +116,7 @@ export function makeComfyRunner({ settings = DEFAULT_SETTINGS, sleep = realSleep
     const c = comfy();
     const url = String(c.url).replace(/\/+$/, "");
     const t0 = host.now();
-    let slept = 0, errors = 0;
+    let slept = 0, errors = 0, missing = 0;
     for (;;) {
       await sleep(POLL_MS);
       slept += POLL_MS;
@@ -116,18 +124,31 @@ export function makeComfyRunner({ settings = DEFAULT_SETTINGS, sleep = realSleep
       if (elapsed >= CAP_MS) throw ambiguous("Still running on ComfyUI after 60 min");
       const left = Number(c.expectedSeconds) - elapsed / 1000;
       ctx.progress(null, left > 0 ? `about ${Math.max(1, Math.ceil(left / 60))} min left` : "running long");
-      let entry;
+      let entry, known = true;
       try {
         const r = await runProcess(host, "curl", ["-sS", "--fail", `${url}/history/${promptId}`], { timeout: CURL_MS });
         if (r.code !== 0) throw new Error(`curl exit ${r.code}`);
         const body = JSON.parse(r.stdout);
         entry = body?.[promptId];
+        if (!entry) {
+          // No history yet: is ComfyUI still holding the prompt (running or pending)?
+          const q = await runProcess(host, "curl", ["-sS", "--fail", `${url}/queue`], { timeout: CURL_MS });
+          if (q.code !== 0) throw new Error(`curl exit ${q.code}`);
+          const qb = JSON.parse(q.stdout);
+          const has = (l) => Array.isArray(l) && l.some((i) => Array.isArray(i) && i[1] === promptId);
+          known = has(qb?.queue_running) || has(qb?.queue_pending);
+        }
       } catch {
         if (++errors >= MAX_POLL_ERRORS) throw ambiguous(UNREACHABLE);
         continue;
       }
       errors = 0;
-      if (!entry) continue;
+      if (!entry) {
+        missing = known ? 0 : missing + 1;
+        if (missing >= 2) throw new Error("ComfyUI no longer has this render (was it restarted?). Run again.");
+        continue;
+      }
+      missing = 0;
       const st = entry.status;
       if (st?.status_str === "error") throw new Error(errorText(entry));
       const found = findOutput(entry, c.nodes?.output?.[0]);
@@ -163,7 +184,7 @@ export function makeComfyRunner({ settings = DEFAULT_SETTINGS, sleep = realSleep
       const body = JSON.stringify({ prompt: fillWorkflow(workflow, c, { prompt, seed, prefix }) });
 
       const tmp = join(studioDir, "tmp");
-      const bodyFile = join(tmp, `comfy_${safe(job.id)}.json`);
+      const bodyFile = join(tmp, "comfy_body.json"); // one file, overwritten per submit
       await host.fs.mkdir(tmp);
       await host.fs.write(bodyFile, body);
       const url = String(c.url).replace(/\/+$/, "");
@@ -173,10 +194,8 @@ export function makeComfyRunner({ settings = DEFAULT_SETTINGS, sleep = realSleep
       try {
         r = await runProcess(host, "curl", ["-sS", "-X", "POST", "-H", "Content-Type: application/json", "--data-binary", "@" + bodyFile, "-w", "\n%{http_code}", url + "/prompt"], { timeout: CURL_MS });
       } catch (e) {
-        try { await host.fs.trash(bodyFile); } catch { /* best effort */ }
         throw /timed out/.test(msg(e)) ? timedOut() : new Error(notRunning);
       }
-      try { await host.fs.trash(bodyFile); } catch { /* best effort */ }
       if (r.code === 28) throw timedOut();
       if (r.code === 6 || r.code === 7) throw new Error(notRunning);
       if (r.code !== 0) throw new Error(`ComfyUI request failed (curl exit ${r.code}): ${excerpt(r.stderr)}`);
