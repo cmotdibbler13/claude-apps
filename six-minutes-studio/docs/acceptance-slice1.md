@@ -57,3 +57,15 @@ Have ComfyUI Desktop running, with `S:\Youtube video ideas\ComfyUI workflows\bro
 5. Start a ComfyUI take, close the app, reopen it: the job reconnects to the same render (no second render appears in ComfyUI's queue).
 6. Start a ComfyUI take and a Blender take: they run one after the other, never together.
 7. Quit ComfyUI and start a ComfyUI take: it fails at once with "ComfyUI isn't running at 127.0.0.1:8188…".
+
+## Narration, own voice (version 4 + Autocue Studio take checks)
+Install first: run the "install Autocue Studio take checks" prompt in a Claude Code session on the PC (it copies the new files into C:\Users\Jon\desktop autocue without deleting anything and runs pip install).
+1. Start Autocue Studio and load a line script. The status line says "Checks are getting ready (downloading the speech model)…" the first time (about 1.5 GB), then later just "loading".
+2. Record three lines normally. A few seconds after each stop: "<id> ✓ OK" in green.
+3. Record one line and stop just before the last word finishes. Expect "<id> flagged: last word "…" cut off. Press ← to redo." Press ←, re-record it: the new take is checked and the mark under the line turns to ✓.
+4. Record one line with a deliberate pause of over a second mid-sentence: still OK, with a muted note "pause of … s".
+5. Press **Check all**: older takes from before this feature get checked; it says "All takes checked" when there's nothing left.
+6. While Check all runs, record a line: listen back for clicks or dropouts.
+7. Six Minutes Studio → the film's Review → **Narration** shows every line: Missing / Not checked / OK / Flagged, with counts.
+8. Calibration: in the Autocue folder, run `python take_checks.py "Recordings\<project>\<take>.wav" "<line text>"` on two takes you know are good and one you know is cut off; send me the output if a good take is flagged.
+If Autocue Studio ever closes by itself when checks start, set "check_device": "cpu" in autocue_settings.json.
