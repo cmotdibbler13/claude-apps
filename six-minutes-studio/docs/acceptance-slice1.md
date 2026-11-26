@@ -90,13 +90,13 @@ Have **Pinokio open** (the app starts Small SFX itself, but Pinokio must be runn
 ## Voiceover and mix (version 6)
 Before you start:
 - **Stem Remixer 1.9.0.** Its Update button only looks at the `main` branch, so merge PR #4 first, then press **Update** in Stem Remixer. The window title should say 1.9.0.
-- **The join script.** Copy `autocue-studio\voiceover_join.py` and `autocue-studio\line_script.py` from the repo into `C:\Users\Jon\desktop autocue` (nothing there is deleted or replaced except those two files and `take_checks.py`/`app.py` if they changed).
+- **The join script.** Copy these four files from the repo's `autocue-studio` folder into `C:\Users\Jon\desktop autocue`, replacing the old copies of the last two: `voiceover_join.py`, `line_script.py`, `take_checks.py`, `app.py`. Nothing else there changes. (Probe's "Autocue join" checks the first two are there.)
 - **Where Stem Remixer is.** Add `"stemRemixerDir": "C:\\…\\stem-remixer"` (your Stem Remixer folder) to `S:\Youtube video ideas\.studio-settings.json`.
 
 1. **Probe:** "Stem Remixer" and "Autocue join" pass.
 2. On a film whose narration is all OK (or OK by Jon), press **Join voiceover**. Live jobs shows "Voiceover join". When done, play it and check: no clipped starts ("Six…", "First…"), no Space-key clicks, natural pauses. Long stalls tightened are listed.
 3. Sound-effect cards now show **Starts at** times from the joined voiceover. Change one by typing; it stays as you typed it.
-4. **Fit score** (needs an approved score take). Read the table: each section's target and where its move lands. A line suggests a new score take if a big move is still more than 5 s off.
+4. **Fit score** (needs an approved score take). The first fit of a 7-minute score can use about 3–4 GB of memory for a minute; if the PC struggles, tell me. Read the table: each section's target and where its move lands. A line suggests a new score take if a big move is still more than 5 s off.
 5. **Mix preview.** Listen right through: music should sit well under your voice and not swell in the short gaps; sound effects should be in the background. If the music or effects are too loud or quiet overall, change `"mixMusicDb"` (default -26) or `"mixSfxDb"` (default -18) in `.studio-settings.json` and make the mix again.
 6. **Open in Stem Remixer.** It opens the score as one track with Section 1, 2… in a chain. Play the chain: it should sound exactly like the fitted score. Change one section's tempo (right-click → Tempo…) and Export mix: the Save dialog should start in the film's `studio\mix\stem-remixer` folder. Back in Studio, **Use this export**: it re-measures and remakes the mix by itself.
 7. **Approve mix.**
