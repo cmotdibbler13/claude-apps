@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FakeHost } from "./fake-host.mjs";
 import { DEFAULT_SETTINGS } from "../js/settings.js";
-import { stableAudioState, makeStableAudioStarter } from "../js/tools/stableaudio.js";
+import { stableAudioState, makeStableAudioStarter, saPayload, parseSse, makeStableAudioRunner } from "../js/tools/stableaudio.js";
 
 const SA = DEFAULT_SETTINGS.stableAudio;
 const sfxPage = "<html><title>Stable Audio 3 Small SFX</title></html>";
@@ -248,4 +248,95 @@ test("quoting covers shell metacharacters and doubles embedded quotes", async ()
   const pt = s.pterms()[0];
   assert.equal(pt.cmd, '"p|q.cmd"');
   assert.equal(pt.args[1], '"C:\\a""b%c!.git"');
+});
+
+// ---- Runner ----
+const SAMPLE = 'event: generating\ndata: null\n\nevent: complete\ndata: [{"path": "C:\\\\x.wav", "url": "http://127.0.0.1:7860/gradio_api/file=C:\\\\pinokio\\\\cache\\\\a b/my door.cfg1.0.1.wav"}, []]\n\n';
+const OUT = "S:\\Films\\Demo\\studio\\media\\door.wav";
+
+test("saPayload: 29 values in the notes' order, whole-number seconds clamped 1 to 120", () => {
+  const d = saPayload("x", 4.4, SA).data;
+  assert.equal(d.length, 29);
+  assert.equal(d[0], "x"); assert.equal(d[1], ""); assert.equal(d[2], 4); assert.equal(d[3], 1.0); assert.equal(d[4], 8);
+  assert.equal(d[6], -1); assert.equal(d[14], "wav"); assert.equal(d[15], "verbose"); assert.equal(d[16], true);
+  assert.equal(d.at(-1), null);
+  assert.equal(saPayload("x", 0.2, SA).data[2], 1);
+  assert.equal(saPayload("x", 500, SA).data[2], 120);
+});
+
+test("parseSse: complete gives the url, error gives error, partial gives neither", () => {
+  const r = parseSse(SAMPLE);
+  assert.equal(r.done, true); assert.equal(r.error, false);
+  assert.match(r.url, /gradio_api\/file=/);
+  assert.deepEqual(parseSse("event: error\ndata: null"), { done: false, error: true, url: null });
+  assert.deepEqual(parseSse("event: generating\ndata: null\n"), { done: false, error: false, url: null });
+});
+
+function runnerSetup({ title = sfxPage, stream = SAMPLE, post = '{"event_id":"E1"}', postCode = 0 } = {}) {
+  const host = new FakeHost();
+  const calls = [];
+  host.spawnScript((cmd, args, opts, p) => {
+    calls.push({ cmd, args });
+    if (cmd === "curl") {
+      const u = args.at(-1);
+      if (args.includes("POST")) { if (postCode) { p.err("refused"); return p.exit(postCode); } p.out(post); return p.exit(0); }
+      if (u.endsWith("/gradio_api/info")) { p.out(info); return p.exit(0); }
+      if (u.endsWith("/")) { p.out(title); return p.exit(0); }
+      if (u.includes("/gradio_api/call/generate/")) { p.out(stream); return p.exit(0); }
+      const o = args[args.indexOf("-o") + 1];
+      host.files.set(host._key(o), "wavdata"); return p.exit(0);
+    }
+    if (cmd === "ffmpeg") {
+      if (args.includes("volumedetect")) {
+        p.err("Duration: 00:00:04.00, start\n[Parsed_volumedetect_0] mean_volume: -20.0 dB\n[Parsed_volumedetect_0] max_volume: -3.0 dB\n");
+        return p.exit(0);
+      }
+      host.files.set(host._key(args.at(-1)), "finished"); return p.exit(0);
+    }
+  });
+  const starter = makeStableAudioStarter({ sleep: async () => {}, settings: { stableAudio: SA } });
+  const runner = makeStableAudioRunner({ settings: { stableAudio: SA }, starter, sleep: async () => {} });
+  const ctx = { host, progress() {}, setRef() {} };
+  return { host, calls, runner, ctx };
+}
+
+test("runner start: posts, reads the stream, downloads an encoded url, finishes and measures", async () => {
+  const s = runnerSetup();
+  s.host.dirs.add("S:/Films/Demo/studio/media");
+  const r = await s.runner.start({ input: { prompt: "door", seconds: 4, out: OUT } }, s.ctx);
+  assert.equal(r.file, OUT);
+  assert.equal(r.meta.source, "stableaudio"); assert.equal(r.meta.quiet, false); assert.equal(r.meta.lengthS, 4);
+  assert.ok(await s.host.fs.exists(OUT));
+  assert.ok(await s.host.fs.exists("S:\\Films\\Demo\\studio\\media\\door.orig.wav"));
+  const post = s.calls.find((c) => c.args.includes("POST"));
+  assert.ok(post.args.includes("@S:\\Films\\Demo\\studio\\tmp\\sa_body.json"));
+  const dl = s.calls.find((c) => c.args.includes("-o"));
+  assert.match(dl.args.at(-1), /my%20door\.cfg1\.0\.1\.wav$/);
+  assert.ok(dl.args.at(-1).includes("cache%5Ca%20b/"));
+});
+
+test("runner start: a url outside /gradio_api/file= rejects without downloading", async () => {
+  const bad = 'event: complete\ndata: [{"url": "http://evil.example/x.wav"}]\n';
+  const s = runnerSetup({ stream: bad });
+  await assert.rejects(s.runner.start({ input: { prompt: "d", seconds: 4, out: OUT } }, s.ctx), /unexpected file address/);
+  assert.equal(s.calls.some((c) => c.args.includes("-o")), false);
+});
+
+test("runner start: the Music model rejects with the Music message and never POSTs", async () => {
+  const s = runnerSetup({ title: musicPage });
+  await assert.rejects(s.runner.start({ input: { prompt: "d", seconds: 4, out: OUT } }, s.ctx), (e) => e.message === MUSIC_MSG);
+  assert.equal(s.calls.some((c) => c.args.includes("POST")), false);
+});
+
+test("runner start: SSE error and refused POST give the plain messages", async () => {
+  let s = runnerSetup({ stream: "event: error\ndata: null\n" });
+  await assert.rejects(s.runner.start({ input: { prompt: "d", seconds: 4, out: OUT } }, s.ctx), (e) => e.message === "Stable Audio failed on this prompt. Look at its Terminal in Pinokio.");
+  s = runnerSetup({ postCode: 7 });
+  await assert.rejects(s.runner.start({ input: { prompt: "d", seconds: 4, out: OUT } }, s.ctx), (e) => e.message === "Stable Audio isn't running at 127.0.0.1:7860. Press Start Stable Audio, or switch this cue to ElevenLabs.");
+});
+
+test("runner resume always throws the interrupted message", async () => {
+  const s = runnerSetup();
+  await assert.rejects(s.runner.resume({}, s.ctx), (e) => e.message === "Interrupted; Stable Audio takes are quick, so run it again.");
+  assert.equal(s.runner.lane, "gpu");
 });
