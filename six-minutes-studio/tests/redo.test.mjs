@@ -149,7 +149,7 @@ test("watchJobs syncs at subscribe: interrupted after restore frees the take", a
 });
 
 test("jobs.add failure marks the take failed and rethrows", async () => {
-  const { ctx, store, jobs } = await setup([hf()], idle);
+  const { ctx, host, store, jobs } = await setup([hf()], idle);
   jobs.add = () => { throw new Error("queue broke"); };
   await assert.rejects(() => startTake(ctx, "HF-01"), /queue broke/);
   const t = store.state.assets[0].takes[0];
@@ -157,5 +157,6 @@ test("jobs.add failure marks the take failed and rethrows", async () => {
   assert.equal(t.error, "queue broke");
   assert.ok((await store.readLog()).some((l) => /take 1 failed: queue broke/.test(l.text)));
   jobs.add = () => "jx";
+  host.claudeScript(() => ({ prompt: "again" }));
   assert.equal((await startTake(ctx, "HF-01")).n, 2);
 });
