@@ -173,3 +173,27 @@ test("makeHost has null mcp/claude when those capabilities are absent", async ()
   assert.equal(h.mcp, null);
   assert.equal(h.claude, null);
 });
+
+test("makeHost spawn: an error with no exit settles onExit once with null and reaches onErr; kill swallows rejection", async () => {
+  const f = fakeClaude();
+  const h = await makeHost(f.claude);
+  const p = h.spawn("blender", ["-b"]);
+  const seen = [];
+  p.onErr((s) => seen.push("e" + s)); p.onExit((c) => seen.push("x" + c));
+  const hs = f.getProc().h;
+  hs.error(new Error("spawn blender ENOENT"));
+  hs.exit(1, null);
+  assert.deepEqual(seen, ["espawn blender ENOENT", "xnull"]);
+  f.getProc().kill = async () => { throw new Error("gone"); };
+  assert.equal(await p.kill(), undefined);
+});
+
+test("makeHost spawn: handlers registered after an error still settle", async () => {
+  const f = fakeClaude();
+  const h = await makeHost(f.claude);
+  const p = h.spawn("blender", []);
+  f.getProc().h.error(new Error("boom"));
+  const seen = [];
+  p.onErr((s) => seen.push("e" + s)); p.onExit((c) => seen.push("x" + c));
+  assert.deepEqual(seen, ["eboom", "xnull"]);
+});

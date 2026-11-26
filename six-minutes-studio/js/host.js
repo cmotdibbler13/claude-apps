@@ -39,14 +39,33 @@ export async function makeHost(claude = globalThis.claude) {
     },
     spawn(cmd, args = [], opts = {}) {
       const p = childProcess.spawn(cmd, args, opts.cwd ? { cwd: opts.cwd } : undefined);
+      // A refused spawn (e.g. Blender not found) arrives as an 'error' event with no 'exit'.
+      // Surface the text to onErr and settle onExit once with code null so callers never hang.
+      const errFns = [], exitFns = [];
+      let errText = null, exited = false, exitCode;
+      const settle = (code) => {
+        if (exited) return;
+        exited = true; exitCode = code;
+        exitFns.forEach((f) => f(code));
+      };
+      p.on("error", (e) => {
+        errText = String(e?.message ?? e);
+        errFns.forEach((f) => f(errText));
+        settle(null);
+      });
+      p.on("exit", (code) => settle(code));
       return {
         onOut: (f) => p.stdout.on("data", f),
         onErr: (f) => {
           p.stderr.on("data", f);
-          p.on("error", (e) => f(String(e?.message ?? e)));
+          errFns.push(f);
+          if (errText !== null) f(errText);
         },
-        onExit: (f) => p.on("exit", (code) => f(code)),
-        kill: () => p.kill(),
+        onExit: (f) => {
+          exitFns.push(f);
+          if (exited) f(exitCode);
+        },
+        kill: async () => { try { await p.kill(); } catch { /* already gone */ } },
       };
     },
     mcp: mcp ? {

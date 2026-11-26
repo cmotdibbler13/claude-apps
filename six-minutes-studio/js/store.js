@@ -32,7 +32,7 @@ export async function openFilm(host, dir) {
     await host.fs.rename(tmp, file);
   }
 
-  const store = { state };
+  const store = { state, dir };
   let chain = Promise.resolve();
 
   store.update = (fn) => {
