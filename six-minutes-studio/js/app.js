@@ -260,10 +260,15 @@ async function refreshNarration() {
 let narrTimer = null;
 function pollNarration() {
   if (narrTimer) return;
+  let busy = false;
   const tick = async () => {
-    const before = JSON.stringify(app.review?.narration ?? null);
-    await refreshNarration();
-    if (JSON.stringify(app.review?.narration ?? null) !== before) render();
+    if (busy) return;
+    busy = true;
+    try {
+      const before = JSON.stringify(app.review?.narration ?? null);
+      await refreshNarration();
+      if (JSON.stringify(app.review?.narration ?? null) !== before) render();
+    } finally { busy = false; }
   };
   tick();
   narrTimer = setInterval(() => { if (app.view === "review") tick(); }, 10_000);

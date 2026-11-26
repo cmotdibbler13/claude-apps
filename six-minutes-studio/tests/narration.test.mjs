@@ -109,3 +109,18 @@ test("review model: counts line, snipped text, flag text, missing line script", 
   assert.equal(narrationModel(null), null);
   assert.equal(reviewModel({ film: { title: "T" }, state: { assets: [] }, narration: { missingScript: true } }).narration.rows.length, 0);
 });
+
+test("render never passes null/undefined to replaceChildren when narration is absent", async () => {
+  const mk = (tag) => ({ tag, children: [], style: {}, setAttribute() {}, addEventListener() {}, append(...k) { this.children.push(...k); } });
+  globalThis.Node = class {};
+  globalThis.document = { createElement: mk, createTextNode: (t) => ({ t }) };
+  try {
+    const { reviewModel, render } = await import("../js/ui/review.js");
+    for (const assets of [[], [{ id: "A1", kind: "broll", tool: "higgsfield", line: "l", desc: "d", takes: [], chosen: 0 }]]) {
+      const el = { args: null, replaceChildren(...a) { this.args = a; } };
+      render(el, reviewModel({ film: { title: "T" }, state: { assets }, narration: null }), {});
+      assert.ok(el.args.length > 0);
+      assert.ok(el.args.every((a) => a !== null && a !== undefined));
+    }
+  } finally { delete globalThis.document; delete globalThis.Node; }
+});
