@@ -33,12 +33,20 @@ async function build(host, file, dir, name) {
     throw new Error("The file path contains characters that are unsafe for the shell (\" % & | < > ^ ` $ !); rename it to make a preview.");
   }
   await host.fs.mkdir(join(dir, "proxy"));
-  const r = await host.exec(`ffmpeg -y -i "${file}" -vf scale=640:-2 -c:v libx264 -crf 28 -an "${out}"`, { timeout: TEN_MIN });
+  // Encode to a .part file so a failed or interrupted run never leaves a truncated proxy at the final name.
+  const part = join(dir, "proxy", `${name}_640.part.mp4`);
+  const discard = async () => { try { if (await host.fs.exists(part)) await host.fs.trash(part); } catch { /* best effort */ } };
+  let r;
+  try {
+    r = await host.exec(`ffmpeg -y -i "${file}" -vf scale=640:-2 -c:v libx264 -crf 28 -an "${part}"`, { timeout: TEN_MIN });
+  } catch (e) { await discard(); throw e; }
   if (r.code !== 0) {
+    await discard();
     const tail = String(r.stderr ?? "").trim().split(/\r?\n/).slice(-5).join("\n");
     throw new Error(`ffmpeg failed (code ${r.code}):\n${tail}`);
   }
-  if (!(await host.fs.exists(out))) throw new Error("ffmpeg finished but the proxy file was not created.");
+  if (!(await host.fs.exists(part))) throw new Error("ffmpeg finished but the proxy file was not created.");
+  await host.fs.rename(part, out);
   return out;
 }
 

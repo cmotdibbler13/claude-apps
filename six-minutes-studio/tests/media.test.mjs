@@ -5,6 +5,7 @@ import { ensureProxy, toBlobUrl, openFull, revokeAll } from "../js/media.js";
 
 const SRC = "S:\\Films\\One\\clip.mp4";
 const PROXY = "S:\\Films\\One\\proxy\\clip_640.mp4";
+const PART = "S:\\Films\\One\\proxy\\clip_640.part.mp4";
 
 function setup() {
   const h = new FakeHost();
@@ -13,7 +14,7 @@ function setup() {
   const calls = [];
   h.execScript(async (cmd, opts) => {
     calls.push({ cmd, opts });
-    await h.fs.write(PROXY, new Uint8Array([9]));
+    await h.fs.write(PART, new Uint8Array([9]));
     return { stdout: "", stderr: "", code: 0 };
   });
   return { h, calls };
@@ -23,7 +24,7 @@ test("builds ffmpeg proxy once and reuses it", async () => {
   const { h, calls } = setup();
   assert.equal(await ensureProxy(h, SRC), PROXY);
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].cmd, `ffmpeg -y -i "${SRC}" -vf scale=640:-2 -c:v libx264 -crf 28 -an "${PROXY}"`);
+  assert.equal(calls[0].cmd, `ffmpeg -y -i "${SRC}" -vf scale=640:-2 -c:v libx264 -crf 28 -an "${PART}"`);
   assert.equal(calls[0].opts.timeout, 600000);
   assert.equal(await ensureProxy(h, SRC), PROXY);
   assert.equal(calls.length, 1);
@@ -105,4 +106,25 @@ test("openFull opens the file via host.open", async () => {
   const h = new FakeHost();
   await openFull(h, SRC);
   assert.deepEqual(h.opened, [SRC]);
+});
+
+test("a failed encode leaves no proxy at the final name and the next call re-encodes", async () => {
+  const { h, calls } = setup();
+  h.execScript(async (cmd, opts) => {
+    calls.push({ cmd, opts });
+    await h.fs.write(PART, new Uint8Array([9]));
+    return { stdout: "", stderr: "boom", code: 1 };
+  });
+  await assert.rejects(ensureProxy(h, SRC), /boom/);
+  assert.equal(await h.fs.exists(PROXY), false);
+  assert.equal(await h.fs.exists(PART), false);
+  await assert.rejects(ensureProxy(h, SRC), /boom/);
+  assert.equal(calls.length, 2);
+});
+
+test("a timed-out encode (exec rejects) leaves no proxy at the final name", async () => {
+  const { h } = setup();
+  h.execScript(async () => { await h.fs.write(PART, new Uint8Array([9])); throw new Error("timeout"); });
+  await assert.rejects(ensureProxy(h, SRC), /timeout/);
+  assert.equal(await h.fs.exists(PROXY), false);
 });
