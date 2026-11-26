@@ -349,3 +349,40 @@ test("addBlender3d stays locked until the source is approved, and refuses non li
   await assert.rejects(() => addBlender3d(ctx, "HF-04"), /HF-04 is not line art\./);
   await assert.rejects(() => addBlender3d(ctx, "HF-99"), /Unknown shot HF-99/);
 });
+
+const sfxItem = (o = {}) => ({ id: "SFX-01", cue: "door creak", prompt: "a door creaks", durationS: 3, loop: false, source: "stableaudio", takes: [], chosen: null, approved: false, node: null, est: null, ...o });
+const scoreItem = (o = {}) => ({ id: "SCORE", cue: "Score", prompt: "calm strings", durationS: 400, takes: [], chosen: null, approved: false, node: null, est: null, ...o });
+
+test("holders lists b-roll, then the score, then the cues", async () => {
+  const { holders } = await import("../js/redo.js");
+  assert.deepEqual(holders({}).map((h) => h.id), []);
+  assert.deepEqual(holders({ assets: [hf()], audio: { score: scoreItem(), sfx: [sfxItem()] } }).map((h) => h.id), ["HF-01", "SCORE", "SFX-01"]);
+});
+
+test("a done job for a cue sets the take's file and measurements", async () => {
+  const { ctx, store, jobs } = await setup([]);
+  await store.update((d) => { d.audio = { flowId: null, score: null, sfx: [sfxItem({ takes: [{ n: 1, source: "stableaudio", prompt: "p", status: "queued", at: 1 }], chosen: 1 })] }; });
+  jobs.restore([{ id: "j1", film: DIR, assetId: "SFX-01", take: 1, tool: "stableaudio", lane: "gpu", status: "done", file: "S:\\x.wav", meta: { lengthS: 2.4, peakDb: -40, meanDb: -60, quiet: true, source: "stableaudio" }, input: {} }]);
+  const stop = watchJobs(ctx);
+  await tick();
+  const t = store.state.audio.sfx[0].takes[0];
+  assert.equal(t.status, "done");
+  assert.equal(t.file, "S:\\x.wav");
+  assert.equal(t.lengthS, 2.4);
+  assert.equal(t.peakDb, -40);
+  assert.equal(t.meanDb, -60);
+  assert.equal(t.quiet, true);
+  assert.equal(t.jobId, "j1");
+  stop();
+});
+
+test("a busy score take with no job is marked lost", async () => {
+  const { ctx, store } = await setup([]);
+  await store.update((d) => { d.audio = { flowId: "F", score: scoreItem({ takes: [{ n: 1, source: "elevenlabs", prompt: "p", status: "running", at: 1 }], chosen: 1 }), sfx: [] }; });
+  const stop = watchJobs(ctx);
+  await tick();
+  const t = store.state.audio.score.takes[0];
+  assert.equal(t.status, "interrupted");
+  assert.equal(t.error, "Lost track of this job");
+  stop();
+});

@@ -366,3 +366,15 @@ test("a restored queued resumeNext job resumes ahead of fresh jobs and never sta
   await tick(); await tick(); await tick(); await tick();
   assert.deepEqual(order, ["comfy-resume", "blender-start"]);
 });
+
+test("a runner returning file and meta gives the job meta", async () => {
+  const meta = { lengthS: 2.5, peakDb: -3, meanDb: -20, quiet: false, source: "stableaudio" };
+  const { jobs } = await setup({ stableaudio: { lane: "gpu", start: async () => ({ file: "S:\\a.wav", meta }) } });
+  jobs.add(spec("stableaudio", { meta: { stale: true } }));
+  assert.equal(jobs.list()[0].meta, undefined);
+  await tick(); await tick();
+  const [j] = jobs.list();
+  assert.equal(j.status, "done");
+  assert.equal(j.file, "S:\\a.wav");
+  assert.deepEqual(j.meta, meta);
+});

@@ -64,6 +64,7 @@ export function makeJobs(host, { runners = {}, file } = {}) {
       if (!fn) throw new Error(`${job.tool} cannot ${how}`);
       const res = await fn.call(runner, job, ctxFor(job));
       if (res && res.file !== undefined) job.file = res.file;
+      if (res && res.meta !== undefined) job.meta = res.meta;
       job.status = "done";
       job.progress = 1;
       job.eta = null;
@@ -102,7 +103,7 @@ export function makeJobs(host, { runners = {}, file } = {}) {
         lane: spec.lane ?? runners[spec.tool]?.lane ?? "connector",
         status: "queued", progress: null, eta: null,
       };
-      delete job.file; delete job.error; delete job.startedAt; delete job.endedAt; delete job.resumeNext;
+      delete job.file; delete job.meta; delete job.error; delete job.startedAt; delete job.endedAt; delete job.resumeNext;
       jobs.push(job);
       changed();
       pump();

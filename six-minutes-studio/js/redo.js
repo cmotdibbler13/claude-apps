@@ -11,6 +11,10 @@ Reply with JSON only: {"prompt": "<the new prompt>"}.`;
 
 const filled = (v) => typeof v === "string" && v.trim() !== "";
 const find = (state, id) => state.assets.find((a) => a.id === id);
+// Everything that has takes: b-roll shots, then the score, then the sound-effect cues.
+export const holders = (d) => [...d.assets ?? [], ...(d.audio?.score ? [d.audio.score] : []), ...(d.audio?.sfx ?? [])];
+const META = ["lengthS", "peakDb", "meanDb", "quiet"];
+const nameOf = (id) => (id === "SCORE" ? "Score" : id);
 // Every change to the shots also rewrites what the film is waiting on Jon for, in the same update.
 const save = (store, fn) => store.update((d) => { fn(d); d.waiting = deriveWaiting(d.assets); });
 
@@ -147,28 +151,33 @@ function applyJobs(d, dir, list, lines, pending) {
   const latest = new Map();
   for (const j of list) if (filmKey(j.film) === film) latest.set(`${j.assetId}\u0000${j.take}`, j);
   let changed = false;
+  const all = holders(d);
   for (const j of latest.values()) {
-    const t = find(d, j.assetId)?.takes.find((x) => x.n === j.take);
+    const t = all.find((h) => h.id === j.assetId)?.takes?.find((x) => x.n === j.take);
     if (!t) continue;
     if (j.id !== t.jobId) { t.jobId = j.id; changed = true; }
     if (!["queued", "running", "done", "failed", "interrupted"].includes(j.status) || t.status === j.status) continue;
     changed = true;
     t.status = j.status;
-    if (j.status === "done") { t.file = j.file; delete t.error; lines.push(`${j.assetId} take ${j.take} ready`); }
-    else if (j.status === "failed" || j.status === "interrupted") {
+    if (j.status === "done") {
+      t.file = j.file;
+      for (const k of META) if (j.meta?.[k] !== undefined) t[k] = j.meta[k];
+      delete t.error;
+      lines.push(`${nameOf(j.assetId)} take ${j.take} ready`);
+    } else if (j.status === "failed" || j.status === "interrupted") {
       t.error = j.error ?? (j.status === "interrupted" ? "Interrupted" : "Failed");
-      lines.push(`${j.assetId} take ${j.take} failed: ${t.error}`);
+      lines.push(`${nameOf(j.assetId)} take ${j.take} failed: ${t.error}`);
     } else delete t.error;
   }
   // A busy take with no job (job list moved aside, not saved before close) would stay busy for ever.
-  for (const a of d.assets ?? []) {
+  for (const a of all) {
     for (const t of a.takes ?? []) {
       if (t.status !== "queued" && t.status !== "running") continue;
       if (latest.has(`${a.id}\u0000${t.n}`) || pending?.has(`${a.id}#${t.n}`)) continue;
       t.status = "interrupted";
       t.error = LOST;
       changed = true;
-      lines.push(`${a.id} take ${t.n} failed: ${LOST}`);
+      lines.push(`${nameOf(a.id)} take ${t.n} failed: ${LOST}`);
     }
   }
   const w = deriveWaiting(d.assets);
