@@ -466,7 +466,8 @@ class JoinCommandTest(unittest.TestCase):
         self.assertEqual([r["name"] for r in rows], ["demo_01", "demo_02"])
         self.assertEqual(rows[0]["start_s"], "0.000")
         self.assertEqual(rows[0]["timecode"], "00:00.00")
-        self.assertAlmostEqual(float(rows[1]["start_s"]) - float(rows[0]["end_s"]), 1.2,
+        # the first section change is the end of the cold open: the title hold (6 s)
+        self.assertAlmostEqual(float(rows[1]["start_s"]) - float(rows[0]["end_s"]), 6.0,
                                delta=0.001)
         self.assertAlmostEqual(done["length_s"] - float(rows[1]["end_s"]), 0.5, delta=0.001)
         self.assertEqual(rows[1]["timecode"], vj.timecode(float(rows[1]["start_s"])))
@@ -710,3 +711,20 @@ class TimecodeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TitleHoldTest(unittest.TestCase):
+    # Jon (27 Nov): the voiceover needs a gap where the title card sits, at
+    # the end of the cold open, not at the start of the film.
+    def test_the_first_section_change_gets_the_title_hold(self):
+        a = np.ones(RATE)
+        clips = [("01", a), ("02", a), ("03", a), ("04", a)]
+        x, t = vj.assemble(clips, ["Cold open", "Cold open", "Village", "Storm"], rate=RATE, title_hold_s=6.0)
+        self.assertAlmostEqual(t[1]["start_s"] - t[0]["end_s"], 0.6, places=6)
+        self.assertAlmostEqual(t[2]["start_s"] - t[1]["end_s"], 6.0, places=6)
+        self.assertAlmostEqual(t[3]["start_s"] - t[2]["end_s"], 1.2, places=6)
+
+    def test_without_a_title_hold_every_section_change_is_1_2_s(self):
+        a = np.ones(RATE)
+        x, t = vj.assemble([("01", a), ("02", a)], ["A", "B"], rate=RATE)
+        self.assertAlmostEqual(t[1]["start_s"] - t[0]["end_s"], 1.2, places=6)

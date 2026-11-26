@@ -27,7 +27,7 @@ function score(chosen = 1, approved = true) {
 const sfx = (o = {}) => ({ id: "SFX-01", cue: "door", prompt: "p", durationS: 3, loop: false, source: "stableaudio", lineId: "01", startS: 8,
   approved: true, chosen: 1, takes: [{ n: 1, status: "done", file: SFX1, meanDb: -25 }], ...o });
 
-async function setup({ settings = {}, audio, csv = CSV, python = true, exportS = 48.5 } = {}) {
+async function setup({ settings = {}, audio, csv = CSV, python = true, exportS = 42.5 } = {}) {
   const host = new FakeHost();
   await host.fs.mkdir(DIR);
   await host.fs.mkdir(MEDIA);
@@ -61,8 +61,8 @@ async function setup({ settings = {}, audio, csv = CSV, python = true, exportS =
       }
       calls.fit.push(i);
       await host.fs.mkdir(MIXD);
-      await host.fs.write(i.out + ".measure.json", JSON.stringify({ ...MEASURE, duration_s: 48.5 }));
-      return { file: i.out, meta: { lengthS: 48.5, measureFile: i.out + ".measure.json" } };
+      await host.fs.write(i.out + ".measure.json", JSON.stringify({ ...MEASURE, duration_s: 42.5 }));
+      return { file: i.out, meta: { lengthS: 42.5, measureFile: i.out + ".measure.json" } };
     } },
     mixdown: { lane: "gpu", async start(job) {
       calls.mix.push(job.input);
@@ -129,7 +129,7 @@ test("startFit measures the score once, plans with Claude and queues a Score fit
   const fitJob = s.jobs.list().find((j) => j.assetId === "FIT");
   assert.equal(fitJob.what, "Score fit");
   assert.equal(fitJob.tool, "stemfit");
-  assert.deepEqual(fitJob.input, { score: SCORE1, plan: { steps: [{ from_s: 0, to_s: 48.5, tempo: 1, xfade_s: 0.03 }] }, out: MIXD + "\\Film_A_score_fitted.wav" });
+  assert.deepEqual(fitJob.input, { score: SCORE1, plan: { steps: [{ from_s: 0, to_s: 42.5, tempo: 1, xfade_s: 0.03 }] }, out: MIXD + "\\Film_A_score_fitted.wav" });
   const f = st(s).fit;
   assert.equal(f.source, "app");
   assert.equal(f.file, MIXD + "\\Film_A_score_fitted.wav");
@@ -137,8 +137,8 @@ test("startFit measures the score once, plans with Claude and queues a Score fit
   assert.equal(f.fromScoreTake, 1);
   assert.equal(f.sheet.rows.length, 1);
   assert.equal(f.sheet.rows[0].section, "Opening", "the sheet shows the ## title, not the file name");
-  assert.deepEqual(f.targets.sections, [{ name: "Opening", startS: 6 }], "the mix marks and Claude's targets do too");
-  assert.equal(f.sheet.rows[0].targetS, 6);
+  assert.deepEqual(f.targets.sections, [{ name: "Opening", startS: 0 }], "the mix marks and Claude's targets do too");
+  assert.equal(f.sheet.rows[0].targetS, 0);
   assert.ok(Math.abs(f.sheet.rows[0].landsS - 6.5) < 1e-9);
   assert.equal(f.plan.notes, "Kept the opening.");
   assert.equal(fitStale(s.store.state), false);
@@ -194,7 +194,7 @@ test("startMix passes the voice, fitted score, approved SFX with starts, film le
   const [i] = s.calls.mix;
   assert.equal(i.voice, VO + "\\film_a_voiceover.wav");
   assert.equal(i.music, MIXD + "\\Film_A_score_fitted.wav");
-  assert.equal(i.filmS, 48.5);
+  assert.equal(i.filmS, 42.5);
   assert.equal(i.out, MIXD + "\\Film_A_mix.wav");
   assert.deepEqual(i.sfx.map((x) => [x.id, x.file, x.startS, x.loop, x.meanDb]), [["SFX-01", SFX1, 8, false, -25], ["SFX-02", SFX1, null, false, -25]]);
   assert.equal(i.sfxDb, -18);
@@ -235,8 +235,8 @@ test("a loop runs to the next section start", async () => {
   await joined(s);
   await fitted(s);
   await mixed(s);
-  assert.equal(s.calls.mix[0].sfx[0].endS, 37.2);
-  assert.equal(s.calls.mix[0].filmS, 58.5);
+  assert.equal(s.calls.mix[0].sfx[0].endS, 31.2);
+  assert.equal(s.calls.mix[0].filmS, 52.5);
 });
 
 test("no stemRemixerDir: the fit says exactly what to set and starts nothing", async () => {
@@ -349,7 +349,7 @@ test("Use another file: Explorer's quotes and spaces are stripped; a path that i
 });
 
 test("an export more than 1 s off the film's length asks first; confirmed, it is used without measuring again", async () => {
-  const s = await setup({ exportS: 50.3 });
+  const s = await setup({ exportS: 44.3 });
   await joined(s);
   await fitted(s);
   const EXP = MIXD + "\\long.wav";
@@ -364,12 +364,12 @@ test("an export more than 1 s off the film's length asks first; confirmed, it is
   assert.equal(s.calls.measure.length, measures);
   assert.equal(st(s).fit.file, EXP);
   assert.equal(st(s).fit.source, "stemremixer");
-  const t = await setup({ exportS: 46 });
+  const t = await setup({ exportS: 40 });
   await joined(t);
   await fitted(t);
   await t.host.fs.write(EXP, "x");
   assert.deepEqual(await useStemRemixerExport(t.ctx, EXP), { confirm: "This export is 2.5 s shorter than the film. Use it anyway?" });
-  const u = await setup({ exportS: 49.2 });
+  const u = await setup({ exportS: 43.2 });
   await joined(u);
   await fitted(u);
   await u.host.fs.write(EXP, "x");

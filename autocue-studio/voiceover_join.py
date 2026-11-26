@@ -74,6 +74,7 @@ SENTENCE_GAP_S = 0.55
 CLIP_GAP_S = 0.6
 SECTION_GAP_S = 1.2
 TAIL_S = 0.5
+TITLE_HOLD_S = 6.0   # the title card at the end of the cold open (the first section)
 LIMIT = 0.84
 LIMIT_ATTACK_MS = 2.0
 LIMIT_RELEASE_MS = 50.0
@@ -364,18 +365,23 @@ def level_clip(x, rate=RATE, target_db=CLIP_RMS_DB):
 
 # ----------------------------------------------------------------- assembly ----
 
-def assemble(clips, sections, project="", rate=RATE):
+def assemble(clips, sections, project="", rate=RATE, title_hold_s=None):
     """Lay clips end to end in script order. clips = [(clip_id, audio)],
     sections = the section of each clip. 0.6 s between clips in a section,
-    1.2 s across a section change, and a 0.5 s tail. Returns (x, timings)
+    1.2 s across a section change, and a 0.5 s tail. With title_hold_s, the
+    first section change (the end of the cold open, where the title card
+    sits) gets that gap instead of 1.2 s. Returns (x, timings)
     with timings = [{clip, section, name, start_s, end_s}], where name is
     <project>_<clip>."""
     if len(clips) != len(sections):
         raise ValueError("one section per clip")
-    pieces, timings, pos = [], [], 0
+    pieces, timings, pos, changes = [], [], 0, 0
     for i, ((clip, audio), section) in enumerate(zip(clips, sections)):
         if i:
-            gap = SECTION_GAP_S if section != sections[i - 1] else CLIP_GAP_S
+            gap = CLIP_GAP_S
+            if section != sections[i - 1]:
+                changes += 1
+                gap = title_hold_s if (changes == 1 and title_hold_s is not None) else SECTION_GAP_S
             g = int(round(gap * rate))
             pieces.append(np.zeros(g))
             pos += g
@@ -679,6 +685,8 @@ def _parser():
     p.add_argument("--out", required=True, help="the folder for the voiceover files")
     p.add_argument("--allow-flagged", action="store_true",
                    help="join takes with no speech found instead of refusing")
+    p.add_argument("--title-hold", type=float, default=TITLE_HOLD_S,
+                   help="seconds of silence after the cold open for the title card (default 6)")
     p.add_argument("--model", default=None,
                    help="speech model (default: autocue_settings.json, else medium.en)")
     p.add_argument("--device", default=None,
@@ -732,7 +740,8 @@ def join(args, transcriber=None):
 
     clips = [(c["clip"], level_clip(build_clip([parts[i] for i in c["ids"]])))
              for c in plan["clips"]]
-    x, timings = assemble(clips, [c["section"] for c in plan["clips"]], project=project)
+    x, timings = assemble(clips, [c["section"] for c in plan["clips"]], project=project,
+                          title_hold_s=args.title_hold)
 
     # Where each sentence part sits in the voiceover (build_clip and
     # level_clip keep lengths, so the offsets follow from the part lengths).

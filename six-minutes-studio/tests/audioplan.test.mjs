@@ -373,7 +373,7 @@ test("planAudio keeps a valid lineId and rejects a bad one", async () => {
   await assert.rejects(() => planAudio(t.host, t.store, { scriptText: "a", handoverText: "b" }));
 });
 
-test("proposeStarts fills a cue from its clip start plus 6 and leaves a Jon-edited cue alone", async () => {
+test("proposeStarts fills a cue from its clip start (film time = voiceover time) and leaves a Jon-edited cue alone", async () => {
   const s = await planned();
   await s.store.update((d) => {
     d.audio.sfx[0].lineId = "05.2";
@@ -383,7 +383,7 @@ test("proposeStarts fills a cue from its clip start plus 6 and leaves a Jon-edit
   });
   const filled = await proposeStarts(s.store, ROWS, null);
   assert.deepEqual(filled, ["SFX-01"]);
-  assert.ok(Math.abs(s.store.state.audio.sfx[0].startS - 65.3) < 1e-9);
+  assert.ok(Math.abs(s.store.state.audio.sfx[0].startS - 59.3) < 1e-9);
   assert.equal(s.store.state.audio.sfx[1].startS, 99);
 });
 
@@ -392,8 +392,8 @@ test("proposeStarts matches ids numerically: line 5.2 finds clip 05, line 04.1 f
   await s.store.update((d) => { d.audio.sfx[0].lineId = "5.2"; d.audio.sfx[1].lineId = "04.1"; });
   const rows = [{ ...ROWS[0], clip: "4" }, ROWS[1]];
   assert.deepEqual(await proposeStarts(s.store, rows, null), ["SFX-01", "SFX-02"]);
-  assert.ok(Math.abs(s.store.state.audio.sfx[0].startS - 65.3) < 1e-9);
-  assert.ok(Math.abs(s.store.state.audio.sfx[1].startS - 46.25) < 1e-9);
+  assert.ok(Math.abs(s.store.state.audio.sfx[0].startS - 59.3) < 1e-9);
+  assert.ok(Math.abs(s.store.state.audio.sfx[1].startS - 40.25) < 1e-9);
 });
 
 test("proposeStarts skips cues with no lineId or a clip missing from the timings", async () => {
@@ -453,5 +453,5 @@ test("Jon retyping the proposed time marks it his", async () => {
   await editItem(s.store, "SFX-01", { startS: s.store.state.audio.sfx[0].startS });
   assert.equal(s.store.state.audio.sfx[0].startSBy, "jon");
   await proposeStarts(s.store, [{ clip: "05", start_s: 1 }], null);
-  assert.ok(Math.abs(s.store.state.audio.sfx[0].startS - 65.3) < 1e-9);
+  assert.ok(Math.abs(s.store.state.audio.sfx[0].startS - 59.3) < 1e-9);
 });

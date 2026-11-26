@@ -6,7 +6,7 @@ import { MSG_INTERRUPTED } from "./voicejoin.js";
 
 export const SIDECHAIN = "sidechaincompress=threshold=0.03:ratio=6:attack=40:release=600";
 export const LIMITER = "alimiter=limit=0.84:level=false:attack=2:release=50";
-const HOLD_S = 6; // film time = voiceover time + 6 s
+const HOLD_S = 0; // the title hold is in the voiceover itself: film time = voiceover time
 const FADE_IN_S = 2.5;
 const FADE_OUT_S = 5;
 const LOOP_FADE_S = 1;
@@ -140,7 +140,7 @@ export function mixGraph({ voice, music, sfx = [], filmS, ride = { baseDb: 0, ri
   for (const s of placed) { if (s.loop) args.push("-stream_loop", "-1"); args.push("-i", s.file); }
 
   const g = [];
-  g.push(`[0:a]${MONO},adelay=6000|6000,apad=whole_dur=${F},atrim=0:${F},asplit=3[vstem][vk][vm]`);
+  g.push(`[0:a]${MONO},apad=whole_dur=${F},atrim=0:${F},asplit=3[vstem][vk][vm]`);
   g.push("[vk]pan=stereo|FL=FC|FR=FC[vkey]");
   g.push("[vm]pan=stereo|FL=FC|FR=FC[vmix]");
   g.push(`[1:a]${STEREO},apad=whole_dur=${F},atrim=0:${F},volume='${rideExpr(ride.baseDb ?? 0, ride.ride)}':eval=frame,`

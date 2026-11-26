@@ -26,7 +26,7 @@ test("join spawns Autocue's python with the script path first and cwd in the Aut
   await r.promise;
   assert.equal(r.spawns.length, 1);
   assert.equal(r.spawns[0].cmd, "C:\\Python\\python.exe");
-  assert.deepEqual(r.spawns[0].args, [AUTOCUE + "\\voiceover_join.py", "--script", input.script, "--takes", input.takes, "--out", input.out]);
+  assert.deepEqual(r.spawns[0].args, [AUTOCUE + "\\voiceover_join.py", "--script", input.script, "--takes", input.takes, "--out", input.out, "--title-hold", "6"]);
   assert.equal(r.spawns[0].opts.cwd, AUTOCUE);
   assert.equal(await r.host.fs.exists(input.out), true, "out folder made");
 });

@@ -19,7 +19,7 @@ test("mixOutputs names the four files", () => {
   });
 });
 
-test("mixGraph: the sidechain string verbatim, the voice held 6 s, fades, one adelay per SFX", () => {
+test("mixGraph: the sidechain string verbatim, the voice from 0 s (the title hold is in the voiceover), fades, one adelay per SFX", () => {
   const sfx = [
     { id: "SFX-01", file: "a.wav", startS: 12.5, loop: false, gainDb: 4 },
     { id: "SFX-02", file: "b.wav", startS: 40, loop: true, endS: 95, gainDb: -2 },
@@ -29,10 +29,10 @@ test("mixGraph: the sidechain string verbatim, the voice held 6 s, fades, one ad
   assert.equal(SIDECHAIN, "sidechaincompress=threshold=0.03:ratio=6:attack=40:release=600");
   assert.ok(filter.includes("sidechaincompress=threshold=0.03:ratio=6:attack=40:release=600"));
   assert.match(filter, /\[bed\]\[vkey\]sidechaincompress/);
-  assert.match(filter, /\[0:a\][^;]*adelay=6000\|6000/);
+  assert.doesNotMatch(filter, /\[0:a\][^;]*adelay/, "film time is voiceover time");
   assert.ok(filter.includes("afade=t=in:st=0:d=2.5"));
   assert.ok(filter.includes("afade=t=out:st=295:d=5"), "the fade-out ends at filmS");
-  assert.equal(count(filter, "adelay="), 3, "the voice and two placed SFX");
+  assert.equal(count(filter, "adelay="), 2, "two placed SFX");
   assert.ok(filter.includes("adelay=12500|12500"));
   assert.ok(filter.includes("adelay=40000|40000"));
   assert.ok(filter.includes("volume=4dB") && filter.includes("volume=-2dB"));
@@ -54,7 +54,7 @@ test("mixGraph: the sidechain string verbatim, the voice held 6 s, fades, one ad
 test("mixGraph with no SFX still has a bed", () => {
   const { filter } = mixGraph(base);
   assert.ok(filter.includes("[mus]anull[bed]"));
-  assert.equal(count(filter, "adelay="), 1);
+  assert.equal(count(filter, "adelay="), 0);
 });
 
 test("rideExpr is piecewise linear in dB", () => {
@@ -68,7 +68,7 @@ test("rideExpr is piecewise linear in dB", () => {
   assert.ok(Math.abs(db(10) + 3) < 1e-9);
 });
 
-// Synthetic: 0.1 s loudness. Sections A (voiceover 0..30) and B (31.2..60); film adds 6 s and an end card.
+// Synthetic: 0.1 s loudness. Sections A (0..30) and B (31.2..60); film time is voiceover time, plus an end card.
 const timings = [
   { clip: "01", section: "A", start_s: 0, end_s: 14 }, { clip: "02", section: "A", start_s: 14.6, end_s: 30 },
   { clip: "03", section: "B", start_s: 31.2, end_s: 60 },
@@ -82,17 +82,17 @@ const gainAt = (ride, t) => {
 };
 
 test("musicRide holds the bed at a steady level, evening out the score's own loudness changes", () => {
-  // Section A's music is 4 dB louder than B's; the cold open and end card are quieter still.
-  const m = loudness((t) => (t >= 6 && t < 36 ? -16 : t >= 36 && t < 66 ? -20 : -24));
+  // Section A's music is 4 dB louder than B's; the end card is quieter still.
+  const m = loudness((t) => (t < 31.2 ? -16 : t < 60.5 ? -20 : -24));
   const r = musicRide(m, timings, { musicDb: -26 });
   for (const p of r.ride) assert.ok(Math.abs(p.db) <= 9, `ride within 9 dB: ${p.db}`);
   const bed = (t) => m.loud[Math.round(t * 10)] + r.baseDb + gainAt(r, t);
   // speech and pauses alike sit at -26 before the duck: nothing switches between them
-  for (const t of [1, 10, 25, 40, 60, 70, 76]) assert.ok(Math.abs(bed(t) + 26) < 0.15, `bed at ${t}: ${bed(t)}`);
+  for (const t of [1, 10, 25, 40, 55, 66, 76]) assert.ok(Math.abs(bed(t) + 26) < 0.15, `bed at ${t}: ${bed(t)}`);
   assert.equal(r.ride[0].t, 0);
   // ramps take 3 s and end where the next section starts
-  const into = r.ride.findIndex((p, i) => i > 0 && p.t === 6);
-  assert.ok(into > 0 && r.ride[into - 1].t === 3);
+  const into = r.ride.findIndex((p, i) => i > 0 && Math.abs(p.t - 31.2) < 1e-9);
+  assert.ok(into > 0 && Math.abs(r.ride[into - 1].t - 28.2) < 1e-9);
 });
 
 test("musicRide on a steady score has no ride, whatever the speech does", () => {

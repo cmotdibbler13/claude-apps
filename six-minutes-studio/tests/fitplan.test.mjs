@@ -14,23 +14,23 @@ const TIMINGS = [
   { clip: "03", section: "The harbour", name: "film_a_03", start_s: 60.6, end_s: 100 },
 ];
 
-test("filmTargets: sections start at their first clip + 6, film = last end + 0.5 + 6 + end card", () => {
+test("filmTargets: film time is voiceover time (the title hold is in the voiceover); film = last end + 0.5 + end card", () => {
   const t = filmTargets(TIMINGS, 12);
-  close(t.filmS, 100 + 0.5 + 6 + 12);
+  close(t.filmS, 100 + 0.5 + 12);
   assert.deepEqual(t.sections, [
-    { name: "Cold open", startS: 6 },
-    { name: "The harbour", startS: 27.2 },
+    { name: "Cold open", startS: 0 },
+    { name: "The harbour", startS: 21.2 },
   ]);
 });
 
 test("filmTargets falls back to the file name when a clip has no section title", () => {
   const t = filmTargets([{ clip: "01", section: "", name: "film_a_01", start_s: 0, end_s: 10 }]);
-  assert.deepEqual(t.sections, [{ name: "film_a_01", startS: 6 }]);
+  assert.deepEqual(t.sections, [{ name: "film_a_01", startS: 0 }]);
 });
 
 test("filmTargets reads CSV strings and defaults the end card to 12", () => {
   const rows = TIMINGS.map((r) => ({ ...r, start_s: String(r.start_s), end_s: String(r.end_s) }));
-  close(filmTargets(rows).filmS, 118.5);
+  close(filmTargets(rows).filmS, 112.5);
 });
 
 test("renderedLength matches a hand calculation, including crossfades", () => {

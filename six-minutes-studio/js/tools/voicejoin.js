@@ -9,6 +9,8 @@ export const MSG_INTERRUPTED = "Interrupted; run it again.";
 
 export function joinArgs(settings, { script, takes, out, allowFlagged }) {
   const args = [join(settings.autocueDir, "voiceover_join.py"), "--script", script, "--takes", takes, "--out", out];
+  // The title card's hold after the cold open goes into the voiceover itself, so voiceover time is film time.
+  args.push("--title-hold", String(Number.isFinite(Number(settings.titleHoldS)) ? Number(settings.titleHoldS) : 6));
   if (allowFlagged) args.push("--allow-flagged");
   return args;
 }
