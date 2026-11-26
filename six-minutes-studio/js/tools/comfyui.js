@@ -71,6 +71,14 @@ const errorText = (entry) => {
   return "ComfyUI reported an error";
 };
 
+function rejection(p, raw) {
+  const m = p?.error?.message ?? (typeof p?.error === "string" ? p.error : null);
+  if (!m) return `ComfyUI rejected the workflow: ${excerpt(raw)}`;
+  const ne = p?.node_errors && typeof p.node_errors === "object" ? Object.entries(p.node_errors).slice(0, 3) : [];
+  const more = ne.map(([id, v]) => `node ${id}: ${v?.errors?.[0]?.message ?? v?.errors?.[0]?.type ?? "error"}`);
+  return `ComfyUI rejected the workflow: ${m}${more.length ? ` (${more.join("; ")})` : ""}`;
+}
+
 const safe = (s) => String(s ?? "").replace(/[^A-Za-z0-9_-]/g, "_");
 
 export function makeComfyRunner({ settings = DEFAULT_SETTINGS, sleep = realSleep, random = Math.random } = {}) {
@@ -84,14 +92,14 @@ export function makeComfyRunner({ settings = DEFAULT_SETTINGS, sleep = realSleep
     const discard = async () => { try { if (await host.fs.exists(part)) await host.fs.trash(part); } catch { /* best effort */ } };
     let r;
     try {
-      r = await runProcess(host, "ffmpeg", ["-y", "-i", file, "-vf", `crop=${w}:${h}`, "-an", "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", part], { timeout: FFMPEG_MS });
+      r = await runProcess(host, "ffmpeg", ["-y", "-i", file, "-vf", `crop=min(iw\\,${w}):min(ih\\,${h})`, "-an", "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", part], { timeout: FFMPEG_MS });
     } catch (e) { await discard(); throw e; }
     if (r.code !== 0) {
       await discard();
       throw new Error(`ffmpeg failed (code ${r.code}):\n${String(r.stderr ?? "").trim().split(/\r?\n/).slice(-5).join("\n")}`);
     }
     if (!(await host.fs.exists(part))) throw new Error("ffmpeg finished but the b-roll file was not created.");
-    await host.fs.rename(part, out);
+    try { await host.fs.rename(part, out); } catch (e) { await discard(); throw e; }
     return { file: out };
   }
 
@@ -126,6 +134,9 @@ export function makeComfyRunner({ settings = DEFAULT_SETTINGS, sleep = realSleep
       const finished = st ? (st.completed === true || st.status_str === "success") : !!found;
       if (!finished) continue;
       if (!found) throw new Error("ComfyUI finished but saved no video");
+      for (const seg of [found.subfolder, found.filename]) {
+        if (/(^|[\\/])\.\.([\\/]|$)/.test(seg) || /^[A-Za-z]:/.test(seg) || /^[\\/]/.test(seg)) throw new Error("ComfyUI returned an unsafe output path; not using it.");
+      }
       const src = join(c.outputDir, found.subfolder, found.filename);
       return ffmpegOut(host, c, src, job.input.out);
     }
@@ -156,15 +167,27 @@ export function makeComfyRunner({ settings = DEFAULT_SETTINGS, sleep = realSleep
       await host.fs.mkdir(tmp);
       await host.fs.write(bodyFile, body);
       const url = String(c.url).replace(/\/+$/, "");
+      const notRunning = `ComfyUI isn't running at ${hostPort(url)}. Open ComfyUI Desktop and press Run again.`;
+      const timedOut = () => ambiguous("ComfyUI didn't answer in time; the render may have been queued. Check ComfyUI before running again.");
       let r;
       try {
-        r = await runProcess(host, "curl", ["-sS", "--fail", "-X", "POST", "-H", "Content-Type: application/json", "--data-binary", "@" + bodyFile, url + "/prompt"], { timeout: CURL_MS });
-      } catch { r = { code: -1, stdout: "" }; }
+        r = await runProcess(host, "curl", ["-sS", "-X", "POST", "-H", "Content-Type: application/json", "--data-binary", "@" + bodyFile, "-w", "\n%{http_code}", url + "/prompt"], { timeout: CURL_MS });
+      } catch (e) {
+        try { await host.fs.trash(bodyFile); } catch { /* best effort */ }
+        throw /timed out/.test(msg(e)) ? timedOut() : new Error(notRunning);
+      }
       try { await host.fs.trash(bodyFile); } catch { /* best effort */ }
-      if (r.code !== 0) throw new Error(`ComfyUI isn't running at ${hostPort(url)}. Open ComfyUI Desktop and press Run again.`);
-      let promptId;
-      try { promptId = JSON.parse(r.stdout)?.prompt_id; } catch { /* handled below */ }
-      if (typeof promptId !== "string" || !promptId) throw new Error(`ComfyUI did not return a prompt id. Response: ${excerpt(r.stdout)}`);
+      if (r.code === 28) throw timedOut();
+      if (r.code === 6 || r.code === 7) throw new Error(notRunning);
+      if (r.code !== 0) throw new Error(`ComfyUI request failed (curl exit ${r.code}): ${excerpt(r.stderr)}`);
+      const text = String(r.stdout ?? "");
+      const nl = text.lastIndexOf("\n");
+      const status = Number(text.slice(nl + 1).trim());
+      const resp = text.slice(0, Math.max(nl, 0));
+      let parsed; try { parsed = JSON.parse(resp); } catch { /* not JSON */ }
+      if (status >= 400) throw new Error(rejection(parsed, resp));
+      const promptId = parsed?.prompt_id;
+      if (typeof promptId !== "string" || !promptId) throw new Error(`ComfyUI did not return a prompt id. Response: ${excerpt(resp)}`);
       ctx.setRef(promptId);
       return wait(job, ctx, promptId);
     },

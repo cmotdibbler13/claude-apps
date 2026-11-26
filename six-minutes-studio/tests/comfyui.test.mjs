@@ -26,7 +26,7 @@ function setup({ settings = mkSettings(), post, history = [hist()], withWf = tru
     if (cmd === "curl" && args.includes("POST")) {
       bodies.push(await host.fs.read(args[args.indexOf("--data-binary") + 1].slice(1), "utf8"));
       if (post) return post(p);
-      p.out(JSON.stringify({ prompt_id: "P1" })); return p.exit(0);
+      p.out(JSON.stringify({ prompt_id: "P1" }) + "\n200"); return p.exit(0);
     }
     if (cmd === "curl") {
       const v = history[Math.min(h++, history.length - 1)];
@@ -85,9 +85,10 @@ test("submit writes a temp body under studio\\tmp, uses an arg list, then trashe
   const t = setup();
   await t.runner.start(job(), t.ctx);
   const post = t.spawns[0];
-  assert.deepEqual(post.args.slice(0, 7), ["-sS", "--fail", "-X", "POST", "-H", "Content-Type: application/json", "--data-binary"]);
-  assert.equal(post.args[7], "@" + FILM + "\\studio\\tmp\\comfy_j1.json");
-  assert.equal(post.args[8], "http://127.0.0.1:8188/prompt");
+  assert.deepEqual(post.args.slice(0, 5), ["-sS", "-X", "POST", "-H", "Content-Type: application/json"]);
+  assert.equal(post.args[6], "@" + FILM + "\\studio\\tmp\\comfy_j1.json");
+  assert.deepEqual(post.args.slice(7), ["-w", "\n%{http_code}", "http://127.0.0.1:8188/prompt"]);
+  assert.ok(!post.args.includes("--fail"));
   const body = JSON.parse(t.bodies[0]);
   assert.match(body.prompt[9999].inputs.filename_prefix, /^broll\/sixmin_Film_A_HF-05_t2_\d+$/);
   assert.equal(body.prompt[339].inputs.noise_seed, 1073741824);
@@ -136,7 +137,7 @@ test("ffmpeg crops and strips through .part, renames, and leaves ComfyUI's file 
   const t = setup();
   await t.runner.start(job(), t.ctx);
   const ff = t.spawns.find((s) => s.cmd === "ffmpeg");
-  assert.deepEqual(ff.args, ["-y", "-i", comfyOut, "-vf", "crop=1920:1080", "-an", "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", FILM + "\\studio\\media\\HF-05_t2.part.mp4"]);
+  assert.deepEqual(ff.args, ["-y", "-i", comfyOut, "-vf", "crop=min(iw\\,1920):min(ih\\,1080)", "-an", "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", FILM + "\\studio\\media\\HF-05_t2.part.mp4"]);
   assert.equal(t.host.files.get(OUT), "CROPPED");
   assert.equal(t.host.files.has(FILM + "\\studio\\media\\HF-05_t2.part.mp4"), false);
   assert.equal(t.host.files.get(comfyOut), "ORIGINAL");
@@ -144,17 +145,64 @@ test("ffmpeg crops and strips through .part, renames, and leaves ComfyUI's file 
 
 test("failed ffmpeg discards the .part and rejects", async () => {
   const t = setup();
-  const orig = t.host.spawn.bind(t.host);
   t.host.spawnScript(async (cmd, args, o, p) => {
     if (cmd === "ffmpeg") { await t.host.fs.write(args[args.length - 1], "half"); p.err("bad"); return p.exit(1); }
-    if (args.includes("POST")) { await t.host.fs.read(args[7].slice(1)); p.out('{"prompt_id":"P1"}'); return p.exit(0); }
+    if (args.includes("POST")) { p.out('{"prompt_id":"P1"}\n200'); return p.exit(0); }
     p.out(hist()); p.exit(0);
   });
   await assert.rejects(t.runner.start(job(), t.ctx), /ffmpeg failed/);
   assert.equal(t.host.files.has(FILM + "\\studio\\media\\HF-05_t2.part.mp4"), false);
   assert.equal(t.host.files.has(OUT), false);
   assert.equal(t.host.files.get(comfyOut), "ORIGINAL");
-  void orig;
+});
+
+test("HTTP 400 from ComfyUI reports the workflow error, not not-running", async () => {
+  const body = JSON.stringify({ error: { message: "Prompt outputs failed validation" }, node_errors: { 364: { errors: [{ message: "Required input is missing" }] }, 12: { errors: [{ message: "Bad value" }] } } });
+  const t = setup({ post: (p) => { p.out(body + "\n400"); p.exit(0); } });
+  await assert.rejects(t.runner.start(job(), t.ctx), (e) => /^ComfyUI rejected the workflow: Prompt outputs failed validation/.test(e.message) && /node 364: Required input is missing/.test(e.message) && /node 12: Bad value/.test(e.message) && !/isn't running/.test(e.message));
+  assert.deepEqual(t.refs, []);
+});
+
+test("HTTP 400 with a non-JSON body falls back to an excerpt", async () => {
+  const t = setup({ post: (p) => { p.out("x".repeat(500) + "\n500"); p.exit(0); } });
+  await assert.rejects(t.runner.start(job(), t.ctx), (e) => /rejected the workflow: x{200}$/.test(e.message));
+});
+
+test("connection refused (exit 7) and could not resolve (exit 6) mean not running", async () => {
+  for (const code of [6, 7]) {
+    const t = setup({ post: (p) => { p.err("refused"); p.exit(code); } });
+    await assert.rejects(t.runner.start(job(), t.ctx), /isn't running at 127\.0\.0\.1:8188/);
+  }
+});
+
+test("POST timing out is ambiguous", async () => {
+  for (const post of [(p) => p.exit(28), null]) {
+    const t = setup({ post: post ?? (() => {}) });
+    if (!post) {
+      const ms = globalThis.setTimeout;
+      globalThis.setTimeout = (f, n, ...a) => ms(f, n === 30_000 ? 1 : n, ...a);
+      try {
+        await assert.rejects(t.runner.start(job(), t.ctx), (e) => e.ambiguous === true && /didn't answer in time/.test(e.message));
+      } finally { globalThis.setTimeout = ms; }
+    } else {
+      await assert.rejects(t.runner.start(job(), t.ctx), (e) => e.ambiguous === true && /ComfyUI didn't answer in time; the render may have been queued\. Check ComfyUI before running again\./.test(e.message));
+    }
+  }
+});
+
+test("unsafe output paths from history are refused before ffmpeg", async () => {
+  for (const [sub, name] of [["..\\..", "x.mp4"], ["broll", "..\\x.mp4"], ["C:\\Windows", "x.mp4"], ["\\evil", "x.mp4"], ["/etc", "x.mp4"], ["broll", "../x.mp4"]]) {
+    const t = setup({ history: [hist({ outputs: { 9999: { videos: [{ filename: name, subfolder: sub }] } } })] });
+    await assert.rejects(t.runner.start(job(), t.ctx), /unsafe output path/);
+    assert.equal(t.spawns.some((s) => s.cmd === "ffmpeg"), false);
+  }
+});
+
+test("a failing rename discards the .part", async () => {
+  const t = setup();
+  t.host.fs.rename = async () => { throw new Error("EBUSY"); };
+  await assert.rejects(t.runner.start(job(), t.ctx), /EBUSY/);
+  assert.equal(t.host.files.has(FILM + "\\studio\\media\\HF-05_t2.part.mp4"), false);
 });
 
 test("resume never POSTs", async () => {
