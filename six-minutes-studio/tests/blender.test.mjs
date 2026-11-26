@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FakeHost } from "./fake-host.mjs";
 import { openFilm } from "../js/store.js";
-import { writeBlenderScript, makeBlenderRunner, blenderRunner } from "../js/tools/blender.js";
+import { writeBlenderScript, makeBlenderRunner, blenderRunner, ensureVideoMediaType } from "../js/tools/blender.js";
 
 const DIR = "S:\\Youtube video ideas\\Film A";
 const OUT = DIR + "\\studio\\media\\HF-03_t2.mp4";
@@ -137,4 +137,25 @@ test("progress is reported only when it moves by at least 1 %", async () => {
   await t.runner.start(t.job, t.ctx);
   assert.ok(t.progress.length <= 101, `reported ${t.progress.length} times`);
   assert.equal(t.progress.at(-1), 1);
+});
+
+// Seen on Jon's PC (Blender 5.2): enum "FFMPEG" not found until media_type is 'VIDEO'.
+test("ensureVideoMediaType switches to video before FFMPEG, keeps indentation, leaves good scripts alone", () => {
+  const bad = "import bpy\nscene = bpy.context.scene\nscene.render.image_settings.file_format = 'FFMPEG'\n";
+  const fixed = ensureVideoMediaType(bad);
+  assert.match(fixed, /if hasattr\(scene\.render\.image_settings, "media_type"\):\n    scene\.render\.image_settings\.media_type = 'VIDEO'\nscene\.render\.image_settings\.file_format = 'FFMPEG'/);
+  const inner = "def setup(s):\n    img = s.render.image_settings\n    img.file_format = \"FFMPEG\"\n";
+  assert.match(ensureVideoMediaType(inner), /    if hasattr\(img, "media_type"\):\n        img\.media_type = 'VIDEO'\n    img\.file_format = "FFMPEG"/);
+  const good = "img.media_type = 'VIDEO'\nimg.file_format = 'FFMPEG'\n";
+  assert.equal(ensureVideoMediaType(good), good);
+  assert.equal(ensureVideoMediaType("img.file_format = 'PNG'\n"), "img.file_format = 'PNG'\n");
+});
+
+test("Run again on an old script adds the Blender 5 video switch before Blender starts", async () => {
+  let seen = null;
+  const t = setup(async (p, host) => { seen = await host.fs.read(t.job.input.script, "utf8"); await host.fs.mkdir(DIR + "\\studio\\media"); await host.fs.write(OUT, "x"); p.exit(0); });
+  await t.host.fs.mkdir(DIR + "\\studio\\blender");
+  await t.host.fs.write(t.job.input.script, "img = bpy.context.scene.render.image_settings\nimg.file_format = 'FFMPEG'\n");
+  await t.runner.start(t.job, t.ctx);
+  assert.match(seen, /img\.media_type = 'VIDEO'\nimg\.file_format = 'FFMPEG'/);
 });

@@ -8,6 +8,14 @@ const INSTRUCTIONS = `You write a Blender Python script (bpy) for one shot of a 
 Build the scene with Blender's Python API from the shot description: asset.desc says whether it is a 3D line-art version of the source line-art image or a 3D model of a place.
 The script runs as: blender -b -P script.py -- <source> <output>. Read both paths from sys.argv after "--": source = sys.argv[sys.argv.index("--") + 1], output = sys.argv[sys.argv.index("--") + 2]. Never hard-code either path.
 Render an MP4 (H.264, FFMPEG container) at 1920x1080, 24 fps, with frame_start = 1 and frame_end = frames, to the output path.
+The PC runs Blender 5.2, where video output must be switched on before choosing FFMPEG. Set the output format with exactly these lines, which work in Blender 4 and 5:
+img = scene.render.image_settings
+if hasattr(img, "media_type"):
+    img.media_type = 'VIDEO'
+img.file_format = 'FFMPEG'
+scene.render.ffmpeg.format = 'MPEG4'
+scene.render.ffmpeg.codec = 'H264'
+Use only bpy APIs that exist in Blender 5.
 Look: Six Minutes On... Thin brass/amber (#d5a867) or white lines on a dark navy world (#03070c to #091a2e). Slow, deliberate camera movement.
 The script MUST NOT use the network, MUST NOT delete or overwrite any file other than the output path, and MUST NOT read any file other than the source image.
 If a previous script and a note are given, change the previous script to follow the note and keep everything else the same.
@@ -21,6 +29,15 @@ function validate(v) {
 
 // Returns the path of the written script. The frame count (needed for job.input.frames) is
 // passed to the optional onFrames callback.
+// Blender 5 only offers 'FFMPEG' once image_settings.media_type is 'VIDEO'. If a script sets the format
+// without switching to video first, add the switch just before that line (it is a no-op on Blender 4).
+const FFMPEG_LINE = /^([ \t]*)([A-Za-z_][\w.]*)\.file_format\s*=\s*(['"])FFMPEG\3/m;
+export function ensureVideoMediaType(script) {
+  if (/media_type/.test(script)) return script;
+  return script.replace(FFMPEG_LINE, (line, indent, obj) =>
+    `${indent}if hasattr(${obj}, "media_type"):\n${indent}    ${obj}.media_type = 'VIDEO'\n${line}`);
+}
+
 export async function writeBlenderScript(host, store, asset, take, { note, previous, onFrames } = {}) {
   const redo = note != null || previous != null;
   const data = { asset: { id: asset.id, desc: asset.desc, line: asset.line }, take };
@@ -28,7 +45,7 @@ export async function writeBlenderScript(host, store, asset, take, { note, previ
   if (note != null) data.note = note;
   const r = await askJson(host, { instructions: INSTRUCTIONS, data, tier: redo ? "quick" : "default", validate });
   const path = join(store.dir, "studio", "blender", `${asset.id}_t${take}.py`);
-  await host.fs.write(path, r.script);
+  await host.fs.write(path, ensureVideoMediaType(r.script));
   if (onFrames) onFrames(r.frames);
   return path;
 }
@@ -43,6 +60,12 @@ export function makeBlenderRunner({ settings = DEFAULT_SETTINGS } = {}) {
       const { host } = ctx;
       // A leftover file at out (earlier interrupted run) must not pass for this run's result. Move it aside, never delete.
       if (await host.fs.exists(out)) await host.fs.rename(out, out.replace(/\.mp4$/i, "") + `.stale-${host.now()}.mp4`);
+      // A script written before the Blender 5 fix: add the video switch so Run again works.
+      try {
+        const text = await host.fs.read(script, "utf8");
+        const fixed = ensureVideoMediaType(text);
+        if (fixed !== text) await host.fs.write(script, fixed);
+      } catch { /* unreadable here: Blender reports it */ }
       return new Promise((resolve, reject) => {
         const tail = [];
         let partial = "", errText = "", last = -1;
