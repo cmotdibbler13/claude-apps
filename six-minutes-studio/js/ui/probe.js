@@ -1,4 +1,7 @@
 // Probe view: checks the PC and connectors. Never calls a generate tool.
+import { runProcess } from "../proc.js";
+import { DEFAULT_SETTINGS } from "../settings.js";
+
 const ROOT = "S:\\Youtube video ideas\\";
 const UNC = "\\\\192.168.1.171\\jon\\Youtube video ideas\\";
 
@@ -6,18 +9,19 @@ const listCheck = (path) => async (host) => {
   const entries = await host.fs.list(path);
   return `${entries.length} entries`;
 };
-const cmdCheck = (cmd) => async (host) => {
-  const r = await host.exec(cmd, { timeout: 15000 });
+// The same way the app runs them: spawn with an argument list, no shell.
+const cmdCheck = (cmd, args) => async (host) => {
+  const r = await runProcess(host, cmd, args, { timeout: 15000 });
   if (r.code !== 0) throw new Error(`exit ${r.code}: ${(r.stderr || r.stdout).trim()}`);
   return (r.stdout || r.stderr).trim().split(/\r?\n/)[0];
 };
 
-export const CHECKS = [
+export const makeChecks = (settings = DEFAULT_SETTINGS) => [
   { name: "S: root readable", run: listCheck(ROOT) },
   { name: "UNC root readable", run: listCheck(UNC) },
-  { name: "Blender", run: cmdCheck("blender --version") },
-  { name: "ffmpeg", run: cmdCheck("ffmpeg -version") },
-  { name: "Python", run: cmdCheck("python --version") },
+  { name: "Blender", run: cmdCheck(settings.blenderPath || DEFAULT_SETTINGS.blenderPath, ["--version"]) },
+  { name: "ffmpeg", run: cmdCheck("ffmpeg", ["-version"]) },
+  { name: "curl", run: cmdCheck("curl", ["--version"]) },
   {
     name: "Higgsfield tools",
     async run(host) {
@@ -40,9 +44,11 @@ export const CHECKS = [
   },
 ];
 
-export async function runChecks(host, onResult = () => {}) {
+export const CHECKS = makeChecks();
+
+export async function runChecks(host, onResult = () => {}, settings = DEFAULT_SETTINGS) {
   const out = [];
-  for (const c of CHECKS) {
+  for (const c of makeChecks(settings)) {
     let r;
     try { r = { name: c.name, ok: true, detail: await c.run(host) }; }
     catch (e) { r = { name: c.name, ok: false, detail: String(e?.message ?? e) }; }
@@ -62,11 +68,12 @@ function row(r) {
   return li;
 }
 
-export function mountProbe(host, button, list) {
+// getSettings() gives the loaded .studio-settings.json (defaults until the root is read).
+export function mountProbe(host, button, list, getSettings = () => DEFAULT_SETTINGS) {
   button.onclick = async () => {
     button.disabled = true;
     list.replaceChildren();
-    await runChecks(host, (r) => list.append(row(r)));
+    await runChecks(host, (r) => list.append(row(r)), getSettings() ?? DEFAULT_SETTINGS);
     button.disabled = false;
   };
 }
