@@ -215,15 +215,15 @@ def single_project(song_path: str, root: str) -> str:
 
 def apply_plan_to_settings(settings, plan, rate: int, length: int) -> dict:
     """Mix settings (as Mixer.settings) with a fit plan in place of the saved
-    sections and chain: one section per distinct step, named "Step 1",
-    "Step 2" ..., the chain on, and the song's tempo, pitch, master, loop and
+    sections and chain: one section per distinct step (a repeated step
+    shares one), named "Section 1", "Section 2" ..., the chain on, and the song's tempo, pitch, master, loop and
     stem settings back to plain, so the chain sounds as fit.py renders it.
     `length` is the score's frames. Returns a new dict; raises ValueError on
     a bad plan."""
     from fit import plan_to_sections
     sections, chain = plan_to_sections(plan, rate, length=length)
     for number, section in enumerate(sections, 1):
-        section["name"] = f"Step {number}"
+        section["name"] = f"Section {number}"
     out = copy.deepcopy(settings) if isinstance(settings, dict) else {}
     out.pop("stems", None)
     out.update({"tempo": 1.0, "pitch": 0, "master": 1.0, "loop": None,

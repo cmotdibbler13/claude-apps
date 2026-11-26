@@ -115,7 +115,7 @@ def test_apply_plan_matches_plan_to_sections():
     sections, chain = fit.plan_to_sections(PLAN, RATE, length=length)
     assert [(s["start"], s["end"], s["tempo"], s["xfade"]) for s in settings["sections"]] == \
         [(s["start"], s["end"], s["tempo"], s["xfade"]) for s in sections]
-    assert [s["name"] for s in settings["sections"]] == ["Step 1", "Step 2", "Step 3"]
+    assert [s["name"] for s in settings["sections"]] == ["Section 1", "Section 2", "Section 3"]
     assert settings["chain"] == {"steps": chain, "on": True}
     # The plan is heard as fit.py renders it: nothing else changes the sound.
     assert settings["tempo"] == 1.0 and settings["pitch"] == 0 and settings["master"] == 1.0
@@ -135,7 +135,7 @@ def test_open_single_with_a_plan_writes_the_mix(song, tmp_path):
     folder, project = separator.open_single(song, root, str(plan_path))
     saved = separator.read_project(folder)
     assert saved == project
-    assert [s["name"] for s in saved["mix"]["sections"]] == ["Step 1", "Step 2", "Step 3"]
+    assert [s["name"] for s in saved["mix"]["sections"]] == ["Section 1", "Section 2", "Section 3"]
     assert saved["mix"]["chain"] == {"steps": [0, 1, 0, 2], "on": True}
     # Without a plan, the mix is left as it was.
     folder, again = separator.open_single(song, root)
@@ -162,6 +162,26 @@ def test_app_path_plays_what_fit_renders(song, tmp_path):
     ours, our_factor = mixer.render_chain()
     x, score_rate = sf.read(song, dtype="float32", always_2d=True)
     theirs, their_factor = fit.render_plan(x, score_rate, PLAN, out_rate=score_rate)
+    assert ours.shape == theirs.shape
+    assert np.max(np.abs(ours - theirs)) < 1e-4
+    assert our_factor == their_factor
+
+
+def test_app_export_at_48k_is_fit_py_file(tmp_path):
+    """Review Focus 2 at 48 kHz: the app's chain export and fit.py's file (at
+    its default out_rate, so no resampling) are the same samples."""
+    song = str(tmp_path / "score48.wav")
+    sf.write(song, tone(rate=48000), 48000, subtype="FLOAT")
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(PLAN))
+    folder, project = separator.open_single(song, str(tmp_path / "Stems"), str(plan_path))
+    audio, rate = separator.load_stems(folder, project["stems"])
+    assert rate == 48000
+    mixer = Mixer([Stem(name, audio[name]) for name in project["stems"]], rate)
+    mixer.apply_settings(project["mix"])
+    ours, our_factor = mixer.render_chain()
+    x, score_rate = sf.read(song, dtype="float32", always_2d=True)
+    theirs, their_factor = fit.render_plan(x, score_rate, PLAN)
     assert ours.shape == theirs.shape
     assert np.max(np.abs(ours - theirs)) < 1e-4
     assert our_factor == their_factor

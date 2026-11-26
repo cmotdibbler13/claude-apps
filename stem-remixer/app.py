@@ -638,7 +638,7 @@ class StemRemixerApp(ctk.CTk):
         self.update_idletasks()
         try:
             folder, project = separator.open_single(path, STEMS_DIR, plan_path)
-        except (separator.SplitError, ValueError, OSError) as err:
+        except Exception as err:   # bad audio, a bad plan, a disk error: say so, don't crash
             self._set_status(f"Couldn't open {name}.", WARN)
             messagebox.showerror("Stem Remixer", f"Couldn't open {name}.\n\n{err}")
             return

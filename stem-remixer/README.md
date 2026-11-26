@@ -79,13 +79,17 @@ plan, a JSON file of the form
 ```
 
 Each step is a stretch of the file in seconds, its tempo (0.9 to 1.1 makes sense) and its
-crossfade into the next step. The plan's steps become saved sections, "Step 1", "Step 2" and
-so on (a step used twice is one section, used twice in the chain), and the chain plays them
+crossfade into the next step. The plan's steps become saved sections, "Section 1", "Section 2"
+and so on (a step used twice is one section, used twice in the chain), and the chain plays them
 in order. They replace the sections and chain saved for that file, and the song's tempo,
 pitch, master and loop go back to plain, so the chain sounds just as the plan renders it.
 The chain is on when the window opens: press Play to hear it, adjust sections by ear, then
 **Export mix** saves the chain once through. If the file or the plan can't be read, the app
 says why and starts as normal. Anything else on the command line is ignored.
+
+If Stem Remixer is already open on the same score, close that window before opening it with
+a plan. The app saves its mix when it closes, so an old window closed later would write its
+old sections back over the plan's.
 
 ## Updating
 
@@ -200,6 +204,8 @@ stem-remixer/
 ├── updater.py         # the Update button: fetches the newest version from GitHub
 ├── VERSION            # this version's number
 ├── separator.py       # runs Demucs, reads and writes the Stems folders
+├── fit.py             # renders a fit plan for a score, exactly as the app plays it
+├── measure.py         # measures a score (loudness, beats, rises and drops) for a fit
 ├── tests/             # pytest tests for the mixer and the Stems folders
 ├── requirements.txt
 └── Stems/             # created on the first split
