@@ -989,3 +989,37 @@ class DecadeWithApostrophe(unittest.TestCase):
         heard = "Then, in the 1920's, another storm damaged it."
         words = [(w, i * 0.4, i * 0.4 + 0.3) for i, w in enumerate(heard.split())]
         self.assertEqual([f["text"] for f in take_checks.word_flags(line, words, len(words) * 0.4 + 1.0)], [])
+
+
+class BreathHeardAsAWord(unittest.TestCase):
+    """Whisper often turns the opening breath into "A", "And" or "So", and
+    keeps the odd "um"; neither is a misread of the line."""
+
+    LINE = "Few records were kept, finds were carried off, and by the late eighteen sixties the digging had stopped."
+
+    def flags(self, heard):
+        words = [(w, i * 0.4, i * 0.4 + 0.3) for i, w in enumerate(heard.split())]
+        return [f["text"] for f in take_checks.word_flags(self.LINE, words, len(words) * 0.4 + 1.0)]
+
+    def test_leading_a_from_the_breath_is_ignored(self):
+        self.assertEqual(self.flags("A few records were kept, finds were carried off, and by the late 1860s the digging had stopped."), [])
+
+    def test_leading_and_or_so_is_ignored(self):
+        self.assertEqual(self.flags("And few records were kept, finds were carried off, and by the late 1860s the digging had stopped."), [])
+        self.assertEqual(self.flags("So few records were kept, finds were carried off, and by the late 1860s the digging had stopped."), [])
+
+    def test_filler_anywhere_is_ignored(self):
+        self.assertEqual(self.flags("Few records were kept, um, finds were carried off, and by the late 1860s the digging had stopped."), [])
+
+    def test_real_extra_word_still_flagged(self):
+        self.assertTrue(any("added" in f for f in self.flags(
+            "Few records were kept, finds were quickly carried off, and by the late 1860s the digging had stopped.")))
+
+    def test_two_extra_leading_words_still_flagged(self):
+        self.assertTrue(any("added" in f for f in self.flags(
+            "A very few records were kept, finds were carried off, and by the late 1860s the digging had stopped.")))
+
+    def test_line_that_really_starts_with_a(self):
+        line = "A storm came in the night."
+        words = [(w, i * 0.4, i * 0.4 + 0.3) for i, w in enumerate("Storm came in the night.".split())]
+        self.assertTrue(any("missed" in f for f in [f["text"] for f in take_checks.word_flags(line, words, 3.0)]))

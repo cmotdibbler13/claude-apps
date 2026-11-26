@@ -43,7 +43,7 @@ import sys
 import numpy as np
 
 RATE = 16000
-VERSION = 2   # raise when the checks change, so Check all re-checks older results
+VERSION = 3   # raise when the checks change, so Check all re-checks older results
 
 FRAME_S = 0.010
 VOICED_DBFS = -24.0
@@ -786,6 +786,10 @@ def _same_words(a, b):
     return False
 
 
+_FILLERS = {"um", "uh", "er", "erm", "ah", "hmm", "mm", "mmm"}
+_BREATH_WORDS = {"a", "and", "so", "oh", "ah"}
+
+
 def word_flags(expected_text, transcript_words, audio_end_s, voice_end_s=None):
     """misread flags (misread, missed, added words) from a word diff of the
     line against the transcript, plus a cut_off flag when the line's last word
@@ -799,6 +803,9 @@ def word_flags(expected_text, transcript_words, audio_end_s, voice_end_s=None):
         words = [w for w in words if w[1] <= voice_end_s + HALLUCINATION_AFTER_S]
     exp = _expected_tokens(expected_text)
     got = _timed_tokens(words)
+    meant_words = {t[0] for t in exp}
+    # Filler Whisper sometimes keeps ("um", "uh") is never a misread, unless the line says it.
+    got = [t for t in got if t[0] not in _FILLERS or t[0] in meant_words]
     a, b = [t[0] for t in exp], [t[0] for t in got]
     sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
     flags = []
@@ -823,6 +830,8 @@ def word_flags(expected_text, transcript_words, audio_end_s, voice_end_s=None):
             at = got[j1 - 1][3] if j1 > 0 else 0.0
             flags.append(flag("misread", f'may have missed "{_quote(meant)}"', at))
         elif op == "insert":
+            if i1 == 0 and j1 == 0 and j2 - j1 == 1 and b[j1] in _BREATH_WORDS:
+                continue                   # the opening breath heard as "A", "And" or "So"
             flags.append(flag("misread", f'may have added "{_quote(said)}"', got[j1][2]))
 
     if exp:
