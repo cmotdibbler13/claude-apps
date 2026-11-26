@@ -24,6 +24,8 @@ from datetime import datetime
 
 import customtkinter as ctk
 
+import check_worker
+import take_checks
 from audio_recorder import AudioRecorder
 from server_backup import ServerBackup
 
@@ -82,6 +84,8 @@ RULE = "#24395a"          # decorative hairlines
 RULE_STRONG = "#647b98"   # borders that carry meaning
 
 ACCENT_GREEN = BRASS      # saved-state confirmations: the brand has no green
+CHECK_OK = "#8fb996"      # a muted green, only for a take check that passed
+CHECK_COLOURS = {"ok": CHECK_OK, "flag": BRASS, "error": BRASS, "loading": INK_MUTED}
 MUTED = INK_MUTED
 
 THIN_SPACE = " "
@@ -281,6 +285,15 @@ class AutocueApp(ctk.CTk):
         self.auto_advance = ctk.BooleanVar(value=True)
         self.line_countdown = ctk.StringVar(value=LINE_COUNTDOWN_DEFAULT)
 
+        # Take checks run on a worker thread (see check_worker.py); results
+        # come back to the UI thread through after().
+        self._held_check = None        # a result that arrived mid-take
+        self._last_check_error = None  # show a repeating error only once
+        self.checker = check_worker.CheckWorker(
+            self._make_transcriber,
+            lambda line_id, result: self.after(0, self._show_check, line_id, result),
+        )
+
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=3)
         self.grid_rowconfigure(1, weight=2)
@@ -478,16 +491,21 @@ class AutocueApp(ctk.CTk):
             justify="left", anchor="nw",
         )
         self.line_label.grid(row=2, column=0, sticky="nsew", padx=24, pady=(10, 4))
+        self.check_mark_label = ctk.CTkLabel(
+            self.line_view, text="", anchor="w", justify="left",
+            font=self._small_font,
+        )
+        self.check_mark_label.grid(row=3, column=0, sticky="ew", padx=24, pady=(0, 4))
         self.note_label = ctk.CTkLabel(
             self.line_view, text="", text_color=BRASS, anchor="w",
             justify="left", font=ctk.CTkFont(family=self._sans, size=14),
         )
-        self.note_label.grid(row=3, column=0, sticky="ew", padx=24, pady=(0, 6))
+        self.note_label.grid(row=4, column=0, sticky="ew", padx=24, pady=(0, 6))
         self.next_label = ctk.CTkLabel(
             self.line_view, text="", text_color=INK_FAINT, anchor="w",
             justify="left", font=ctk.CTkFont(family=self._sans, size=14),
         )
-        self.next_label.grid(row=4, column=0, sticky="ew", padx=24, pady=(4, 14))
+        self.next_label.grid(row=5, column=0, sticky="ew", padx=24, pady=(4, 14))
         self.line_view.bind("<Configure>", self._on_line_view_resize)
 
         # Big 3-2-1 countdown shown over the script before recording starts.
@@ -624,6 +642,10 @@ class AutocueApp(ctk.CTk):
             header, tracked("Folder"), width=76, height=24,
             command=self._open_recordings_folder,
         ).pack(side="right")
+        self.check_all_btn = self._secondary_button(  # packed in line mode only
+            header, tracked("Check all"), width=90, height=24,
+            command=self._check_all,
+        )
 
         self.recordings_list = ctk.CTkScrollableFrame(
             recordings, fg_color="transparent",
@@ -727,6 +749,7 @@ class AutocueApp(ctk.CTk):
         self.line_bar.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 6))
         self.line_view.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 12))
         self.speed_slider.configure(state="disabled")
+        self.check_all_btn.pack(side="right", padx=(0, 6))
         self.keys_label.configure(
             text="Space = record / stop    ← → = previous / next line"
         )
@@ -751,6 +774,7 @@ class AutocueApp(ctk.CTk):
         self.textbox.configure(state="normal")
         self.textbox.grid()
         self.speed_slider.configure(state="normal")
+        self.check_all_btn.pack_forget()
         self.keys_label.configure(text="")
         self.status_label.configure(text="Ready", text_color=INK_MUTED)
         self._refresh_recordings()
@@ -820,6 +844,7 @@ class AutocueApp(ctk.CTk):
             text_color=ACCENT_GREEN if has_take else MUTED,
         )
         self.play_take_btn.configure(state="normal" if has_take else "disabled")
+        self._show_check_mark()
         self.prev_btn.configure(state="normal" if self.line_index > 0 else "disabled")
         self.next_btn.configure(
             state="normal" if self.line_index < total - 1 else "disabled"
@@ -835,7 +860,8 @@ class AutocueApp(ctk.CTk):
         except AttributeError:
             scale = 1.0
         wrap = max(200, int(event.width / scale) - 60)
-        for label in (self.line_label, self.note_label, self.next_label):
+        for label in (self.line_label, self.check_mark_label, self.note_label,
+                      self.next_label):
             label.configure(wraplength=wrap)
 
     def _play_current_take(self) -> None:
@@ -844,7 +870,7 @@ class AutocueApp(ctk.CTk):
 
     def _set_line_nav_enabled(self, enabled: bool) -> None:
         state = "normal" if enabled else "disabled"
-        for btn in (self.next_missing_btn, self.load_btn):
+        for btn in (self.next_missing_btn, self.load_btn, self.check_all_btn):
             btn.configure(state=state)
         if enabled:
             if self.line_mode:
@@ -1002,6 +1028,8 @@ class AutocueApp(ctk.CTk):
         self._pending_final_path = None
         if path and final:
             path = self._commit_take(path, final)
+            if path == final:
+                self._submit_check(self.line_index)
         self._reset_controls()
         self._refresh_recordings()
         if path:
@@ -1009,10 +1037,11 @@ class AutocueApp(ctk.CTk):
                 text=f"Saved  {os.path.basename(path)}", text_color=ACCENT_GREEN
             )
             self.backup.request()
-            if self.line_mode and self.auto_advance.get():
-                if self.line_index < len(self.script_lines) - 1:
-                    self.line_index += 1
-                    self._show_line()
+        self._show_held_check(after_saved=bool(path))
+        if path and self.line_mode and self.auto_advance.get():
+            if self.line_index < len(self.script_lines) - 1:
+                self.line_index += 1
+                self._show_line()
 
     def _commit_take(self, temp_path: str, final_path: str) -> str:
         """Move an earlier take aside, then make the new take the saved one."""
@@ -1031,6 +1060,85 @@ class AutocueApp(ctk.CTk):
                 f"The take is still in:\n{temp_path}\n\n{exc}",
             )
             return temp_path
+
+    # -------------------------------------------------------- take checks
+
+    def _make_transcriber(self):
+        """Runs on the check thread; the model itself loads on first use."""
+        settings = check_worker.load_settings(APP_DIR)
+        return take_checks.WhisperTranscriber(
+            settings["check_model"], settings["check_device"]
+        )
+
+    def _checks_dir(self) -> str:
+        return os.path.join(self._recordings_dir(), "checks")
+
+    def _submit_check(self, index: int) -> None:
+        self.checker.submit({
+            "id": self.script_lines[index]["id"],
+            "path": self._take_path(index),
+            "line_text": self.script_lines[index]["text"],
+            "checks_dir": self._checks_dir(),
+            "project": self.script_name,
+        })
+
+    def _check_all(self) -> None:
+        """Check every saved take that has no result, or an out-of-date one."""
+        if not self.line_mode or self.recorder.is_recording or self._counting_down:
+            return
+        self.checker.reset_transcriber()  # retry a model that failed to load
+        self._last_check_error = None
+        count = 0
+        for i, line in enumerate(self.script_lines):
+            take = self._take_path(i)
+            if not os.path.exists(take):
+                continue
+            result = check_worker.read_result(self._checks_dir(), self.script_name, line["id"])
+            if not check_worker.is_current(result, take):
+                self._submit_check(i)
+                count += 1
+        self.status_label.configure(
+            text=f"Checking {count} take{'' if count == 1 else 's'}…", text_color=INK_MUTED
+        )
+
+    def _show_check(self, line_id, result) -> None:
+        """A check result (or the loading notice) from the worker, on the UI thread."""
+        if self.recorder.is_recording or self._counting_down:
+            self._held_check = (line_id, result)  # never distract mid-take
+            return
+        self._set_check_status(line_id, result)
+        if (self.line_mode and self.script_lines
+                and result.get("file") == os.path.basename(self._take_path(self.line_index))):
+            self._show_check_mark()
+
+    def _set_check_status(self, line_id, result, prefix: str = "") -> None:
+        text, kind = check_worker.status_message(line_id, result)
+        if kind == "error":
+            if text == self._last_check_error:
+                return  # e.g. the model failed to load: said once already
+            self._last_check_error = text
+        elif kind in ("ok", "flag"):
+            self._last_check_error = None
+        self.status_label.configure(text=prefix + text, text_color=CHECK_COLOURS[kind])
+
+    def _show_held_check(self, after_saved: bool) -> None:
+        if self._held_check is None:
+            return
+        line_id, result = self._held_check
+        self._held_check = None
+        prefix = self.status_label.cget("text") + "  ·  " if after_saved else ""
+        self._set_check_status(line_id, result, prefix)
+
+    def _show_check_mark(self) -> None:
+        line = self.script_lines[self.line_index]
+        take = self._take_path(self.line_index)
+        result = check_worker.read_result(self._checks_dir(), self.script_name, line["id"])
+        if not check_worker.is_current(result, take):
+            result = None
+        text, kind = check_worker.mark_text(result)
+        self.check_mark_label.configure(
+            text=text, text_color=CHECK_COLOURS.get(kind, INK_MUTED)
+        )
 
     def _poll_backup(self) -> None:
         """Show the result of the latest server copy (runs on the UI thread)."""
@@ -1138,6 +1246,7 @@ class AutocueApp(ctk.CTk):
     # ------------------------------------------------------------ close
 
     def _on_close(self) -> None:
+        self.checker.stop()  # returns at once; the check thread is a daemon
         if self.recorder.is_recording:
             self._stop_scrolling()
             path = self.recorder.stop()  # finish writing the file before exiting
