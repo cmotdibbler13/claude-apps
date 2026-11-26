@@ -67,7 +67,7 @@ test("planAudio writes the plan with SFX ids and Stable Audio by default, and re
   assert.equal(a.flowId, null);
   assert.deepEqual(a.score, { id: "SCORE", cue: "Score", prompt: PLAN.score.prompt, durationS: 412, takes: [], chosen: null, approved: false, node: null, est: null });
   assert.deepEqual(a.sfx.map((x) => x.id), ["SFX-01", "SFX-02"]);
-  assert.deepEqual(a.sfx[0], { id: "SFX-01", cue: "door creak", prompt: PLAN.sfx[0].prompt, durationS: 3, loop: false, source: "stableaudio", takes: [], chosen: null, approved: false, node: null, est: null });
+  assert.deepEqual(a.sfx[0], { id: "SFX-01", cue: "door creak", prompt: PLAN.sfx[0].prompt, durationS: 3, loop: false, source: "stableaudio", lineId: null, startS: null, takes: [], chosen: null, approved: false, node: null, est: null });
   assert.equal(a.sfx[1].loop, true);
   assert.ok((await s.store.readLog()).some((l) => l.text === "Music and sound effects planned (2 cues)"));
   await assert.rejects(() => planAudio(s.host, s.store, { scriptText: "x", handoverText: "y" }), /Music and sound effects are already planned\./);
@@ -346,4 +346,82 @@ test("an existing file for the take refuses the start and adds no job", async ()
   await s.host.fs.write(MEDIA + "Film_A_sfx_sfx-02_harbour-wind_t1.mp3", "x");
   await assert.rejects(() => startAudioTake(s.ctx, "SFX-02"), /already there/);
   assert.equal(s.jobs.list().length, 0);
+});
+
+// ---- sound effect start times ----
+import { proposeStarts } from "../js/audioplan.js";
+
+const ROWS = [
+  { clip: "04", section: "A", name: "four", start_s: 40.25, end_s: 50 },
+  { clip: "05", section: "A", name: "five", start_s: 59.3, end_s: 70 },
+];
+
+test("PLAN_INSTRUCTIONS asks for a lineId and new cues start unplaced", async () => {
+  assert.match(PLAN_INSTRUCTIONS, /lineId/);
+  const s = await planned();
+  assert.equal(s.store.state.audio.sfx[0].startS, null);
+  assert.equal(s.store.state.audio.sfx[0].lineId, null);
+});
+
+test("planAudio keeps a valid lineId and rejects a bad one", async () => {
+  const s = await setup();
+  s.host.claudeScript(() => ({ ...structuredClone(PLAN), sfx: [{ ...PLAN.sfx[0], lineId: "05.2" }] }));
+  await planAudio(s.host, s.store, { scriptText: "a", handoverText: "b" });
+  assert.equal(s.store.state.audio.sfx[0].lineId, "05.2");
+  const t = await setup();
+  t.host.claudeScript(() => ({ ...structuredClone(PLAN), sfx: [{ ...PLAN.sfx[0], lineId: "line five" }] }));
+  await assert.rejects(() => planAudio(t.host, t.store, { scriptText: "a", handoverText: "b" }));
+});
+
+test("proposeStarts fills a cue from its clip start plus 6 and leaves a Jon-edited cue alone", async () => {
+  const s = await planned();
+  await s.store.update((d) => {
+    d.audio.sfx[0].lineId = "05.2";
+    d.audio.sfx[1].lineId = "04.1";
+    d.audio.sfx[1].startS = 99;
+    d.audio.sfx[1].startSBy = "jon";
+  });
+  const filled = await proposeStarts(s.store, ROWS, null);
+  assert.deepEqual(filled, ["SFX-01"]);
+  assert.ok(Math.abs(s.store.state.audio.sfx[0].startS - 65.3) < 1e-9);
+  assert.equal(s.store.state.audio.sfx[1].startS, 99);
+});
+
+test("proposeStarts skips cues with no lineId or a clip missing from the timings", async () => {
+  const s = await planned();
+  await s.store.update((d) => { d.audio.sfx[1].lineId = "09.1"; });
+  assert.deepEqual(await proposeStarts(s.store, ROWS, null), []);
+  assert.equal(s.store.state.audio.sfx[0].startS, null);
+  assert.equal(s.store.state.audio.sfx[1].startS, null);
+});
+
+test("editItem accepts startS as m:ss.s, m:ss and seconds, marks Jon, and keeps the estimate", async () => {
+  const s = await planned();
+  await s.store.update((d) => { d.audio.sfx[0].est = { credits: 5, sig: "x" }; });
+  await editItem(s.store, "SFX-01", { startS: "1:05.3" });
+  const x = () => s.store.state.audio.sfx[0];
+  assert.ok(Math.abs(x().startS - 65.3) < 1e-9);
+  assert.equal(x().startSBy, "jon");
+  assert.deepEqual(x().est, { credits: 5, sig: "x" });
+  await editItem(s.store, "SFX-01", { startS: "2:10" });
+  assert.equal(x().startS, 130);
+  await editItem(s.store, "SFX-01", { startS: "75.5" });
+  assert.equal(x().startS, 75.5);
+  await editItem(s.store, "SFX-01", { startS: 12 });
+  assert.equal(x().startS, 12);
+  await editItem(s.store, "SFX-01", { startS: "" });
+  assert.equal(x().startS, null);
+  assert.equal(x().startSBy, undefined);
+  await assert.rejects(() => editItem(s.store, "SFX-01", { startS: "soon" }), /Starts at/);
+  await assert.rejects(() => editItem(s.store, "SFX-01", { startS: "-3" }), /Starts at/);
+});
+
+test("editItem validates lineId and refuses startS on the score", async () => {
+  const s = await planned();
+  await editItem(s.store, "SFX-01", { lineId: "05.2" });
+  assert.equal(s.store.state.audio.sfx[0].lineId, "05.2");
+  await editItem(s.store, "SFX-01", { lineId: null });
+  assert.equal(s.store.state.audio.sfx[0].lineId, null);
+  await assert.rejects(() => editItem(s.store, "SFX-01", { lineId: "five" }));
+  await assert.rejects(() => editItem(s.store, "SCORE", { startS: "0:10" }));
 });

@@ -542,3 +542,12 @@ test("audio: a running take does not hide check again on a different failed take
   ], log: null, retried: new Set() });
   assert.equal(sa.rows.find((r) => r.id === "g").canRetry, true);
 });
+
+test("the card shows the start time as m:ss.s, or Not placed yet", () => {
+  const c = { id: "SFX-01", cue: "door creak", prompt: "p", durationS: 3, takes: [], source: "stableaudio" };
+  const m = audioModel({ score: null, sfx: [c, { ...c, id: "SFX-02", startS: 65.3 }] }, { sa: { state: "off" } }).sfx;
+  assert.equal(m[0].startText, "");
+  assert.equal(m[0].placedNote, "Not placed yet");
+  assert.equal(m[1].startText, "1:05.3");
+  assert.equal(m[1].placedNote, null);
+});

@@ -2,6 +2,7 @@
 // audioModel is pure; audioSections builds the DOM from it.
 import { h, btn, toolLabel } from "./dom.js";
 import { nodeSig } from "../tools/elevenlabs.js";
+import { formatStart } from "../audioplan.js";
 
 const SA_LABEL = { off: "Off", starting: "Starting…", ready: "Ready", music: "Music model loaded", failed: "Didn't start" };
 const SOURCES = ["stableaudio", "elevenlabs"];
@@ -62,6 +63,8 @@ export function itemModel(item, { pending = false, estimating = false, error = n
     prompt: item.prompt ?? "",
     durationS: item.durationS ?? null,
     loop: !!item.loop,
+    startText: score ? "" : formatStart(item.startS),
+    placedNote: score || (item.startS != null && item.startS !== "") ? null : "Not placed yet",
     loopShown: !score && source === "elevenlabs",
     source,
     sourceLabel: toolLabel(source),
@@ -160,6 +163,20 @@ function lengthBox(c, actions) {
   return h("label", { class: "aopt" }, h("span", { text: "Length" }), inp, h("span", { text: "s" }));
 }
 
+function startBox(c, actions) {
+  const key = `au-${c.id}-start`;
+  const inp = h("input", { type: "text", id: key, class: "alen", placeholder: "m:ss.s", size: 7,
+    "aria-label": `Film time ${c.cue} starts at`, disabled: !c.canEdit });
+  inp.value = actions.field(key) ?? c.startText;
+  inp.addEventListener("input", () => actions.setField(key, inp.value));
+  inp.addEventListener("change", () => {
+    const v = inp.value;
+    actions.setField(key, v);
+    saveTyped(actions, c.id, key, v, c.startText, { startS: v });
+  });
+  return h("label", { class: "aopt" }, h("span", { text: "Starts at" }), inp);
+}
+
 function loopBox(c, actions) {
   const cb = h("input", { type: "checkbox", id: `au-${c.id}-loop`, disabled: !c.canEdit });
   cb.checked = c.loop;
@@ -215,7 +232,8 @@ function audioCard(c, actions) {
       c.isScore ? null : h("div", { class: "d", text: c.cue }),
       sw,
       promptBox(c, actions),
-      h("div", { class: "aopts" }, lengthBox(c, actions), c.loopShown ? loopBox(c, actions) : null),
+      h("div", { class: "aopts" }, lengthBox(c, actions), c.isScore ? null : startBox(c, actions), c.loopShown ? loopBox(c, actions) : null),
+      c.placedNote ? h("div", { class: "hist", text: c.placedNote }) : null,
       c.takes.length ? h("ul", { class: "atakes" }, c.takes.map((t) => takeRow(c, t, actions))) : h("div", { class: "hist", text: "No take yet" }),
       history.length ? h("div", { class: "hist" }, "History: ", history.join("; ")) : null,
       c.nextNote ? h("div", { class: "hist", text: c.nextNote }) : null,

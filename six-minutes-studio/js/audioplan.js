@@ -18,9 +18,10 @@ The sound effects: one cue for each sound effect on the approved list in the han
 - cue: a short name for the sound, two to four words, for example "door creak".
 - prompt: one plain description of the sound for a sound-effect generator: the source, the space and the character, for example "an old wooden door creaks slowly open in a quiet stone hallway". No music, no speech.
 - durationS: a whole number of seconds from 1 to 30.
+- lineId: the line the cue sits under, as an id from the line script or handover such as "05.2", or null when you cannot tell.
 - loop: true only for ambience (a bed of sound that runs under a scene, such as wind, rain or a room tone); false for everything else.
 
-Reply with JSON only: {"score": {"prompt": "...", "durationS": 0}, "sfx": [{"cue": "...", "prompt": "...", "durationS": 0, "loop": false}]}.`;
+Reply with JSON only: {"score": {"prompt": "...", "durationS": 0}, "sfx": [{"cue": "...", "prompt": "...", "durationS": 0, "lineId": "05.2", "loop": false}]}.`;
 
 const REWRITE_INSTRUCTIONS = `You improve one music or sound-effect generation prompt for a Six Minutes On... documentary film (dark, calm, precise, British English).
 You get the item (id, cue, kind, length in seconds, loop), the previous prompt and Jon's note. Change the previous prompt to follow the note and keep everything else the same.
@@ -72,6 +73,37 @@ function length(id, v) {
   return n;
 }
 
+const LINE_ID = /^\d+(\.\d+)?$/;
+const FILM_OFFSET_S = 6; // the cold-open hold: film time = voiceover time + 6
+function lineId(v) {
+  if (v == null || v === "") return null;
+  if (typeof v !== "string" || !LINE_ID.test(v.trim())) throw new Error("A line id looks like 05 or 05.2.");
+  return v.trim();
+}
+const STARTS_AT = "Starts at needs a time like 1:05.3, 1:05 or 65 seconds.";
+// "m:ss.s", "m:ss", or seconds (number or numeric string). "" or null clears it.
+export function parseStart(v) {
+  if (v == null || (typeof v === "string" && v.trim() === "")) return null;
+  let n;
+  if (typeof v === "number") n = v;
+  else {
+    const t = String(v).trim();
+    const m = /^(\d+):([0-5]?\d(?:\.\d+)?)$/.exec(t);
+    if (m) n = Number(m[1]) * 60 + Number(m[2]);
+    else if (/^\d+(\.\d+)?$/.test(t)) n = Number(t);
+    else throw new Error(STARTS_AT);
+  }
+  if (!Number.isFinite(n) || n < 0) throw new Error(STARTS_AT);
+  return n;
+}
+export function formatStart(s) {
+  if (s == null || !Number.isFinite(Number(s))) return "";
+  const tenths = Math.round(Number(s) * 10);
+  const m = Math.floor(tenths / 600);
+  const rest = (tenths - m * 600) / 10;
+  return `${m}:${rest < 10 ? "0" : ""}${rest.toFixed(1)}`;
+}
+
 const newItem = (id, cue, prompt, durationS, extra = {}) => ({
   id, cue, prompt, durationS, ...extra, takes: [], chosen: null, approved: false, node: null, est: null,
 });
@@ -87,6 +119,7 @@ function validatePlan(v) {
     if (!c || !filled(c.cue) || !filled(c.prompt)) throw new Error(`cue ${i + 1} has no name or prompt`);
     if (!inRange(Number(c.durationS), SFX_RANGE)) throw new Error(`cue ${i + 1} length is not 1 to 30 seconds`);
     if (c.loop !== undefined && typeof c.loop !== "boolean") throw new Error(`cue ${i + 1} loop is not true or false`);
+    try { lineId(c.lineId); } catch { throw new Error(`cue ${i + 1} lineId is not a line id or null`); }
   });
 }
 
@@ -109,7 +142,7 @@ export async function planAudio(host, store, { scriptText, handoverText }) {
       flowId: d.audio?.flowId ?? null,
       score: newItem("SCORE", "Score", r.score.prompt.trim(), clamp(r.score.durationS, SCORE_RANGE)),
       sfx: r.sfx.map((c, i) => newItem(`SFX-${String(i + 1).padStart(2, "0")}`, c.cue.trim(), c.prompt.trim(),
-        clamp(c.durationS, SFX_RANGE), { loop: c.loop === true, source: "stableaudio" })),
+        clamp(c.durationS, SFX_RANGE), { loop: c.loop === true, source: "stableaudio", lineId: lineId(c.lineId), startS: null })),
     };
   });
   await store.log(`Music and sound effects planned (${r.sfx.length} cues)`);
@@ -124,7 +157,7 @@ export async function addCue(store, { cue, prompt, durationS } = {}) {
     d.audio.sfx ??= [];
     const top = d.audio.sfx.reduce((m, x) => Math.max(m, Number(/^SFX-(\d+)$/.exec(x.id)?.[1] ?? 0)), 0);
     id = `SFX-${String(top + 1).padStart(2, "0")}`;
-    d.audio.sfx.push(newItem(id, cue.trim(), filled(prompt) ? prompt.trim() : "", secs, { loop: false, source: "stableaudio" }));
+    d.audio.sfx.push(newItem(id, cue.trim(), filled(prompt) ? prompt.trim() : "", secs, { loop: false, source: "stableaudio", lineId: null, startS: null }));
   });
   await store.log(`${id} added: ${cue.trim()}`);
   return id;
@@ -145,17 +178,53 @@ export async function editItem(store, id, patch = {}) {
     if (isScore(id) && patch.source !== "elevenlabs") throw new Error("The score is made on ElevenLabs.");
     if (!isScore(id)) next.source = patch.source;
   }
+  if (patch.lineId !== undefined) {
+    if (isScore(id)) throw new Error("The score has no line.");
+    next.lineId = lineId(patch.lineId);
+  }
+  let startSet = false;
+  if (patch.startS !== undefined) {
+    if (isScore(id)) throw new Error("The score runs from the start of the film.");
+    next.startS = parseStart(patch.startS);
+    startSet = true;
+  }
   const changes = Object.keys(next).filter((k) => next[k] !== item[k]);
   if (!changes.length) return;
   await store.update((d) => {
     const x = need(d, id);
     notBusy(store, x);
     for (const k of changes) x[k] = next[k];
+    if (startSet) { if (next.startS == null) delete x.startSBy; else x.startSBy = "jon"; }
     if (changes.includes("prompt")) delete x.pendingNote; // the note was for the rewritten prompt
     if (changes.some((k) => k === "prompt" || k === "durationS" || k === "loop")) x.est = null;
   });
-  const what = changes.map((k) => (k === "source" ? `now uses ${SOURCE_LABEL[next.source]}` : k === "durationS" ? "length changed" : k === "loop" ? `loop ${next.loop ? "on" : "off"}` : "prompt edited"));
+  const what = changes.map((k) => (k === "startS" ? (next.startS == null ? "start time cleared" : `starts at ${formatStart(next.startS)}`) : k === "lineId" ? "line changed" : k === "source" ? `now uses ${SOURCE_LABEL[next.source]}` : k === "durationS" ? "length changed" : k === "loop" ? `loop ${next.loop ? "on" : "off"}` : "prompt edited"));
   await store.log(`${labelOf(item)}: ${what.join(", ")}`);
+}
+
+// Fill start times from the voiceover timings: the cue's clip start plus the 6 second hold.
+// Only cues with a line id whose clip is in the timings, and never one Jon set himself. Returns the ids filled.
+export async function proposeStarts(store, timingsRows, lineScript) {
+  void lineScript; // the line id alone names the clip; the script is accepted for callers that hold it
+  const starts = new Map();
+  for (const r of timingsRows ?? []) {
+    const clip = String(r?.clip ?? "");
+    const t = Number(r?.start_s);
+    if (!clip || !Number.isFinite(t)) continue;
+    if (!starts.has(clip) || t < starts.get(clip)) starts.set(clip, t);
+  }
+  const done = [];
+  await store.update((d) => {
+    for (const x of d.audio?.sfx ?? []) {
+      if (!x.lineId || x.startSBy === "jon") continue;
+      const t = starts.get(String(x.lineId).split(".")[0]);
+      if (t === undefined) continue;
+      x.startS = Math.round((t + FILM_OFFSET_S) * 1000) / 1000;
+      done.push(x.id);
+    }
+  });
+  if (done.length) await store.log(`Start times proposed for ${done.join(", ")}`);
+  return done;
 }
 
 // One flow per film, made on first use. Concurrent callers share the one request.
