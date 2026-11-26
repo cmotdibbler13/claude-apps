@@ -1,6 +1,7 @@
 // Probe view: checks the PC and connectors. Never calls a generate tool.
 import { runProcess } from "../proc.js";
 import { DEFAULT_SETTINGS } from "../settings.js";
+import { stableAudioState, MSG_MUSIC } from "../tools/stableaudio.js";
 
 const ROOT = "S:\\Youtube video ideas\\";
 const UNC = "\\\\192.168.1.171\\jon\\Youtube video ideas\\";
@@ -28,6 +29,23 @@ const comfyCheck = (comfy) => async (host) => {
   return typeof version === "string" && version ? `ComfyUI ${version}` : "running";
 };
 
+// Stable Audio: the page title says Small SFX and /gradio_api/info lists /generate. Never starts it.
+const stableAudioCheck = (sa) => async (host) => {
+  const s = await stableAudioState(host, sa);
+  if (s === "ready") return "Ready (Small SFX)";
+  if (s === "off") throw new Error("Off: press Start Stable Audio on a film's Review");
+  if (s === "music") throw new Error(MSG_MUSIC);
+  throw new Error(`Not ready: look at Stable Audio in Pinokio (${sa.url})`);
+};
+
+const toolsCheck = (server, want) => async (host) => {
+  if (!host.mcp) throw new Error("connector access is not available");
+  const tools = await host.mcp.listTools(server);
+  const missing = want.filter((t) => !tools.includes(t));
+  if (missing.length) throw new Error(`missing: ${missing.join(", ")}`);
+  return `${tools.length} tools`;
+};
+
 export const makeChecks = (settings = DEFAULT_SETTINGS) => [
   { name: "S: root readable", run: listCheck(ROOT) },
   { name: "UNC root readable", run: listCheck(UNC) },
@@ -35,6 +53,7 @@ export const makeChecks = (settings = DEFAULT_SETTINGS) => [
   { name: "ffmpeg", run: cmdCheck("ffmpeg", ["-version"]) },
   { name: "curl", run: cmdCheck("curl", ["--version"]) },
   { name: "ComfyUI", run: comfyCheck(settings.comfy ?? DEFAULT_SETTINGS.comfy) },
+  { name: "Stable Audio", run: stableAudioCheck({ ...DEFAULT_SETTINGS.stableAudio, ...(settings.stableAudio ?? {}) }) },
   {
     name: "Higgsfield tools",
     async run(host) {
@@ -46,6 +65,7 @@ export const makeChecks = (settings = DEFAULT_SETTINGS) => [
       return `${tools.length} tools`;
     },
   },
+  { name: "ElevenLabs tools", run: toolsCheck("ElevenLabs", ["creative_create_flow", "creative_add_flow_node", "creative_run_flow_nodes", "creative_get_flow_run_status"]) },
   {
     name: "Claude answers JSON",
     async run(host) {

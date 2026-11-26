@@ -24,7 +24,7 @@ export function jobRow(job, index, jobs, retried) {
   // Not when a later job covers this take, or another take of the same shot is still queued or running.
   const superseded = jobs.slice(index + 1).some((k) => same(k, job))
     || jobs.some((k) => k !== job && active(k) && sameFilm(k, job) && k.assetId !== undefined && k.assetId === job.assetId);
-  const hf = job.tool === "higgsfield", comfy = job.tool === "comfyui";
+  const hf = job.tool === "higgsfield", comfy = job.tool === "comfyui", eleven = job.tool === "elevenlabs";
   const unsure = ended && (job.ambiguous || (job.status === "interrupted" && !job.jobRef));
   return {
     id: job.id,
@@ -38,13 +38,16 @@ export function jobRow(job, index, jobs, retried) {
     indeterminate: job.status === "running" && pct === null,
     eta,
     error: ended ? job.error ?? (job.status === "interrupted" ? "Interrupted when the app closed" : "Failed") : null,
-    canRetry: ended && !retried.has(job.id) && !superseded,
-    // Checking by job id (or ComfyUI prompt id) is free; running Higgsfield again is a new paid generation.
-    canCheck: ended && !!job.jobRef && (hf || comfy) && !superseded,
+    // An ElevenLabs re-run is paid, and its cost is shown only on the card's Generate button.
+    canRetry: ended && !eleven && !retried.has(job.id) && !superseded,
+    retryNote: ended && eleven ? "Make a new take from its card" : null,
+    // Checking by job id (or ComfyUI prompt id, or ElevenLabs flow run) is free; running Higgsfield again is a new paid generation.
+    canCheck: ended && !!job.jobRef && (hf || comfy || eleven) && !superseded,
     retryLabel: hf ? "Run again (new generation, uses credits)" : "Run again",
     warning: !unsure ? null
       : hf ? "Check Higgsfield first: this job may still be running."
-      : comfy ? "Check ComfyUI first: this render may still be running." : null,
+      : comfy ? "Check ComfyUI first: this render may still be running."
+      : eleven ? "Check ElevenLabs first: this take may still be running." : null,
   };
 }
 
@@ -85,7 +88,8 @@ function jobCard(r, actions) {
     r.warning ? h("div", { class: "warn", text: r.warning }) : null,
     r.error ? h("div", { class: "row" },
       r.canCheck ? btn("Check again", (e) => { e.currentTarget.disabled = true; actions.check(r.id); }) : null,
-      btn(r.retryLabel, (e) => { e.currentTarget.disabled = true; actions.retry(r.id); }, { ghost: true, disabled: !r.canRetry })) : null,
+      r.retryNote ? h("span", { class: "hist", text: r.retryNote })
+        : btn(r.retryLabel, (e) => { e.currentTarget.disabled = true; actions.retry(r.id); }, { ghost: true, disabled: !r.canRetry })) : null,
   );
 }
 

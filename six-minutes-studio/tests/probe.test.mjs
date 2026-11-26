@@ -93,3 +93,56 @@ test("ComfyUI check fails when the workflow file is missing or its path is not s
   assert.equal(unset.ok, false);
   assert.equal(unset.detail, "Workflow path not set yet; open Films first");
 });
+
+// ---- Stable Audio and ElevenLabs ----
+const saSettings = { ...settings, stableAudio: { url: "http://127.0.0.1:7860" } };
+const saCheck = (results) => results.find((r) => r.name === "Stable Audio");
+
+test("Stable Audio check passes on the Small SFX page with /generate", async () => {
+  const host = new FakeHost();
+  host.spawnScript((cmd, args, o, p) => {
+    const url = args.at(-1);
+    if (url === "http://127.0.0.1:7860/") { p.out("<html><title>Stable Audio 3 Small SFX</title></html>"); return p.exit(0); }
+    if (url === "http://127.0.0.1:7860/gradio_api/info") { p.out('{"named_endpoints":{"/generate":{}}}'); return p.exit(0); }
+    p.out("ok"); p.exit(0);
+  });
+  host.fs.list = async () => [];
+  const r = saCheck(await runChecks(host, () => {}, saSettings));
+  assert.equal(r.ok, true);
+  assert.equal(r.detail, "Ready (Small SFX)");
+});
+
+test("Stable Audio check: connection refused says how to start it; the Music model says so", async () => {
+  const host = new FakeHost();
+  host.spawnScript((cmd, args, o, p) => {
+    if (String(args.at(-1)).startsWith("http://127.0.0.1:7860")) { p.err("curl: (7) Failed to connect"); return p.exit(7); }
+    p.out("ok"); p.exit(0);
+  });
+  host.fs.list = async () => [];
+  const r = saCheck(await runChecks(host, () => {}, saSettings));
+  assert.equal(r.ok, false);
+  assert.equal(r.detail, "Off: press Start Stable Audio on a film's Review");
+
+  const h2 = new FakeHost();
+  h2.spawnScript((cmd, args, o, p) => {
+    if (args.at(-1) === "http://127.0.0.1:7860/") { p.out("<title>Stable Audio 3 Music</title>"); return p.exit(0); }
+    p.out("ok"); p.exit(0);
+  });
+  h2.fs.list = async () => [];
+  const r2 = saCheck(await runChecks(h2, () => {}, saSettings));
+  assert.equal(r2.ok, false);
+  assert.match(r2.detail, /Stable Audio Music is running/);
+});
+
+test("ElevenLabs tools check lists the flow tools it needs", async () => {
+  const host = new FakeHost();
+  host.spawnScript((cmd, args, o, p) => { p.out("ok"); p.exit(0); });
+  host.fs.list = async () => [];
+  host.mcp.listTools = async (server) => (server === "ElevenLabs" ? ["creative_create_flow", "creative_add_flow_node", "creative_run_flow_nodes"] : []);
+  const r = (await runChecks(host, () => {}, saSettings)).find((x) => x.name === "ElevenLabs tools");
+  assert.equal(r.ok, false);
+  assert.equal(r.detail, "missing: creative_get_flow_run_status");
+  host.mcp.listTools = async () => ["creative_create_flow", "creative_add_flow_node", "creative_run_flow_nodes", "creative_get_flow_run_status"];
+  const ok = (await runChecks(host, () => {}, saSettings)).find((x) => x.name === "ElevenLabs tools");
+  assert.equal(ok.ok, true);
+});

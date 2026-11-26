@@ -364,3 +364,122 @@ test("cardModel can3d: line art without a Blender version, when free", () => {
   assert.equal(cardModel(running, [running]).can3d, false);
   assert.equal(cardModel(la, [la], { pending: true }).can3d, false);
 });
+
+// ---- Score and sound effects ----
+import { audioModel } from "../js/ui/audio.js";
+import { nodeSig } from "../js/tools/elevenlabs.js";
+
+const score = (o = {}) => ({ id: "SCORE", cue: "Score", prompt: "Dark ambient. Energy arc: 0:00 drone", durationS: 372, takes: [], chosen: null, approved: false, node: null, est: null, ...o });
+const cue = (o = {}) => ({ id: "SFX-01", cue: "door creak", prompt: "an old door creaks", durationS: 4, loop: false, source: "stableaudio", takes: [], chosen: null, approved: false, node: null, est: null, ...o });
+const sa = (state = "off", message = null) => ({ state, message });
+
+test("audio: nothing planned yet needs a plan", () => {
+  assert.equal(audioModel(undefined, { sa: sa() }).needsPlan, true);
+  assert.equal(audioModel({ flowId: null, score: null, sfx: [] }, { sa: sa() }).needsPlan, true);
+  assert.equal(audioModel({ score: score(), sfx: [] }, { sa: sa() }).needsPlan, false);
+});
+
+test("audio: the score on ElevenLabs shows 2 takes at twice the current estimate", () => {
+  const s = score();
+  const fresh = audioModel({ score: { ...s, est: { credits: 6149, sig: nodeSig("score", s) } }, sfx: [] }, { sa: sa() }).score;
+  assert.equal(fresh.source, "elevenlabs");
+  assert.equal(fresh.sourceLabel, "ElevenLabs");
+  assert.equal(fresh.generateLabel, "Generate 2 takes · about 12298 credits");
+  assert.equal(fresh.canGenerate, true);
+  assert.equal(fresh.estStale, false);
+  const stale = audioModel({ score: { ...s, est: { credits: 6149, sig: "old" } }, sfx: [] }, { sa: sa() }).score;
+  assert.equal(stale.generateLabel, "Get the cost");
+  assert.equal(stale.canGenerate, false);
+  assert.equal(stale.estStale, true);
+  assert.equal(stale.est, null);
+});
+
+test("audio: getting the cost shows while the card is pending", () => {
+  const m = audioModel({ score: score(), sfx: [] }, { sa: sa(), pending: new Set(["SCORE"]) }).score;
+  assert.equal(m.generateLabel, "Getting the cost…");
+  assert.equal(m.canGenerate, false);
+});
+
+test("audio: an ElevenLabs cue is one take at the estimate", () => {
+  const c = cue({ source: "elevenlabs", loop: true });
+  const m = audioModel({ score: null, sfx: [{ ...c, est: { credits: 80, sig: nodeSig("sfx", c) } }] }, { sa: sa() }).sfx[0];
+  assert.equal(m.generateLabel, "Generate take · about 80 credits");
+  assert.equal(m.canGenerate, true);
+  assert.equal(m.loopShown, true);
+});
+
+test("audio: a Stable Audio cue is free", () => {
+  const m = audioModel({ score: score(), sfx: [cue()] }, { sa: sa() }).sfx[0];
+  assert.equal(m.generateLabel, "Generate take · Free");
+  assert.equal(m.canGenerate, true);
+  assert.equal(m.sourceLabel, "Stable Audio");
+  assert.equal(m.loopShown, false);
+});
+
+test("audio: a quiet take gets its chip, the playing file is marked, levels read plainly", () => {
+  const takes = [
+    { n: 1, source: "stableaudio", prompt: "p", status: "done", file: "a.wav", lengthS: 4, peakDb: -5.2, meanDb: -20, quiet: false },
+    { n: 2, source: "stableaudio", prompt: "p", status: "done", file: "b.wav", lengthS: 4, peakDb: -40, meanDb: -60, quiet: true },
+  ];
+  const m = audioModel({ score: score(), sfx: [cue({ takes, chosen: 2 })] }, { sa: sa(), playing: "b.wav" }).sfx[0];
+  assert.equal(m.takes[0].meta, "4.0 s · peak -5 dB");
+  assert.equal(m.takes[0].chip, null);
+  assert.equal(m.takes[0].playing, false);
+  assert.equal(m.takes[1].chip, "Near-silent");
+  assert.equal(m.takes[1].playing, true);
+  assert.equal(m.takes[1].chosen, true);
+  assert.equal(m.canApprove, true);
+});
+
+test("audio: Stable Audio chip labels and Start", () => {
+  const lbl = (s) => audioModel({ score: score(), sfx: [] }, { sa: sa(s) }).sa;
+  assert.equal(lbl("off").label, "Off");
+  assert.equal(lbl("starting").label, "Starting…");
+  assert.equal(lbl("starting").canStart, false);
+  assert.equal(lbl("ready").label, "Ready");
+  assert.equal(lbl("ready").canStart, false);
+  assert.equal(lbl("music").label, "Music model loaded");
+  assert.equal(lbl("failed").label, "Didn't start");
+  assert.equal(lbl("failed").canStart, true);
+});
+
+test("audio: a busy take blocks generate, approve and edits; a pending note shows", () => {
+  const takes = [{ n: 1, source: "stableaudio", prompt: "p", status: "running" }];
+  const m = audioModel({ score: score(), sfx: [cue({ takes, chosen: 1, pendingNote: "drier" })] }, { sa: sa() }).sfx[0];
+  assert.equal(m.busy, true);
+  assert.equal(m.canGenerate, false);
+  assert.equal(m.canApprove, false);
+  assert.equal(m.canEdit, false);
+  assert.equal(m.nextNote, "Next take: from your note “drier”");
+});
+
+test("review model carries the audio sections, with or without a shot list", () => {
+  const f = film();
+  const a = reviewModel({ film: f, state: { assets: [] }, sa: sa() });
+  assert.equal(a.audio.needsPlan, true);
+  const b = reviewModel({ film: f, state: { assets: [asset()], audio: { score: score(), sfx: [cue()] } }, sa: sa("ready") });
+  assert.equal(b.audio.needsPlan, false);
+  assert.equal(b.audio.sa.label, "Ready");
+  assert.equal(b.audio.sfx.length, 1);
+});
+
+test("live jobs: ElevenLabs never offers Run again, but checks when it has a job ref; Stable Audio runs again", () => {
+  const m = jobsModel({ jobs: [
+    job({ id: "a", assetId: "SCORE", tool: "elevenlabs", status: "failed", error: "x", jobRef: "F1", ambiguous: true }),
+    job({ id: "b", assetId: "SFX-01", tool: "elevenlabs", status: "interrupted" }),
+    job({ id: "c", assetId: "SFX-02", tool: "stableaudio", lane: "gpu", status: "failed", error: "y" }),
+  ], log: null, retried: new Set() });
+  const by = Object.fromEntries(m.rows.map((r) => [r.id, r]));
+  assert.equal(by.a.tool, "ElevenLabs");
+  assert.equal(by.a.canCheck, true);
+  assert.equal(by.a.canRetry, false);
+  assert.equal(by.a.retryNote, "Make a new take from its card");
+  assert.equal(by.a.warning, "Check ElevenLabs first: this take may still be running.");
+  assert.equal(by.b.canCheck, false);
+  assert.equal(by.b.canRetry, false);
+  assert.equal(by.c.tool, "Stable Audio");
+  assert.equal(by.c.canRetry, true);
+  assert.equal(by.c.retryLabel, "Run again");
+  assert.equal(by.c.retryNote, null);
+  assert.equal(by.c.canCheck, false);
+});

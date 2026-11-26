@@ -14,6 +14,9 @@ import { ensureProxy, toBlobUrl, openFull, revokeAll } from "./media.js";
 import { makeHiggsfieldRunner } from "./tools/higgsfield.js";
 import { makeBlenderRunner } from "./tools/blender.js";
 import { makeComfyRunner } from "./tools/comfyui.js";
+import { makeStableAudioStarter, makeStableAudioRunner } from "./tools/stableaudio.js";
+import { makeElevenRunner } from "./tools/elevenlabs.js";
+import { planAudio, addCue, editItem, getEstimate, rewriteFromNote, startAudioTake, approveAudio, unapproveAudio, chooseAudio } from "./audioplan.js";
 import { mountProbe } from "./ui/probe.js";
 import * as filmsView from "./ui/films.js";
 import * as jobsView from "./ui/jobs.js";
@@ -27,6 +30,7 @@ const app = {
   host: null, root: null, jobs: null, films: [], view: "films",
   film: null, store: null, session: null, playing: null, retried: new Set(), movedAside: null, stateError: null, bootError: null, openError: null,
   review: { making: false, listError: null, cardErrors: new Map(), pending: new Set(), noteFor: null, draft: "" },
+  starter: null, saBusy: false,
   previews: new Map(),
   layout: (() => { try { return localStorage.getItem(LAYOUT_KEY) || "script"; } catch { return "script"; } })(),
 };
@@ -101,7 +105,7 @@ function onJobsChanged(list) {
 
 // ---- rendering ----
 // Coalesce bursts (Blender reports every frame) into one render; skip views whose model has not changed.
-let timer = null;
+let timer = null, rendering = false;
 const last = {};
 function render() {
   if (timer) return;
@@ -114,9 +118,18 @@ function paint(name, el, model, view, actions) {
   last[name] = sig;
   // A re-render replaces the note box; keep the caret there if Jon was typing (or just opened it).
   const refocus = document.activeElement?.id === "note-box" || (name === "review" && app.review.focusNote);
-  view.render(el, model, actions);
+  // An audio prompt, length or cue box Jon is typing in keeps its caret across the re-render.
+  const act = document.activeElement;
+  const keep = act?.id?.startsWith("au-") ? { id: act.id, start: act.selectionStart ?? null, end: act.selectionEnd ?? null } : null;
+  rendering = true;
+  try { view.render(el, model, actions); } finally { rendering = false; }
   const ta = refocus ? $("note-box") : null;
   if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); app.review.focusNote = false; }
+  const back = keep && !ta ? $(keep.id) : null;
+  if (back && !back.disabled) {
+    back.focus();
+    try { if (keep.start !== null) back.setSelectionRange(keep.start, keep.end); } catch { /* number inputs have no selection */ }
+  }
 }
 
 async function renderNow() {
@@ -149,6 +162,9 @@ async function renderNow() {
     const model = reviewView.reviewModel({
       film: app.film, state: app.store?.state, layout: app.layout, making: r.making, listError: r.listError,
       cardErrors: r.cardErrors, pending: r.pending, noteFor: r.noteFor, openError: app.openError, prefError: r.prefError ?? null, narration: r.narration ?? null, playing: app.playing,
+      audio: app.store?.state?.audio ?? null,
+      sa: app.starter ? { state: app.starter.state(), message: app.starter.message() } : null,
+      audioUi: { planning: !!r.planning, planError: r.planError ?? null, adding: !!r.adding, addError: r.addError ?? null },
     });
     paint("review", $("view-review"), model, reviewView, reviewActions);
   }
@@ -163,11 +179,17 @@ async function loadRoot() {
     const settings = await loadSettings(host, app.root);
     app.settings = settings;
     const file = join(app.root, ".studio-jobs.json");
+    // One Stable Audio starter for the app: the runner starts it when a take needs it, Review shows its state.
+    const starter = makeStableAudioStarter({ settings, sleep: (ms) => new Promise((res) => setTimeout(res, ms)) });
+    app.starter = starter;
+    starter.onChange(() => render());
     app.jobs = makeJobs(host, {
       runners: {
         higgsfield: makeHiggsfieldRunner({ settings }),
         blender: makeBlenderRunner({ settings }),
         comfyui: makeComfyRunner({ settings }),
+        stableaudio: makeStableAudioRunner({ settings, starter }),
+        elevenlabs: makeElevenRunner({}),
       },
       file,
     });
@@ -200,6 +222,7 @@ function resetReview() {
   app.previews.clear();
   revokeAll();
   app.review = { making: false, listError: null, cardErrors: new Map(), pending: new Set(), noteFor: null, draft: "" };
+  fields.clear();
 }
 
 // The session keeps one store and one watcher; a superseded open resolves to null and is ignored.
@@ -230,6 +253,8 @@ async function openReview(dir) {
 const jobsActions = {
   retry(id) {
     if (app.retried.has(id)) return;
+    // An ElevenLabs re-run is paid: new takes start only from the card, where the cost is shown.
+    if (app.jobs?.list().find((j) => j.id === id)?.tool === "elevenlabs") return;
     app.retried.add(id);
     userStarted();
     try { app.jobs.retry(id); } catch (e) { console.error(e); }
@@ -336,6 +361,53 @@ async function makeShotList() {
   }
 }
 
+// ---- music and sound effects ----
+async function planMusic() {
+  const r = app.review;
+  if (r.planning) return;
+  userStarted();
+  r.planning = true; r.planError = null; render();
+  try {
+    const dir = app.film.dir;
+    const handoverText = await readText(join(dir, "handover", "part1_handover.md"));
+    if (handoverText === null) throw new Error("Couldn't read handover\\part1_handover.md.");
+    const scriptText = await findScript(dir, handoverText);
+    if (scriptText === null) throw new Error("Couldn't find the script. Add its path to part1_handover.md.");
+    await planAudio(app.host, app.store, { scriptText, handoverText });
+  } catch (e) {
+    if (app.review === r) r.planError = msg(e);
+  } finally {
+    r.planning = false;
+    render();
+  }
+}
+
+async function addAudioCue({ cue, durationS } = {}) {
+  const r = app.review;
+  if (r.adding) return;
+  r.adding = true; r.addError = null; render();
+  try {
+    await addCue(app.store, { cue, prompt: "", durationS });
+    fields.delete("au-new-cue"); fields.delete("au-new-len");
+  } catch (e) {
+    if (app.review === r) r.addError = msg(e);
+  } finally {
+    r.adding = false;
+    render();
+  }
+}
+
+// Ignored while starting; a failure shows in the Sound effects header through starter.message().
+async function startStableAudio() {
+  if (!app.starter || app.saBusy || app.starter.state() === "starting") return;
+  app.saBusy = true;
+  try { await app.starter.ensure(app.host); } catch (e) { console.error(e); }
+  finally { app.saBusy = false; render(); }
+}
+
+// Typed but not yet saved text in the audio boxes, kept across re-renders.
+const fields = new Map();
+
 function cardAction(fn) {
   return async (id, ...args) => {
     const r = app.review;
@@ -404,6 +476,37 @@ const reviewActions = {
   }),
   reopen: (dir) => { openReview(dir); },
   preview,
+  // Music and sound effects
+  planAudio: () => { planMusic(); },
+  addCue: (v) => { addAudioCue(v); },
+  editAudio: cardAction((id, patch) => editItem(app.store, id, patch)),
+  getCost: cardAction((id) => getEstimate(ctx(), id)),
+  // The score makes 2 takes a press, a cue 1. An ElevenLabs press needs a current estimate (shown on the button).
+  generateAudio: cardAction((id) => { userStarted(); return startAudioTake(ctx(), id, { count: id === "SCORE" ? 2 : 1 }); }),
+  // Stable Audio is free: rewrite and start. ElevenLabs: rewrite, then get the cost; Jon presses Generate to pay.
+  redoAudio: cardAction(async (id, note) => {
+    if (!note || !note.trim()) throw new Error("Write a note saying what should change.");
+    userStarted();
+    const item = id === "SCORE" ? app.store.state.audio?.score : app.store.state.audio?.sfx?.find((x) => x.id === id);
+    const paid = id === "SCORE" || item?.source === "elevenlabs";
+    if (paid) {
+      await rewriteFromNote(ctx(), id, note.trim());
+      fields.delete(`au-${id}-prompt`);
+      app.review.noteFor = null; app.review.draft = "";
+      await getEstimate(ctx(), id);
+    } else {
+      await startAudioTake(ctx(), id, { note: note.trim() });
+      fields.delete(`au-${id}-prompt`);
+      app.review.noteFor = null; app.review.draft = "";
+    }
+  }),
+  chooseAudio: cardAction((id, n) => chooseAudio(ctx(), id, n)),
+  approveAudio: cardAction((id) => approveAudio(ctx(), id)),
+  unapproveAudio: cardAction((id) => unapproveAudio(ctx(), id)),
+  startStableAudio: () => { startStableAudio(); },
+  field: (k) => fields.get(k),
+  setField(k, v) { if (v === undefined) fields.delete(k); else fields.set(k, v); },
+  rendering: () => rendering,
 };
 
 // ---- boot ----
@@ -464,6 +567,9 @@ async function startWithAccess(fromClick = false) {
   // closing the window hides the app instead of ending running jobs. Never asks on load.
   try { if ((await app.host.permissionState("menu-bar")) === "granted") { userStarted(); render(); } } catch { /* stay unarmed */ }
 }
+
+// Closing the app stops the Stable Audio process the app started (never one Jon started himself).
+window.addEventListener("pagehide", () => { try { Promise.resolve(app.starter?.stop()).catch(() => {}); } catch { /* closing anyway */ } });
 
 // The sticky summary bar on Review sits just under the sticky header, whatever its height.
 {

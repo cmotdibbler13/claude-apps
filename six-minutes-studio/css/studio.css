@@ -142,3 +142,25 @@ textarea{width:100%;background:var(--s0);color:var(--ink);border:1px solid var(-
 .narr .nok:hover{border-color:var(--lw);color:var(--lw)}
 .narr .nok.undo{color:var(--mut)}
 .narr .n-jon .nflag{color:var(--fnt);text-decoration:line-through}
+/* Score and sound effects: take rows, chips and the small inputs on the audio cards */
+.card.audio .atag{font-size:11px;font-weight:500;letter-spacing:.14em;text-transform:uppercase;color:var(--mut)}
+.atakes{list-style:none;margin:0;padding:0;display:grid;gap:2px}
+.arow{display:grid;grid-template-columns:28px auto auto minmax(0,1fr) auto;gap:0 10px;align-items:center;background:var(--s1);border:1px solid var(--rule);padding:4px 10px;font-size:13px}
+.arow.on{border-color:var(--brass)}
+.arow .an{font-variant-numeric:tabular-nums}
+.arow .asrc,.arow .ameta{color:var(--mut);font-size:12px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.arow .nplay{width:24px;height:22px;padding:0;background:none;border:1px solid var(--rule);color:var(--tide);font-size:10px;line-height:1;cursor:pointer}
+.arow .nplay.on{color:var(--brass);border-color:var(--brass)}
+.achip{font-size:11px;font-weight:500;letter-spacing:.14em;text-transform:uppercase;color:var(--brass);white-space:nowrap}
+.achip.sa-ready{color:var(--lw)}
+.achip.sa-starting{color:var(--tide)}
+.achip.sa-off{color:var(--fnt)}
+.achip.sa-failed{color:var(--eng)}
+.sahead{display:flex;align-items:center;gap:12px}
+.aopts,.aadd{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px}
+.aadd{margin-top:14px}
+.aopt{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--mut)}
+.aopt input[type=checkbox]{accent-color:var(--brass);width:15px;height:15px;margin:0}
+.card.audio input[type=number],.aadd input{background:var(--s0);color:var(--ink);border:1px solid var(--rule);font:13px Inter,"Helvetica Neue",Arial,sans-serif;padding:4px 6px}
+.card.audio input.alen,.aadd input.alen{width:5em}
+.aadd input[type=text]{min-width:16em}
