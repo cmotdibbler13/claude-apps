@@ -716,10 +716,51 @@ CUDA_PROBE_MODEL = "tiny.en"
 MAX_CPU_THREADS = 4
 
 
+_CUDA_PRELOADED = False
+
+
+def _preload_cuda_libs():
+    """On Windows, make the pip-installed CUDA 12 libraries (nvidia-cublas-cu12,
+    nvidia-cudnn-cu12) visible to ctranslate2. It looks up cublas64_12.dll by
+    name with the normal DLL search, which ignores site-packages, so CUDA fails
+    with "cublas64_12.dll is not found" unless the DLL is already loaded.
+    Missing packages are fine: CUDA then just stays unavailable."""
+    global _CUDA_PRELOADED
+    if _CUDA_PRELOADED or sys.platform != "win32":
+        return
+    _CUDA_PRELOADED = True
+    import ctypes
+    import glob
+    import site
+
+    roots = list(site.getsitepackages())
+    try:
+        roots.append(site.getusersitepackages())
+    except Exception:
+        pass
+    for root in roots:
+        nvidia = os.path.join(root, "nvidia")
+        if not os.path.isdir(nvidia):
+            continue
+        for bin_dir in glob.glob(os.path.join(nvidia, "*", "bin")):
+            try:
+                os.add_dll_directory(bin_dir)
+            except OSError:
+                pass
+        for name in ("cublasLt64_12.dll", "cublas64_12.dll"):
+            path = os.path.join(nvidia, "cublas", "bin", name)
+            if os.path.exists(path):
+                try:
+                    ctypes.WinDLL(path)
+                except OSError:
+                    pass
+
+
 def _faster_whisper():
     """The faster_whisper module, imported with Hugging Face's progress bars
     off (pythonw has no stderr for them to write to)."""
     os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    _preload_cuda_libs()
     import faster_whisper
     return faster_whisper
 
