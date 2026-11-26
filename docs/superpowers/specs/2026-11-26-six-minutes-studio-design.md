@@ -17,7 +17,9 @@ Jon's pain points, in his words:
    renders run for minutes with no visible progress.
 2. **No proper UI to see how the parts are going**: the b-roll, the music, the
    audio. Assets are reviewed as files and chat attachments.
-3. **Narration could be handled better.**
+3. **Narration could be handled better.** Specifically: nothing is checked until
+   *all* the narration is in, and takes can **cut off the ends of lines**, which
+   are slow to find, redo and re-listen to.
 4. **The three-part rule stays, but it "makes for a lot of sessions to keep track
    of."** Sessions sit waiting for him without his knowing.
 
@@ -111,10 +113,14 @@ handover, every in-app Claude call is memoryless, and Part 3 is a new session.
 - **Act on assets:** every b-roll clip, line-art shot, music take and sound effect
   can be **redone with a note** from the review board.
 - Keep the three-part rule, with an explicit approval at the end of each part.
-- **Blender line art:** Claude builds the scenes as Python scripts, and Blender
-  renders them headless. Redo notes go to Claude, which edits the script and
-  re-renders.
+- **Blender:** Claude builds the scenes as Python scripts, and Blender renders them
+  headless. Blender takes a 2D line-art image and makes a **3D line-art version**
+  of it; sometimes it builds a **3D model** of a place (for example the Norfolk
+  Broads model). Redo notes go to Claude, which edits the script and re-renders.
 - ComfyUI is one of his tools, to be used in the pipeline.
+- **Narration:** check each take as it arrives, not at the end, and catch
+  cut-off line endings (6.3a).
+- **Skills:** update every skill that needs it to match the app (6.7).
 
 ## 6. The design
 
@@ -167,7 +173,15 @@ render finishes, or a session is waiting for Jon.
   VoiceStudio; own: process Jon's takes) with the skill's QA and joining; the score
   (2 takes, ElevenLabs); SFX from the approved list (Stable Audio first, ElevenLabs
   fallback, 2 takes each); b-roll (Higgsfield, ComfyUI) and line art (Blender,
-  ComfyUI). Then the combined review. On approval: commit the Part 2 hand-off files
+  ComfyUI). The shot list gives each shot a proposed tool (Higgsfield, ComfyUI or
+  Blender), chosen by Claude from the shot's needs; Jon can change it before
+  generating. Also done in Part 2, as the video skill does today: proposing reuse
+  from the B-roll library (Jon decides per clip), jump-cut checks on each clip, SFX
+  levels and the music mix preview under the voiceover. **Archive images and rights
+  permissions** stay outside the app (they need web research and emails): the
+  review shows their status from `awaiting_permission.md` and
+  `images_to_download.md` in the project folder, and Jon or a Claude session does
+  that work. Then the combined review. On approval: commit the Part 2 hand-off files
   to the project folder, add approved clips to the B-roll library (catalogue JSON and
   MD, next BR- ID, thumbnail; rejected takes get a "rejected" row only), write
   `part2_handover.md`.
@@ -178,6 +192,43 @@ render finishes, or a session is waiting for Jon.
   app shows the checklist and the render progress it can read (the render's output),
   and marks Part 3 done when `part3_handover.md` appears.
 - **Shorts (fresh session).** Same pattern with `six-minutes-shorts`, after Part 3.
+
+### 6.3a Narration, checked as it arrives
+
+- **Every take is checked the moment it lands**, for both voices: a VoiceStudio
+  take when it is written to `voice files\`, an Autocue Studio take when it appears
+  in `Recordings\<project>\`. The skill's QA runs per take (transcript vs script
+  words, levels, clipping, pace), not after the whole recording.
+- **Cut-off endings get their own check:** the last word of the line must be in the
+  transcript, and speech must end before the file does, with a short tail of
+  silence (voice-activity end time vs file end). A take that fails is flagged at
+  once.
+- **Own voice:** the flag shows while Jon is still recording (a tray notification
+  and a line in the app: "Line 05.2: last word 'Skaill' cut off"), so he can
+  re-record that line in Autocue Studio straight away.
+- **Cloned voice:** the app re-generates only the failing sentence automatically
+  (once), then flags it for Jon if it still fails.
+- **Re-listening is quick:** a flagged spot plays just that sentence with a second
+  either side, old and new takes side by side, rather than the whole clip.
+- The narration section of the review shows a per-line list (ok / flagged /
+  retaken) as well as the joined waveform, so Jon sees progress during recording.
+
+### 6.3b Blender shots
+
+- Blender shots depend on 2D line art: a shot's Blender job unlocks when its source
+  line-art image (from Higgsfield or ComfyUI) is approved. The card shows both, the
+  2D source and the 3D render.
+- Two kinds: **3D line-art version** of a 2D image, and **3D model** of a place or
+  object (Norfolk Broads style), which may be used for several shots.
+- Claude writes the scene script (geometry, line style, camera move, length) from
+  the shot description and source image. Blender renders headless; progress comes
+  from its per-frame output. The `.blend` file, script and render are kept per
+  take in `studio\blender\`.
+- A redo note changes the script (camera, timing, style, model detail) and
+  re-renders; a note on the 2D source re-makes the source first, then the 3D.
+- Output format follows the existing Blender work (see 8): the builder checks Jon's
+  earlier Blender projects (for example Norfolk Broads) for the format, frame rate
+  and alpha that Part 3 expects.
 
 ### 6.3 Redo with a note
 
@@ -207,6 +258,9 @@ render finishes, or a session is waiting for Jon.
   that have a `handover\` or `studio\` folder; read their status from those files.
 - Nothing essential lives in browser storage. Per-window conveniences (last view,
   grid/script toggle) may.
+- **Films already in progress** (started before the app, no `studio\` folder) show
+  in the Films list from their handover files and can go on to a Part 3 or Shorts
+  session from the app. Their old assets are not rebuilt as review cards.
 
 ### 6.5 Tools and how they are reached
 
@@ -233,6 +287,21 @@ render finishes, or a session is waiting for Jon.
 - Default tier: QA judgement, handover writing, upload copy.
 - Quick tier: turning a note into a new prompt, shot descriptions, short checks.
 
+### 6.7 Skill updates (part of this work)
+
+Jon asked for every skill that needs it to be updated so sessions and the app agree:
+- `documentary-explainer-script` and `voicestudio-narration`: Parts 1 and 2 can now
+  happen in the app; the handover rule and format stay; the per-take narration
+  checks and cut-off check (6.3a).
+- `documentary-explainer-video`: Part 3 runs as a local Claude Code session on the
+  PC started by the app (files already on `S:`, no cloud staging or size limits);
+  the `studio\` folder; Blender and ComfyUI assets in the Part 2 hand-off and the
+  B-roll library; Blender as a line-art and 3D model source.
+- `six-minutes-shorts`: started from the app as a local session; reads `studio\`
+  where present.
+- Skill edits must be saved to Jon's account (synced skills), not only to a local
+  copy, or the sync may overwrite them.
+
 ## 7. Left to the builder
 
 - Code structure, framework (or none) and file layout inside the artifact.
@@ -257,3 +326,9 @@ render finishes, or a session is waiting for Jon.
   skills loaded.
 - The installed app can read and write `S:` (a mapped network drive) or needs the
   UNC path.
+- Jon's existing Blender work (for example the Norfolk Broads model and its
+  scripts): the render format, frame rate and transparency Part 3 expects, and
+  how Blender is installed (path, version, GPU render settings).
+- Jon's ComfyUI setup: which models and workflows exist, and whether
+  image-to-video runs acceptably on the 4060 Ti. That decides whether ComfyUI is a
+  b-roll source or mainly for stills and line art.
