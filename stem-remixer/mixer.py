@@ -284,7 +284,8 @@ class Mixer:
         self._last_gains = None
         self._stretch = None
         self._chain = None    # the chain being played (a _ChainStream)
-        self._chain_old = None   # [stream, frames faded] when a change rebuilt the chain
+        self._chain_old = []     # [stream, gain, frames faded]: older chains fading out
+        self._chain_in = _LOOP_FADE   # frames the current chain has faded in (done at _LOOP_FADE)
         self._lock = threading.Lock()   # the sound card and the window both move the playhead
 
     # ------------------------------------------------------------- settings
@@ -317,8 +318,7 @@ class Mixer:
             self.position = float(np.clip(frame, 0, max(0, self.length - 1)))
             self.ended = False
             self._stretch = None
-            self._chain = None
-            self._chain_old = None
+            self._drop_chain()
             if self.chaining:
                 # Carry on from the chain entry that was clicked into, else
                 # from the start of the chain.
@@ -592,12 +592,12 @@ class Mixer:
                 out, position = self._chain_block(frames, previous, target)
                 position = min(position, last - 1.0)   # a chain goes round; it never ends
             elif self._plain(tempo, ratio):
-                self._chain = None
+                self._drop_chain()
                 self._stretch = None
                 previous = self._last_gains if self._last_gains is not None else target
                 out, position = self._plain_block(frames, ratio, previous, target, loop)
             else:
-                self._chain = None
+                self._drop_chain()
                 stretch = self._stretch
                 if stretch is None:
                     stretch = self._stretch = Stretcher(self.position)
@@ -677,7 +677,8 @@ class Mixer:
         if stream is not None and stream.key != key:
             # A tempo, pitch or section change while it plays: carry on from
             # here with the new settings, crossfading out of the old sound.
-            self._chain_old = [stream, 0]
+            self._chain_old.append([stream, self._fade_in_gain(self._chain_in), 0])
+            self._chain_in = 0
             stream = None
         if stream is None:
             stream = self._chain = self._chain_here(key)
@@ -693,23 +694,44 @@ class Mixer:
                 stream.key = key
                 if stream.total <= 0:
                     break
-        if self._chain_old is not None:
-            self._fade_from_old(out)
+        if self._chain_in < _LOOP_FADE or self._chain_old:
+            self._blend_fades(out)
         self.chain_step, position = stream.where()
         return out, position
 
-    def _fade_from_old(self, out: np.ndarray) -> None:
-        """Blend the start of a rebuilt chain in from the old one over
-        _LOOP_FADE frames (equal power), so a change doesn't click."""
-        old, faded = self._chain_old
-        count = min(len(out), _LOOP_FADE - faded)
-        audio, made = old.pull(count, self._last_gains if self._last_gains is not None
-                               else self.gains(), self.gains())
-        t = (np.arange(faded, faded + count) + 0.5) / _LOOP_FADE * (np.pi / 2)
-        out[:count] = (out[:count] * np.sin(t)[:, None].astype(np.float32)
-                       + audio[:count] * np.cos(t)[:, None].astype(np.float32))
-        faded += count
-        self._chain_old = None if faded >= _LOOP_FADE else [old, faded]
+    @staticmethod
+    def _fade_in_gain(frames):
+        """Gain of a chain that has faded in for `frames` (equal-power curve)."""
+        return np.sin(np.minimum((np.asarray(frames, dtype=np.float64) + 0.5) / _LOOP_FADE, 1.0)
+                      * (np.pi / 2))
+
+    def _drop_chain(self) -> None:
+        self._chain = None
+        self._chain_old = []
+        self._chain_in = _LOOP_FADE
+
+    def _blend_fades(self, out: np.ndarray) -> None:
+        """After a change rebuilt the chain, fade the new sound in and each
+        older one out over _LOOP_FADE frames. An older sound starts its fade
+        from whatever gain it had, so quick changes overlap without a jump."""
+        frames = len(out)
+        if self._chain_in < _LOOP_FADE:
+            gain = self._fade_in_gain(np.arange(self._chain_in, self._chain_in + frames))
+            out *= gain.astype(np.float32)[:, None]
+            self._chain_in = min(_LOOP_FADE, self._chain_in + frames)
+        previous = self._last_gains if self._last_gains is not None else self.gains()
+        target = self.gains()
+        still = []
+        for entry in self._chain_old:
+            old, start_gain, faded = entry
+            count = min(frames, _LOOP_FADE - faded)
+            audio, _made = old.pull(count, previous, target)
+            t = (np.arange(faded, faded + count) + 0.5) / _LOOP_FADE * (np.pi / 2)
+            out[:count] += audio[:count] * (start_gain * np.cos(t)).astype(np.float32)[:, None]
+            entry[2] = faded + count
+            if entry[2] < _LOOP_FADE:
+                still.append(entry)
+        self._chain_old = still
 
     def _chain_key(self) -> tuple:
         """Everything a chain's sound is made from, apart from the gains."""
@@ -754,8 +776,7 @@ class Mixer:
         or carry on from a stale stretch."""
         self._last_gains = None
         self._stretch = None
-        self._chain = None
-        self._chain_old = None
+        self._drop_chain()
 
     def render_chain(self) -> tuple:
         """The chain, once through, for an export: each section at its own

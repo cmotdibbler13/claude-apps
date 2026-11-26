@@ -668,3 +668,30 @@ def test_changing_tempo_during_a_chain_does_not_click():
         nudged.set_section(i % 2, tempo=1.0 + 0.002 * i, xfade=0.01 * i)
         blocks.append(nudged.render_block(441))
     assert biggest_step(np.concatenate(blocks)[1000:]) < max(0.05, 2 * calm)
+
+
+def test_quick_changes_during_a_chain_overlap_their_fades():
+    # Two tones, so the old and new sounds are out of step when a change lands,
+    # and sound-card blocks shorter than a fade, so changes come mid-fade.
+    def two_tone():
+        mixer = Mixer([Stem("a", tone(220, 4.0, level=0.3) + tone(331, 4.0, level=0.3))], RATE)
+        for start in (0.5, 2.0):
+            mixer.set_loop(start * RATE, (start + 1.0) * RATE)
+            mixer.save_section()
+        mixer.clear_loop()
+        mixer.set_section(0, xfade=0.03)
+        mixer.set_chain([0, 1])
+        mixer.start_chain()
+        return mixer
+
+    steady = two_tone()
+    calm = biggest_step(np.concatenate([steady.render_block(32) for _ in range(3000)])[1000:])
+    nudged = two_tone()
+    blocks = []
+    for i in range(3000):
+        nudged.tempo = 1.0 + 0.001 * (i % 40)
+        blocks.append(nudged.render_block(32))
+    assert biggest_step(np.concatenate(blocks)[1000:]) < max(0.05, 2 * calm)
+    nudged.loop_on, nudged.chain_on = False, False   # leaving the chain drops the fades
+    nudged.render_block(32)
+    assert nudged._chain_old == []
