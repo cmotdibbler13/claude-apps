@@ -12,7 +12,10 @@ thread (Tk: self.after(0, ...)).
   UI can stop tracking it (and check the new take); nothing is shown for it.
 * Any exception becomes an error result; the worker never dies.
 * The transcriber is made on the first job. If it is not loaded yet,
-  on_result(None, {"status": "loading"}) is called once before that job.
+  on_result(None, {"status": "loading", "download": bool}) is called once
+  before that job; download is False when the model is already on disk.
+* On Windows the thread runs below normal priority, so a check on the CPU
+  never competes with the recorder.
 
 Also here, so the app stays thin: read_result, is_current, needs_check and the
 status-line and line-mark copy.
@@ -21,6 +24,7 @@ status-line and line-mark copy.
 import json
 import os
 import queue
+import sys
 import threading
 import time
 from datetime import datetime
@@ -31,6 +35,8 @@ load_settings = take_checks.load_settings  # autocue_settings.json, with default
 
 LOADING = {"status": "loading"}
 LOADING_TEXT = "Checks are getting ready (downloading the speech model)…"
+LOADING_CACHED_TEXT = "Checks are getting ready (loading the speech model)…"
+THREAD_PRIORITY_BELOW_NORMAL = -1
 UNAVAILABLE = "Checks unavailable: "
 ALL_CHECKED = "All takes checked"
 STATUS_SEP = "  ·  "
@@ -38,6 +44,21 @@ MTIME_TOLERANCE_S = 0.001
 
 _STOP = object()
 _RESET = object()
+
+
+def lower_thread_priority(platform=None, kernel32=None):
+    """Lower the calling thread's priority on Windows (a no-op elsewhere).
+    True if it was lowered; never raises."""
+    if (platform or sys.platform) != "win32":
+        return False
+    try:
+        if kernel32 is None:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+        return bool(kernel32.SetThreadPriority(kernel32.GetCurrentThread(),
+                                               THREAD_PRIORITY_BELOW_NORMAL))
+    except Exception:
+        return False
 
 
 def result_path(checks_dir, project, line_id):
@@ -100,7 +121,7 @@ def status_message(line_id, result):
     if result.get("status") == "dropped":
         return None
     if result.get("status") == "loading":
-        return LOADING_TEXT, "loading"
+        return (LOADING_TEXT if result.get("download", True) else LOADING_CACHED_TEXT), "loading"
     if "error" in result:
         err = str(result["error"])
         return (err if err.startswith(UNAVAILABLE) else UNAVAILABLE + err), "error"
@@ -128,8 +149,9 @@ def mark_text(result):
 
 class CheckWorker:
     def __init__(self, transcriber_factory, on_result, check=take_checks.check_take,
-                 now=time.time):
+                 now=time.time, lower_priority=lower_thread_priority):
         self._factory = transcriber_factory
+        self._lower_priority = lower_priority
         self._on_result = on_result
         self._check = check
         self._now = now
@@ -177,6 +199,10 @@ class CheckWorker:
     # ------------------------------------------------------- the thread ----
 
     def _run(self):
+        try:
+            self._lower_priority()
+        except Exception:
+            pass
         while True:
             item = self._queue.get()
             try:
@@ -217,7 +243,11 @@ class CheckWorker:
             raise take_checks.CheckError(f"{UNAVAILABLE}{self._factory_error}")
         if not self._announced and not getattr(self._transcriber, "loaded", True):
             self._announced = True
-            self._emit(None, dict(LOADING))
+            try:
+                download = bool(self._transcriber.will_download())
+            except Exception:  # no such method, or the cache check failed
+                download = True
+            self._emit(None, dict(LOADING, download=download))
         return self._transcriber
 
     def _handle(self, job):

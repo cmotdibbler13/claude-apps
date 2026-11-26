@@ -58,9 +58,17 @@ normal while a check runs.
   `"check_device": "cpu"` in `autocue_settings.json`.
 - **First run** downloads the speech model (about 1.5 GB for `medium.en`); the
   status says "Checks are getting ready (downloading the speech model)…" until
-  then. Checks need `faster-whisper` (in `requirements.txt`) and `ffmpeg` on
+  then. Later runs only load it from disk and say "Checks are getting ready
+  (loading the speech model)…". Checks need `faster-whisper` (in `requirements.txt`) and `ffmpeg` on
   PATH; without them the status says "Checks unavailable: …" once and
   recording works as normal. Fix the cause, then press **Check all** to retry.
+- **Using the GPU:** faster-whisper on Windows needs NVIDIA's cuBLAS and
+  cuDNN 9 for CUDA 12, e.g. `pip install nvidia-cublas-cu12 nvidia-cudnn-cu12`,
+  or Purfview's whisper-standalone DLLs on PATH. Without them checks run on the
+  CPU (int8, using at most half the cores and at low priority), which is fine
+  but slower; set `"check_model": "small.en"` if checks are too slow. The
+  calibration command below prints the device it used (e.g. `Checked on cuda
+  (float16)`).
 - **Calibrating** against takes you know are good or bad:
 
   ```

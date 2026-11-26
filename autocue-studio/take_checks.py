@@ -713,6 +713,22 @@ class Transcriber:
 
 CUDA_PROBE_TIMEOUT_S = 180
 CUDA_PROBE_MODEL = "tiny.en"
+MAX_CPU_THREADS = 4
+
+
+def _faster_whisper():
+    """The faster_whisper module, imported with Hugging Face's progress bars
+    off (pythonw has no stderr for them to write to)."""
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    import faster_whisper
+    return faster_whisper
+
+
+def cpu_threads(count=None):
+    """Threads for a CPU model: half the cores, 1 to 4, so a check never
+    starves the recorder."""
+    count = os.cpu_count() if count is None else count
+    return max(1, min(MAX_CPU_THREADS, (count or 4) // 2))
 
 
 def probe_cuda(run=None, timeout=CUDA_PROBE_TIMEOUT_S):
@@ -734,7 +750,7 @@ def probe_cuda(run=None, timeout=CUDA_PROBE_TIMEOUT_S):
 def _probe_cuda_main():
     """The child side of probe_cuda: exit 0 only if CUDA really works."""
     try:
-        from faster_whisper import WhisperModel
+        WhisperModel = _faster_whisper().WhisperModel
         model = WhisperModel(CUDA_PROBE_MODEL, device="cuda", compute_type="float16")
         segments, _info = model.transcribe(np.zeros(RATE, dtype=np.float32), language="en")
         list(segments)
@@ -757,6 +773,7 @@ class WhisperTranscriber(Transcriber):
         self._model = None
         self._on_cuda = False
         self._load_error = None
+        self.device_used = None  # e.g. "cpu (int8, 4 threads)", once loaded
 
     def reset(self):
         """Forget a failed load (or the loaded model) so the next use retries."""
@@ -767,6 +784,17 @@ class WhisperTranscriber(Transcriber):
     @property
     def loaded(self):
         return self._model is not None
+
+    def will_download(self):
+        """True unless the model is a folder on disk or already in the
+        Hugging Face cache (then loading it only reads it). Any doubt is True."""
+        if self._model is not None or os.path.isdir(self.model_name):
+            return False
+        try:
+            _faster_whisper().download_model(self.model_name, local_files_only=True)
+        except Exception:
+            return True
+        return False
 
     def _attempts(self):
         if self.device == "cuda":
@@ -785,17 +813,20 @@ class WhisperTranscriber(Transcriber):
         if self._load_error is not None:     # don't re-download on every take
             raise CheckError(str(self._load_error))
         try:
-            from faster_whisper import WhisperModel
+            WhisperModel = _faster_whisper().WhisperModel
         except Exception as e:  # ImportError, or a broken install
             self._load_error = CheckError(
                 f"Checks unavailable: faster-whisper is not installed ({e})")
             raise CheckError(str(self._load_error)) from None
         err = None
         for device, compute in self._attempts():
+            extra = {"cpu_threads": cpu_threads()} if device == "cpu" else {}
             try:
                 self._model = WhisperModel(self.model_name, device=device,
-                                           compute_type=compute)
+                                           compute_type=compute, **extra)
                 self._on_cuda = device == "cuda"
+                self.device_used = (f"{device} ({compute}, {extra['cpu_threads']} threads)"
+                                    if extra else f"{device} ({compute})")
                 return
             except Exception as e:
                 err = e
@@ -905,6 +936,8 @@ def main(argv=None):
     except CheckError as e:
         print(str(e), file=sys.stderr)
         return 1
+    if transcriber.device_used:
+        print(f"Checked on {transcriber.device_used}", file=sys.stderr)
     print(json.dumps(result, indent=2))
     return 0
 

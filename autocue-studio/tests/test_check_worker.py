@@ -4,6 +4,7 @@ import json
 import os
 import queue
 import tempfile
+import threading
 import time
 import unittest
 
@@ -94,7 +95,7 @@ class ResultWrittenAndCallback(WorkerTestCase):
         job = self.job()
         mtime = os.stat(job["path"]).st_mtime
         w.submit(job)
-        self.assertEqual(self.next_result(), (None, {"status": "loading"}))
+        self.assertEqual(self.next_result(), (None, {"status": "loading", "download": True}))
         line_id, result = self.next_result()
         self.assertEqual(line_id, "05.2")
         self.assertEqual(result["id"], "05.2")
@@ -123,7 +124,7 @@ class StaleResultDropped(WorkerTestCase):
         with open(self.result_file(), "w", encoding="utf-8") as f:
             json.dump({"id": "05.2", "marker": "new take"}, f)
         w.submit(self.job())
-        self.assertEqual(self.next_result(), (None, {"status": "loading"}))
+        self.assertEqual(self.next_result(), (None, {"status": "loading", "download": True}))
         self.assertEqual(self.next_result(),
                          ("05.2", {"status": "dropped", "file": "film_05.2.wav"}))
         self.assert_no_more_results()
@@ -137,7 +138,7 @@ class StaleResultDropped(WorkerTestCase):
 
         w = self.start(check=check_that_deletes)
         w.submit(self.job())
-        self.assertEqual(self.next_result(), (None, {"status": "loading"}))
+        self.assertEqual(self.next_result(), (None, {"status": "loading", "download": True}))
         self.assertEqual(self.next_result()[1]["status"], "dropped")
         self.assert_no_more_results()
         self.assertFalse(os.path.exists(self.result_file()))
@@ -160,7 +161,7 @@ class TranscriberUnavailable(WorkerTestCase):
         w = self.start(factory=UnavailableTranscriber)
         w.submit(self.job("01.1"))
         w.submit(self.job("01.2"))
-        self.assertEqual(self.next_result(), (None, {"status": "loading"}))
+        self.assertEqual(self.next_result(), (None, {"status": "loading", "download": True}))
         for line_id in ("01.1", "01.2"):
             got_id, result = self.next_result()
             self.assertEqual(got_id, line_id)
@@ -195,7 +196,7 @@ class TranscriberUnavailable(WorkerTestCase):
         self.next_result(), self.next_result()          # loading, error
         w.reset_transcriber()
         w.submit(self.job("01.2"))
-        self.assertEqual(self.next_result(), (None, {"status": "loading"}))
+        self.assertEqual(self.next_result(), (None, {"status": "loading", "download": True}))
         self.assertEqual(self.next_result()[0], "01.2")
         self.assertEqual(len(made), 1)
         self.assertEqual(made[0].resets, 1)
@@ -213,7 +214,7 @@ class ErrorDoesNotStopWorker(WorkerTestCase):
         w = self.start(check=check)
         for line_id in ("01.1", "01.2", "01.3"):
             w.submit(self.job(line_id))
-        self.assertEqual(self.next_result()[1], {"status": "loading"})
+        self.assertEqual(self.next_result()[1], {"status": "loading", "download": True})
         self.assertIn("boom", self.next_result()[1]["error"])
         self.assertIn("bad header", self.next_result()[1]["error"])
         line_id, result = self.next_result()
@@ -248,7 +249,7 @@ class LoadingStatusOnce(WorkerTestCase):
             w.submit(self.job(line_id))
         w.join_queue(WAIT_S)
         got = list(self.results.queue)
-        self.assertEqual(got[0], (None, {"status": "loading"}))
+        self.assertEqual(got[0], (None, {"status": "loading", "download": True}))
         self.assertEqual([i for i, _ in got], [None, "01.1", "01.2", "01.3"])
         self.assertEqual(len(made), 1)
 
@@ -380,6 +381,77 @@ class Copy(unittest.TestCase):
         self.assertEqual(check_worker.mark_text(self.flagged("a", "b")), ("a · b", "flag"))
         self.assertEqual(check_worker.mark_text(self.flagged("room noise", ok=True)),
                          ("✓ checked · room noise", "flag"))
+
+
+class LoadingNoticeSaysWhy(WorkerTestCase):
+    """"downloading" only when the model really has to be downloaded."""
+
+    def _first(self, transcriber_cls):
+        w = self.start(factory=transcriber_cls)
+        w.submit(self.job())
+        return self.next_result()
+
+    def test_cached_model_is_loading(self):
+        class Cached(StubTranscriber):
+            def will_download(self):
+                return False
+
+        notice = self._first(Cached)
+        self.assertEqual(notice, (None, {"status": "loading", "download": False}))
+        self.assertEqual(check_worker.status_message(None, notice[1]),
+                         ("Checks are getting ready (loading the speech model)…", "loading"))
+
+    def test_download_needed_keeps_the_download_copy(self):
+        class Fresh(StubTranscriber):
+            def will_download(self):
+                return True
+
+        notice = self._first(Fresh)
+        self.assertEqual(notice, (None, {"status": "loading", "download": True}))
+        self.assertEqual(check_worker.status_message(None, notice[1]),
+                         ("Checks are getting ready (downloading the speech model)…", "loading"))
+
+    def test_unknown_or_failing_check_says_downloading(self):
+        class Broken(StubTranscriber):
+            def will_download(self):
+                raise RuntimeError("no hub")
+
+        self.assertEqual(self._first(Broken), (None, {"status": "loading", "download": True}))
+
+
+class WorkerThreadPriority(WorkerTestCase):
+    def test_worker_lowers_its_own_priority(self):
+        seen = []
+        self.worker = CheckWorker(StubTranscriber, lambda i, r: None, check=transcribing_check,
+                                  lower_priority=lambda: seen.append(
+                                      threading.current_thread().name))
+        self.worker.submit(self.job())
+        self.worker.join_queue(WAIT_S)
+        self.assertEqual(seen, ["take-checks"])
+
+    def test_lower_thread_priority_windows_only(self):
+        calls = []
+
+        class Kernel32:
+            def GetCurrentThread(self):
+                return 42
+
+            def SetThreadPriority(self, handle, level):
+                calls.append((handle, level))
+                return 1
+
+        self.assertFalse(check_worker.lower_thread_priority("linux", Kernel32()))
+        self.assertEqual(calls, [])
+        self.assertTrue(check_worker.lower_thread_priority("win32", Kernel32()))
+        self.assertEqual(calls, [(42, -1)])
+
+    def test_lower_thread_priority_never_raises(self):
+        class Broken:
+            def GetCurrentThread(self):
+                raise OSError("no")
+
+        self.assertFalse(check_worker.lower_thread_priority("win32", Broken()))
+        self.assertFalse(check_worker.lower_thread_priority("win32"))  # no ctypes.windll here
 
 
 def _have_customtkinter():

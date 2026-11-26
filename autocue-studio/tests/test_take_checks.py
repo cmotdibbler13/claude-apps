@@ -1,5 +1,7 @@
 """Tests for take_checks: synthetic audio and a stub transcriber, no voices."""
 
+import io
+import json
 import os
 import tempfile
 import unittest
@@ -404,7 +406,7 @@ class Transcriber(unittest.TestCase):
         calls = []
 
         class FakeModel:
-            def __init__(self, name, device, compute_type):
+            def __init__(self, name, device, compute_type, **kw):
                 calls.append((name, device, compute_type))
                 if device == "cuda":
                     raise RuntimeError("no CUDA")
@@ -568,7 +570,7 @@ class WhisperFallbacks(unittest.TestCase):
         made = []
 
         class FakeModel:
-            def __init__(self, name, device, compute_type):
+            def __init__(self, name, device, compute_type, **kw):
                 made.append(device)
                 behaviour.get(("init", device), lambda: None)()
                 self.device = device
@@ -635,7 +637,7 @@ class CudaProbe(unittest.TestCase):
         made = []
 
         class FakeModel:
-            def __init__(self, name, device, compute_type):
+            def __init__(self, name, device, compute_type, **kw):
                 made.append((device, compute_type))
 
         with mock.patch.dict("sys.modules", {"faster_whisper": mock.Mock(WhisperModel=FakeModel)}):
@@ -807,6 +809,93 @@ class NativeRateAnalysis(TakeTestCase):
         self.assertEqual(seen["rate"], RATE)
         self.assertEqual(seen["n"], int(round(take.t * RATE)))
         self.assertEqual(seen["whisper_rate"], 16000)
+
+
+class WhisperLoadOptions(unittest.TestCase):
+    """CPU threads, no progress bars, and whether loading means downloading."""
+
+    def _fake(self):
+        made = []
+
+        class FakeModel:
+            def __init__(self, name, **kw):
+                made.append((name, kw))
+
+        return mock.Mock(WhisperModel=FakeModel), made
+
+    def test_cpu_uses_at_most_half_the_cores_up_to_4(self):
+        for cores, want in ((16, 4), (8, 4), (6, 3), (2, 1), (1, 1), (None, 2)):
+            with self.subTest(cores=cores):
+                fake, made = self._fake()
+                with mock.patch.dict("sys.modules", {"faster_whisper": fake}), \
+                        mock.patch.object(take_checks.os, "cpu_count", return_value=cores):
+                    take_checks.WhisperTranscriber("small.en", "cpu").load()
+                self.assertEqual(made, [("small.en", {"device": "cpu", "compute_type": "int8",
+                                                      "cpu_threads": want})])
+
+    def test_cuda_gets_no_cpu_threads(self):
+        fake, made = self._fake()
+        with mock.patch.dict("sys.modules", {"faster_whisper": fake}):
+            t = take_checks.WhisperTranscriber("small.en", "cuda")
+            t.load()
+        self.assertEqual(made, [("small.en", {"device": "cuda", "compute_type": "float16"})])
+        self.assertEqual(t.device_used, "cuda (float16)")
+
+    def test_progress_bars_off_before_import(self):
+        seen = {}
+
+        class Module:
+            @property
+            def WhisperModel(self):
+                seen["env"] = os.environ.get("HF_HUB_DISABLE_PROGRESS_BARS")
+                return lambda *a, **kw: object()
+
+        env = {k: v for k, v in os.environ.items() if k != "HF_HUB_DISABLE_PROGRESS_BARS"}
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.dict("sys.modules", {"faster_whisper": Module()}):
+            take_checks.WhisperTranscriber("small.en", "cpu").load()
+        self.assertEqual(seen["env"], "1")
+        with mock.patch.dict(os.environ, {"HF_HUB_DISABLE_PROGRESS_BARS": "0"}), \
+                mock.patch.dict("sys.modules", {"faster_whisper": Module()}):
+            take_checks.WhisperTranscriber("small.en", "cpu").load()
+        self.assertEqual(seen["env"], "0")  # a user's own setting wins
+
+    def test_will_download_only_when_not_cached(self):
+        calls = []
+
+        def cached(name, local_files_only=False):
+            calls.append((name, local_files_only))
+            return "/cache/" + name
+
+        def missing(name, local_files_only=False):
+            raise RuntimeError("LocalEntryNotFoundError")
+
+        t = take_checks.WhisperTranscriber("medium.en", "auto")
+        with mock.patch.dict("sys.modules", {"faster_whisper": mock.Mock(download_model=cached)}):
+            self.assertFalse(t.will_download())
+        self.assertEqual(calls, [("medium.en", True)])
+        with mock.patch.dict("sys.modules", {"faster_whisper": mock.Mock(download_model=missing)}):
+            self.assertTrue(t.will_download())
+        with mock.patch.dict("sys.modules", {"faster_whisper": None}):
+            self.assertTrue(t.will_download())
+        with tempfile.TemporaryDirectory() as d:   # a model folder on disk
+            self.assertFalse(take_checks.WhisperTranscriber(d, "cpu").will_download())
+
+    def test_cli_says_which_device_it_used(self):
+        class Fake:
+            device_used = "cpu (int8, 4 threads)"
+
+            def __init__(self, *a):
+                pass
+
+        err = io.StringIO()
+        out = io.StringIO()
+        with mock.patch.object(take_checks, "WhisperTranscriber", Fake), \
+                mock.patch.object(take_checks, "check_take", return_value={"ok": True}), \
+                mock.patch("sys.stderr", err), mock.patch("sys.stdout", out):
+            self.assertEqual(take_checks.main(["take.wav", "Line."]), 0)
+        self.assertEqual(err.getvalue(), "Checked on cpu (int8, 4 threads)\n")
+        self.assertEqual(json.loads(out.getvalue()), {"ok": True})
 
 
 if __name__ == "__main__":
