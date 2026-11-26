@@ -1,7 +1,7 @@
 // Review view, b-roll section: shot cards in script order (or a grid), takes, approve, redo with a note.
 import { h, btn, toolLabel, mediaEl } from "./dom.js";
 import { orderByScript } from "../shots.js";
-import { canStart } from "../redo.js";
+import { canStart, has3d } from "../redo.js";
 import { join } from "../paths.js";
 import { countsLine, STATUS_LABEL, NO_LINE_SCRIPT } from "../narration.js";
 
@@ -57,6 +57,7 @@ export function cardModel(asset, assets, { pending = false, error = null } = {})
     canUndo: free && !!asset.approved,
     canMakeFirst: free && !locked && asset.takes.length === 0,
     canRedo: free && !locked && asset.takes.length > 0,
+    can3d: free && asset.kind === "lineart" && !has3d(assets, asset.id),
     error,
   };
 }
@@ -181,6 +182,7 @@ function controls(c, model, actions) {
   else if (c.canMakeFirst || (!c.takes.length && (c.busy || c.pending))) row.push(btn("Make first take", () => actions.first(c.id), { disabled: !c.canMakeFirst }));
   else if (c.approved) row.push(h("span", { class: "ok-tag", text: "\u2713 Approved" }), btn("Undo", () => actions.unapprove(c.id), { ghost: true, disabled: !c.canUndo }));
   else row.push(btn("Approve", () => actions.approve(c.id), { disabled: !c.canApprove }), btn("Redo\u2026", () => actions.openNote(c.id), { ghost: true, disabled: !c.canRedo }));
+  if (c.can3d) row.push(btn("Make 3D in Blender", () => actions.make3d(c.id), { ghost: true }));
   if (c.file) row.push(btn("Open full size", () => actions.openFull(c.file), { ghost: true }));
   return [sw, h("div", { class: "row" }, row)];
 }

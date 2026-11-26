@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { FakeHost } from "./fake-host.mjs";
 import { openFilm } from "../js/store.js";
 import { makeJobs } from "../js/jobs.js";
-import { startTake, watchJobs, approve, unapprove, choose, canStart, setTool, setPreferComfy } from "../js/redo.js";
+import { startTake, watchJobs, approve, unapprove, choose, canStart, setTool, setPreferComfy, addBlender3d, has3d } from "../js/redo.js";
 
 const DIR = "S:\\Youtube video ideas\\Film A";
 const hf = (o = {}) => ({ id: "HF-01", kind: "lineart", line: "L", lineIndex: 0, desc: "A lighthouse", tool: "higgsfield", draftPrompt: "draft prompt", takes: [], chosen: 0, approved: false, ...o });
@@ -320,4 +320,32 @@ test("startTake on a comfyui shot adds a comfyui job with an .mp4 out", async ()
   store.state.assets[0].takes[0].status = "done";
   const t2 = await startTake(ctx, "HF-03", { note: "slower" });
   assert.equal(t2.prompt, "again");
+});
+
+test("addBlender3d adds a Blender shot beside its line art, once", async () => {
+  const assets = [hf({ id: "HF-02", lineIndex: 3, line: "L3", desc: "A Lighthouse at dusk", approved: true }), hf({ id: "HF-07", kind: "broll", lineIndex: 5 })];
+  const { ctx, store } = await setup(assets);
+  assert.equal(has3d(store.state.assets, "HF-02"), false);
+  const id = await addBlender3d(ctx, "HF-02");
+  assert.equal(id, "HF-08");
+  const n = store.state.assets.find((a) => a.id === "HF-08");
+  assert.deepEqual(n, {
+    id: "HF-08", kind: "blender", tool: "blender", sourceId: "HF-02", line: "L3", lineIndex: 3,
+    desc: "3D line-art version of a Lighthouse at dusk", draftPrompt: "3D line-art version of HF-02 in Blender",
+    takes: [], chosen: 0, approved: false,
+  });
+  assert.equal(has3d(store.state.assets, "HF-02"), true);
+  assert.equal(canStart(n, store.state.assets), true);
+  await assert.rejects(() => addBlender3d(ctx, "HF-02"), /HF-02 already has a Blender version\./);
+  assert.equal(store.state.assets.length, 3);
+});
+
+test("addBlender3d stays locked until the source is approved, and refuses non line art", async () => {
+  const { ctx, store } = await setup([hf(), hf({ id: "HF-03", kind: "broll" })]);
+  const id = await addBlender3d(ctx, "HF-01");
+  assert.equal(id, "HF-04");
+  assert.equal(canStart(store.state.assets[2], store.state.assets), false);
+  await assert.rejects(() => addBlender3d(ctx, "HF-03"), /HF-03 is not line art\./);
+  await assert.rejects(() => addBlender3d(ctx, "HF-04"), /HF-04 is not line art\./);
+  await assert.rejects(() => addBlender3d(ctx, "HF-99"), /Unknown shot HF-99/);
 });

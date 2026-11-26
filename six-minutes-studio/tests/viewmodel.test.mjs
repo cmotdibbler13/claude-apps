@@ -352,3 +352,15 @@ test("keep-open line explains the tray once the app lives there", () => {
   assert.match(keepOpenText(true), /system tray/);
   assert.match(keepOpenText(true), /right-click its tray icon and choose Exit/);
 });
+
+test("cardModel can3d: line art without a Blender version, when free", () => {
+  const la = asset({ id: "HF-02" });
+  const b = asset({ id: "HF-03", kind: "blender", tool: "blender", sourceId: "HF-02" });
+  assert.equal(cardModel(la, [la]).can3d, true);
+  assert.equal(cardModel(la, [la, b]).can3d, false);
+  assert.equal(cardModel(asset({ id: "HF-05", kind: "broll" }), []).can3d, false);
+  assert.equal(cardModel(b, [la, b]).can3d, false);
+  const running = asset({ takes: [take(1, "running")], chosen: 1 });
+  assert.equal(cardModel(running, [running]).can3d, false);
+  assert.equal(cardModel(la, [la], { pending: true }).can3d, false);
+});

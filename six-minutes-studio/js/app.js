@@ -9,7 +9,7 @@ import { makeFilmSession, readSavedJobs } from "./session.js";
 import { makeJobs } from "./jobs.js";
 import { notifyRules } from "./notify.js";
 import { buildShotList } from "./shots.js";
-import { startTake, approve, unapprove, choose, setTool, setPreferComfy } from "./redo.js";
+import { startTake, approve, unapprove, choose, setTool, setPreferComfy, addBlender3d } from "./redo.js";
 import { ensureProxy, toBlobUrl, openFull, revokeAll } from "./media.js";
 import { makeHiggsfieldRunner } from "./tools/higgsfield.js";
 import { makeBlenderRunner } from "./tools/blender.js";
@@ -373,6 +373,7 @@ const reviewActions = {
     app.review.noteFor = null; app.review.draft = "";
   }),
   // Through cardAction so the per-shot pending guard also covers a take being prepared.
+  make3d: cardAction((id) => addBlender3d(ctx(), id)),
   setTool: cardAction((id, tool) => setTool(ctx(), id, tool)),
   // Ignored while any card action or the shot list is in flight; resolves true once saved.
   async setPreferComfy(on) {

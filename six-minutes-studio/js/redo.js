@@ -20,6 +20,32 @@ export function canStart(asset, assets) {
   return !!src && !!src.approved;
 }
 
+export const has3d = (assets, lineartId) => assets.some((a) => a.kind === "blender" && a.sourceId === lineartId);
+
+// Add a Blender shot that uses a line drawing as its source. It sits beside the source (same line)
+// and stays locked until the source is approved.
+export async function addBlender3d(ctx, lineartId) {
+  const { store } = ctx;
+  const src = find(store.state, lineartId);
+  if (!src) throw new Error(`Unknown shot ${lineartId}`);
+  if (src.kind !== "lineart") throw new Error(`${lineartId} is not line art.`);
+  if (has3d(store.state.assets, lineartId)) throw new Error(`${lineartId} already has a Blender version.`);
+  let id;
+  await save(store, (d) => {
+    if (has3d(d.assets, lineartId)) throw new Error(`${lineartId} already has a Blender version.`);
+    const top = d.assets.reduce((m, a) => Math.max(m, Number(/^HF-(\d+)$/.exec(a.id)?.[1] ?? 0)), 0);
+    id = `HF-${String(top + 1).padStart(2, "0")}`;
+    const desc = src.desc ? src.desc[0].toLowerCase() + src.desc.slice(1) : "";
+    d.assets.push({
+      id, kind: "blender", tool: "blender", sourceId: lineartId, line: src.line, lineIndex: src.lineIndex,
+      desc: `3D line-art version of ${desc}`, draftPrompt: `3D line-art version of ${lineartId} in Blender`,
+      takes: [], chosen: 0, approved: false,
+    });
+  });
+  await store.log(`${id} added: 3D version of ${lineartId} in Blender`);
+  return id;
+}
+
 function previousTake(asset) {
   return asset.takes.find((t) => t.n === asset.chosen) ?? asset.takes[asset.takes.length - 1];
 }
