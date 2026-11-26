@@ -73,3 +73,13 @@ test("stableAudio defaults are present and partial overrides keep the rest", asy
   assert.equal(t.stableAudio.url, "http://127.0.0.1:7860");
   assert.equal(t.stableAudio.steps, 12);
 });
+
+test("voiceover and mix settings default, and merge from the file", async () => {
+  let s = await loadSettings(new FakeHost(), ROOT);
+  assert.deepEqual([s.autocuePython, s.stemRemixerDir, s.endCardS], ["python", null, 12]);
+  const host = new FakeHost();
+  await host.fs.mkdir(ROOT);
+  await host.fs.write(ROOT + "\\.studio-settings.json", JSON.stringify({ stemRemixerDir: "C:\\Apps\\Stem Remixer", endCardS: 14 }));
+  s = await loadSettings(host, ROOT);
+  assert.deepEqual([s.autocuePython, s.stemRemixerDir, s.endCardS], ["python", "C:\\Apps\\Stem Remixer", 14]);
+});

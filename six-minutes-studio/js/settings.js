@@ -3,6 +3,7 @@ import { join } from "./paths.js";
 
 export const DEFAULT_SETTINGS = {
   autocueRecordings: "C:\\Users\\Jon\\desktop autocue\\Recordings", autocueDir: "C:\\Users\\Jon\\desktop autocue",
+  autocuePython: "python", stemRemixerDir: null, endCardS: 12,
   videoModel: "kling3_0", imageModel: "gpt_image_2", blenderPath: "blender",
   comfy: {
     url: "http://127.0.0.1:8188",
