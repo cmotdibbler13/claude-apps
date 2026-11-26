@@ -41,6 +41,10 @@ VOICED_DBFS = -24.0
 VOICED_MAX_ZCR = 0.12
 TRANSIENT_MAX_S = 0.040
 CUT_OFF_TAIL_S = 0.1
+DROP_RULE_MAX_TAIL_S = 0.3   # the 18 dB drop rule only applies this close to the end
+HALLUCINATION_AFTER_S = 0.25 # transcript words starting this long after the voice
+SAME_WORD_RATIO = 0.8        # one-for-one words this similar count as the same
+FFMPEG_TIMEOUT_S = 60
 DROP_FRAME_S = 0.005
 DROP_DB = 18.0
 DROP_FROM_DBFS = -48.0
@@ -84,7 +88,10 @@ def _run_ffmpeg(args, path):
         proc = subprocess.run(
             cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            timeout=FFMPEG_TIMEOUT_S,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except subprocess.TimeoutExpired:
+        raise CheckError(f"ffmpeg timed out reading {os.path.basename(path)}") from None
     except FileNotFoundError:
         raise CheckError("ffmpeg not found") from None
     except OSError as e:
@@ -206,7 +213,9 @@ def analyse(samples, rate, peak_dbfs=None, clipped=None, words=None):
     speech_end_s = None
     if end_idx is not None:
         speech_end_s = end_idx * n10 / float(rate)
-        if duration - speech_end_s < CUT_OFF_TAIL_S or _sharp_drop(x, rate, speech_end_s):
+        tail = duration - speech_end_s
+        if tail < CUT_OFF_TAIL_S or (tail <= DROP_RULE_MAX_TAIL_S
+                                     and _sharp_drop(x, rate, speech_end_s)):
             flags.append(flag("cut_off", "ends too abruptly", speech_end_s))
 
         # Pauses between the first voiced frame and the end of speech.
@@ -394,42 +403,223 @@ def _without_number_and(items):
     return out
 
 
+# Comparing: numbers by value, British and American spellings alike.
+
+_UNITS = {w: i for i, w in enumerate(_ONES)}
+_TENS_VAL = {w: 10 * i for i, w in enumerate(_TENS) if w}
+
+
+def _parse_under_100(t, i):
+    """(value, next index) for 0-99 at t[i], or None."""
+    if i < len(t) and t[i] in _TENS_VAL:
+        v = _TENS_VAL[t[i]]
+        if i + 1 < len(t) and t[i + 1] in _UNITS and 1 <= _UNITS[t[i + 1]] <= 9:
+            return v + _UNITS[t[i + 1]], i + 2
+        return v, i + 1
+    if i < len(t) and t[i] in _UNITS:
+        return _UNITS[t[i]], i + 1
+    return None
+
+
+def _parse_cardinal(t):
+    """The whole of t as a cardinal (one thousand five hundred, fifteen
+    hundred, forty seven), or None."""
+    i, total = 0, 0
+    first = _parse_under_100(t, 0)
+    if first is None:
+        return None
+    v, i = first
+    if i < len(t) and t[i] == "thousand":
+        if v == 0:
+            return None
+        total, i = v * 1000, i + 1
+        nxt = _parse_under_100(t, i)
+        if nxt is None:
+            return total if i == len(t) else None
+        v, i = nxt
+    if i < len(t) and t[i] == "hundred":
+        if v == 0 or (total and v > 9):
+            return None
+        total, i = total + v * 100, i + 1
+        nxt = _parse_under_100(t, i)
+        if nxt is None:
+            return total if i == len(t) else None
+        v, i = nxt
+    if total and v == 0:
+        return None
+    return total + v if i == len(t) else None
+
+
+def _parse_year(t):
+    """The whole of t as a year reading (eighteen fifty four, nineteen oh
+    five, twenty thirteen), or None."""
+    hi = _parse_under_100(t, 0)
+    if hi is None or hi[0] < 11:
+        return None
+    v, i = hi
+    rest = t[i:]
+    if rest == ["hundred"]:
+        return v * 100
+    if len(rest) == 2 and rest[0] == "oh" and rest[1] in _UNITS and 1 <= _UNITS[rest[1]] <= 9:
+        return v * 100 + _UNITS[rest[1]]
+    lo = _parse_under_100(rest, 0)
+    if lo and lo[1] == len(rest) and lo[0] >= 10:
+        return v * 100 + lo[0]
+    return None
+
+
+_NUM_START = set(_UNITS) | set(_TENS_VAL)
+_NUM_ANY = _NUM_START | {"hundred", "thousand", "oh"}
+
+
+def _parse_number(t):
+    v = _parse_cardinal(t)
+    return v if v is not None else _parse_year(t)
+
+
+def _collapse_numbers(items):
+    """Runs of number words become one token holding the value, so 1500,
+    1,500, fifteen hundred and one thousand five hundred all compare equal."""
+    out, i = [], 0
+    while i < len(items):
+        if items[i][0] in _NUM_START:
+            j = i
+            while j < len(items) and items[j][0] in _NUM_ANY:
+                j += 1
+            for k in range(j, i, -1):
+                v = _parse_number([t[0] for t in items[i:k]])
+                if v is not None:
+                    run = items[i:k]
+                    shown = []
+                    for t in run:
+                        if not shown or shown[-1] != t[1]:
+                            shown.append(t[1])
+                    out.append((f"#{v}", " ".join(shown)) + tuple(_span(run)))
+                    i = k
+                    break
+            else:
+                out.append(items[i])
+                i += 1
+        else:
+            out.append(items[i])
+            i += 1
+    return out
+
+
+def _span(run):
+    """(start, end) of a run of timed items; nothing for untimed ones."""
+    return (run[0][2], run[-1][3]) if len(run[0]) > 2 else ()
+
+
+_SPELLING = {
+    "grey": "gray", "greys": "grays", "greyish": "grayish",
+    "programme": "program", "programmes": "programs",
+    "defence": "defense", "defences": "defenses", "offence": "offense",
+    "offences": "offenses", "licence": "license", "licences": "licenses",
+    "pretence": "pretense", "fuelled": "fueled", "fuelling": "fueling",
+    "jewellery": "jewelry", "aluminium": "aluminum", "plough": "plow",
+    "ploughed": "plowed", "storey": "story", "storeys": "stories",
+    "manoeuvre": "maneuver", "manoeuvres": "maneuvers", "kerb": "curb",
+}
+_OUR_RE = re.compile(r"^(\w{2,})our(s|ed|ing|ite|ites|able|ably|er|ers|ful|hood|hoods|less|ist|ists)?$")
+_ISE_RE = re.compile(r"^(\w{3,})is(e|es|ed|ing|er|ers|ation|ations|ational)$")
+_RE_RE = re.compile(r"^(\w{2,}[bgt])re(s)?$")
+_LL_RE = re.compile(r"^(\w*[aeiou]\w*?[aeiou]\w*?)ll(ed|ing|er|ers|or|ors)$")
+
+
+def _spelling(tok):
+    """One spelling for British and American forms (both sides go through it,
+    so only collisions between real words matter)."""
+    if tok.startswith("#"):
+        return tok
+    if tok in _SPELLING:
+        return _SPELLING[tok]
+    m = _OUR_RE.match(tok)
+    if m:
+        return f"{m.group(1)}or{m.group(2) or ''}"
+    m = _ISE_RE.match(tok)
+    if m:
+        return f"{m.group(1)}iz{m.group(2)}"
+    m = _RE_RE.match(tok)
+    if m:
+        return f"{m.group(1)}er{m.group(2) or ''}"
+    m = _LL_RE.match(tok)
+    if m and re.search(r"[aeiou][^aeiou]+[aeiou]", m.group(1)):
+        return f"{m.group(1)}l{m.group(2)}"
+    return tok
+
+
+def _compare_form(items):
+    items = _collapse_numbers(_without_number_and(items))
+    out, i = [], 0
+    while i < len(items):              # "per cent" -> "percent"
+        if (items[i][0] == "per" and i + 1 < len(items) and items[i + 1][0] == "cent"):
+            run = items[i:i + 2]
+            out.append(("percent", f"{run[0][1]} {run[1][1]}") + tuple(_span(run)))
+            i += 2
+            continue
+        out.append(items[i])
+        i += 1
+    return [(_spelling(t[0]),) + tuple(t[1:]) for t in out]
+
+
 def _pieces(word):
-    """[(token, display)] for one word: the word's own spelling is shown when
-    it is a single token, otherwise the expanded token (1854 -> eighteen ...)."""
-    pieces = _tokens(word)
+    """[(token, display)] for one word; every piece shows the word as written."""
     shown = _clean_word(word)
-    return [(p, shown if len(pieces) == 1 else p) for p in pieces]
+    return [(p, shown) for p in _tokens(word)]
 
 
 def _timed_tokens(words):
     """[(token, display, start, end)] for the transcript's words."""
-    return _without_number_and([(p, d, float(s), float(e))
-                                for w, s, e in words for p, d in _pieces(w)])
+    return _compare_form([(p, d, float(s), float(e))
+                          for w, s, e in words for p, d in _pieces(w)])
 
 
 def _expected_tokens(text):
     """[(token, display)] for the line, keeping the line's own spelling."""
-    return _without_number_and([pd for w in _spoken_lines(text).split()
-                                for pd in _pieces(w)])
+    return _compare_form([pd for w in _spoken_lines(text).split() for pd in _pieces(w)])
 
 
 def _quote(items):
-    return " ".join(items)
+    shown = []
+    for d in items:
+        if not shown or shown[-1] != d:
+            shown.append(d)
+    return " ".join(shown)
 
 
-def word_flags(expected_text, transcript_words, audio_end_s):
+def _same_words(a, b):
+    """A replacement that is really the same words: joined differently
+    ("co operate" / "cooperate") or one near-identical word (ratio >= 0.8)."""
+    if "".join(a) == "".join(b):
+        return True
+    if len(a) == 1 and len(b) == 1 and not (a[0].startswith("#") or b[0].startswith("#")):
+        return difflib.SequenceMatcher(None, a[0], b[0]).ratio() >= SAME_WORD_RATIO
+    return False
+
+
+def word_flags(expected_text, transcript_words, audio_end_s, speech_end_s=None):
     """misread flags (misread, missed, added words) from a word diff of the
     line against the transcript, plus a cut_off flag when the line's last word
-    is missing or ends within 0.1 s of the end of the audio."""
+    is missing, or ends within 0.1 s of the end of the audio while the voice
+    itself (speech_end_s) also ends within 0.3 s of it.
+
+    Transcript words starting more than 0.25 s after speech_end_s are
+    ignored (Whisper's tail hallucinations, "Thank you.")."""
+    words = list(transcript_words or [])
+    if speech_end_s is not None:
+        words = [w for w in words if w[1] <= speech_end_s + HALLUCINATION_AFTER_S]
     exp = _expected_tokens(expected_text)
-    got = _timed_tokens(transcript_words or [])
+    got = _timed_tokens(words)
     a, b = [t[0] for t in exp], [t[0] for t in got]
     sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
     flags = []
     last_missing = False
+    last_match = None              # the transcript item heard as the last word
     for op, i1, i2, j1, j2 in sm.get_opcodes():
-        if op == "equal":
+        if op == "equal" or (op == "replace" and _same_words(a[i1:i2], b[j1:j2])):
+            if i2 == len(exp):
+                last_match = got[j2 - 1]
             continue
         said = [t[1] for t in got[j1:j2]]
         meant = [t[1] for t in exp[i1:i2]]
@@ -441,17 +631,20 @@ def word_flags(expected_text, transcript_words, audio_end_s):
                 last_missing = True        # the end of the line never came
                 if i2 - i1 == 1:
                     continue               # the cut_off says it
-                meant = meant[:-1]
+                meant = [t[1] for t in exp[i1:i2 - 1]]
             at = got[j1 - 1][3] if j1 > 0 else 0.0
             flags.append(flag("misread", f'may have missed "{_quote(meant)}"', at))
         elif op == "insert":
             flags.append(flag("misread", f'may have added "{_quote(said)}"', got[j1][2]))
 
     if exp:
-        last_end = got[-1][3] if got else 0.0
-        if last_missing or (got and audio_end_s - last_end < CUT_OFF_TAIL_S):
-            flags.insert(0, flag("cut_off", f'last word "{exp[-1][1]}" cut off',
-                                 last_end if got else None))
+        voice_near_end = (speech_end_s is None
+                          or audio_end_s - speech_end_s <= DROP_RULE_MAX_TAIL_S)
+        word_at_end = (last_match is not None and voice_near_end
+                       and audio_end_s - last_match[3] < CUT_OFF_TAIL_S)
+        if last_missing or word_at_end:
+            at = last_match[3] if last_match else (got[-1][3] if got else None)
+            flags.insert(0, flag("cut_off", f'last word "{exp[-1][1]}" cut off', at))
     return flags
 
 
@@ -473,6 +666,13 @@ class WhisperTranscriber(Transcriber):
         self.device = (device or "auto").lower()
         self._model = None
         self._on_cuda = False
+        self._load_error = None
+
+    def reset(self):
+        """Forget a failed load (or the loaded model) so the next use retries."""
+        self._model = None
+        self._on_cuda = False
+        self._load_error = None
 
     @property
     def loaded(self):
@@ -488,10 +688,14 @@ class WhisperTranscriber(Transcriber):
     def load(self):
         if self._model is not None:
             return
+        if self._load_error is not None:     # don't re-download on every take
+            raise CheckError(str(self._load_error))
         try:
             from faster_whisper import WhisperModel
         except Exception as e:  # ImportError, or a broken install
-            raise CheckError(f"Checks unavailable: faster-whisper is not installed ({e})") from None
+            self._load_error = CheckError(
+                f"Checks unavailable: faster-whisper is not installed ({e})")
+            raise CheckError(str(self._load_error)) from None
         err = None
         for device, compute in self._attempts():
             try:
@@ -501,8 +705,9 @@ class WhisperTranscriber(Transcriber):
                 return
             except Exception as e:
                 err = e
-        raise CheckError(f"Checks unavailable: could not load the speech model "
-                         f"{self.model_name} ({err})")
+        self._load_error = CheckError(f"Checks unavailable: could not load the speech "
+                                      f"model {self.model_name} ({err})")
+        raise CheckError(str(self._load_error))
 
     def _run(self, samples):
         segments, _info = self._model.transcribe(
@@ -523,12 +728,15 @@ class WhisperTranscriber(Transcriber):
             return self._run(samples)
         except Exception as e:
             # CUDA can load and then fail on first use (missing cuDNN DLLs).
-            if self._on_cuda and self.device == "auto":
-                self._model = None
-                self.device = "cpu"
-                self.load()
-                return self._run(samples)
-            raise CheckError(f"transcription failed: {e}") from None
+            if not (self._on_cuda and self.device == "auto"):
+                raise CheckError(f"transcription failed: {e}") from None
+            self._model = None
+            self.device = "cpu"
+            self.load()
+        try:
+            return self._run(samples)
+        except Exception as e:
+            raise CheckError(f"transcription failed on the CPU: {e}") from None
 
 
 # --------------------------------------------------------------- the check ----
@@ -558,7 +766,8 @@ def check_take(path, line_text, transcriber):
     text, words = transcriber.transcribe(samples, rate)
     words = [(str(w), float(s), float(e)) for w, s, e in (words or [])]
     audio = analyse(samples, rate, peak_dbfs=peak_dbfs, clipped=clipped, words=words)
-    flags = order_flags(audio["flags"] + word_flags(line_text, words, audio["duration_s"]))
+    flags = order_flags(audio["flags"] + word_flags(line_text, words, audio["duration_s"],
+                                                      speech_end_s=audio["speech_end_s"]))
     return {
         "ok": not any(f["kind"] in SEVERE for f in flags),
         "flags": flags,

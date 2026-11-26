@@ -145,7 +145,7 @@ class AbruptEndFlagged(TakeTestCase):
         take = Take().quiet(0.3)
         take.say("the").say("road").say("to")
         take.say("Skaill", seconds=0.4, gap=0, burst=cut_word)
-        take.quiet(0.5)  # well clear of the file's end: only the drop test
+        take.quiet(0.15)  # clear of the 0.1 s rule, inside the 0.3 s drop-rule window
         r = self.check(take, "The road to Skaill.")
         self.assertEqual(kinds(r), ["cut_off"], r["flags"])
         self.assertEqual(r["flags"][0]["text"], "ends too abruptly")
@@ -427,6 +427,215 @@ class Settings(unittest.TestCase):
             with open(os.path.join(d, "autocue_settings.json"), "w") as f:
                 f.write('{"check_model": "small.en"}')
             self.assertEqual(take_checks.load_settings(d)["check_model"], "small.en")
+
+
+# ------------------------------------------------------- fix round 1 ----
+
+def fade_word(fade_s):
+    """A burst that stops with a short linear fade (a natural sharp stop)."""
+    def burst(seconds, amp=0.3):
+        sig = cut_word(seconds, amp)
+        n = int(round(fade_s * RATE))
+        sig[-n:] *= np.linspace(1.0, 0.0, n)
+        return sig
+    return burst
+
+
+class DropRuleOnlyNearEnd(TakeTestCase):
+    def _take(self, fade_s, tail_s):
+        take = Take().quiet(0.3)
+        take.say("the").say("road").say("to")
+        take.say("Skaill", seconds=0.4, gap=0, burst=fade_word(fade_s))
+        return take.quiet(tail_s)
+
+    def test_sharp_stop_then_room_tone_is_fine(self):
+        for fade in (0.01, 0.03, 0.05):
+            with self.subTest(fade=fade):
+                r = self.check(self._take(fade, 0.6), "The road to Skaill.")
+                self.assertNotIn("cut_off", kinds(r), r["flags"])
+                self.assertTrue(r["ok"])
+
+    def test_sharp_stop_near_the_end_is_cut_off(self):
+        for fade in (0.01, 0.03, 0.05):
+            with self.subTest(fade=fade):
+                r = self.check(self._take(fade, 0.15), "The road to Skaill.")
+                self.assertEqual(kinds(r), ["cut_off"], r["flags"])
+
+    def test_window_constant(self):
+        self.assertEqual(take_checks.DROP_RULE_MAX_TAIL_S, 0.3)
+
+
+def same(line, heard_text):
+    return take_checks.word_flags(line, timed(heard_text), 100.0)
+
+
+class BritishSpellingsMatch(unittest.TestCase):
+    def test_families(self):
+        cases = [
+            ("The colour of the harbour.", "the color of the harbor"),
+            ("His favourite neighbours.", "his favorite neighbors"),
+            ("They organised it.", "they organized it"),
+            ("Civilisation and realising it.", "civilization and realizing it"),
+            ("The centre, a metre wide.", "the center a meter wide"),
+            ("The theatre's fibres.", "the theater's fibers"),
+            ("They travelled, modelling and cancelled.", "they traveled modeling and canceled"),
+            ("A grey sky.", "a gray sky"),
+            ("The programme.", "the program"),
+            ("The defence.", "the defense"),
+            ("Ten per cent.", "ten percent"),
+            ("Ten per cent.", "10%"),
+            ("10%", "ten percent"),
+            ("We co-operate.", "we cooperate"),
+            ("We co operate.", "we cooperate"),
+        ]
+        for line, heard in cases:
+            with self.subTest(line=line, heard=heard):
+                self.assertEqual(same(line, heard), [])
+
+    def test_near_spelling_one_to_one(self):
+        self.assertEqual(same("The Thames at Wapping.", "the thames at whapping"), [])
+
+    def test_real_differences_still_flagged(self):
+        for line, heard in [("It let it.", "he let it"), ("The road.", "the rode"),
+                            ("In 1854.", "in 1845")]:
+            with self.subTest(line=line):
+                self.assertEqual([f["kind"] for f in same(line, heard)], ["misread"])
+
+
+class NumbersByValue(unittest.TestCase):
+    def test_counts_and_years(self):
+        for heard in ["About 1,500 people", "about fifteen hundred people",
+                      "about one thousand five hundred people", "About 1500 people"]:
+            with self.subTest(heard=heard):
+                self.assertEqual(same("About 1500 people.", heard), [])
+        self.assertEqual(same("About 1,500 people.", "about fifteen hundred people"), [])
+        self.assertEqual(same("In 2005.", "in two thousand and five"), [])
+        self.assertEqual(same("In 1854, 47 men.", "in eighteen fifty-four forty-seven men"), [])
+        self.assertEqual(same("The 23rd.", "the twenty-third"), [])
+
+    def test_display_keeps_the_written_form(self):
+        flags = same("About 1500 people.", "about 1600 people")
+        self.assertEqual([f["text"] for f in flags], ['may have misread: "1600" for "1500"'])
+
+
+class TailHallucination(TakeTestCase):
+    def test_thank_you_after_room_tone_is_ignored(self):
+        take = Take().quiet(0.3)
+        for w in ["the", "road", "to", "Skaill"]:
+            take.say(w)
+        take.quiet(1.2)
+        end = take.t
+        heard = take.words + [("Thank", end - 0.6, end - 0.35), ("you.", end - 0.35, end - 0.01)]
+        r = self.check(take, "The road to Skaill.", heard)
+        self.assertEqual(r["flags"], [])
+        self.assertTrue(r["ok"])
+
+    def test_last_word_stretched_to_the_end(self):
+        take = Take().quiet(0.3)
+        for w in ["the", "road", "to", "Skaill"]:
+            take.say(w)
+        take.quiet(0.5)
+        heard = take.words[:-1] + [("Skaill.", take.words[-1][1], take.t - 0.02)]
+        r = self.check(take, "The road to Skaill.", heard)
+        self.assertNotIn("cut_off", kinds(r), r["flags"])
+
+    def test_word_flags_takes_speech_end(self):
+        heard = timed("the road to Skaill")
+        end_of_skaill = heard[3][2]
+        heard += [("Thank", end_of_skaill + 0.6, end_of_skaill + 0.9),
+                  ("you.", end_of_skaill + 0.9, end_of_skaill + 1.2)]
+        flags = take_checks.word_flags("The road to Skaill.", heard, end_of_skaill + 2.0,
+                                       speech_end_s=end_of_skaill)
+        self.assertEqual(flags, [])
+
+
+class FakeSegment:
+    def __init__(self, text, words):
+        self.text = text
+        self.words = [mock.Mock(word=w, start=s, end=e) for w, s, e in words]
+
+
+class WhisperFallbacks(unittest.TestCase):
+    def _fake(self, behaviour):
+        made = []
+
+        class FakeModel:
+            def __init__(self, name, device, compute_type):
+                made.append(device)
+                behaviour.get(("init", device), lambda: None)()
+                self.device = device
+
+            def transcribe(self, samples, **kw):
+                behaviour.get(("run", self.device), lambda: None)()
+                seg = FakeSegment(" Hello there.", [(" Hello", 0.1, 0.4), (" there.", 0.4, 0.8)])
+                return iter([seg]), None
+
+        return mock.Mock(WhisperModel=FakeModel), made
+
+    @staticmethod
+    def _raise(msg):
+        def f():
+            raise RuntimeError(msg)
+        return f
+
+    def test_cuda_fails_at_transcribe_time(self):
+        fake, made = self._fake({("run", "cuda"): self._raise("cudnn missing")})
+        with mock.patch.dict("sys.modules", {"faster_whisper": fake}):
+            t = take_checks.WhisperTranscriber("medium.en", "auto")
+            text, words = t.transcribe(np.zeros(1600, np.float32), 16000)
+        self.assertEqual(made, ["cuda", "cpu"])
+        self.assertEqual(text, "Hello there.")
+        self.assertEqual(words, [("Hello", 0.1, 0.4), ("there.", 0.4, 0.8)])
+
+    def test_cpu_retry_failing_is_a_check_error(self):
+        fake, _ = self._fake({("run", "cuda"): self._raise("cudnn missing"),
+                              ("run", "cpu"): self._raise("out of memory")})
+        with mock.patch.dict("sys.modules", {"faster_whisper": fake}):
+            t = take_checks.WhisperTranscriber("medium.en", "auto")
+            with self.assertRaises(CheckError) as cm:
+                t.transcribe(np.zeros(1600, np.float32), 16000)
+        self.assertIn("out of memory", str(cm.exception))
+
+    def test_failed_load_is_cached_until_reset(self):
+        fail = {"on": True}
+
+        def maybe():
+            if fail["on"]:
+                raise RuntimeError("download failed")
+
+        fake, made = self._fake({("init", "cuda"): maybe, ("init", "cpu"): maybe})
+        with mock.patch.dict("sys.modules", {"faster_whisper": fake}):
+            t = take_checks.WhisperTranscriber("medium.en", "auto")
+            with self.assertRaises(CheckError) as first:
+                t.load()
+            with self.assertRaises(CheckError) as second:
+                t.load()
+            self.assertEqual(str(first.exception), str(second.exception))
+            self.assertTrue(str(first.exception).startswith("Checks unavailable: "))
+            self.assertEqual(made, ["cuda", "cpu"])  # not tried again
+            fail["on"] = False
+            t.reset()
+            t.load()
+            self.assertTrue(t.loaded)
+
+
+class FfmpegTimeout(TakeTestCase):
+    def test_timeout_is_a_check_error(self):
+        import subprocess
+        path = Take().quiet(0.2).write(self.path())
+        real = subprocess.run
+        seen = {}
+
+        def slow(cmd, **kw):
+            seen["timeout"] = kw.get("timeout")
+            raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+
+        with mock.patch.object(take_checks.subprocess, "run", side_effect=slow):
+            with self.assertRaises(CheckError) as cm:
+                take_checks.decode(path)
+        self.assertEqual(seen["timeout"], 60)
+        self.assertIn("timed out", str(cm.exception))
+        self.assertIs(subprocess.run, real)
 
 
 if __name__ == "__main__":
