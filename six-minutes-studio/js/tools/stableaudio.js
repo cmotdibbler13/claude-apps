@@ -12,7 +12,7 @@ export const MSG_DIDNT_START = "Stable Audio didn't start. Look at its Terminal 
 export const MSG_STOPPED = "Stable Audio was stopped.";
 
 // With shell:true Node does not quote arguments, so quote any that cmd.exe would split or interpret.
-const quote = (a) => (/[\s&()^]/.test(a) && !/^".*"$/.test(a) ? `"${a}"` : a);
+const quote = (a) => (/[\s&()^|<>%!"]/.test(a) ? `"${String(a).replace(/"/g, '""')}"` : a);
 
 const base = (sa) => String(sa.url).replace(/\/+$/, "");
 
@@ -52,6 +52,8 @@ export function makeStableAudioStarter({ sleep, settings }) {
     const live = await stableAudioState(host, sa());
     if (live === "ready") { set("ready"); return; }
     if (live === "music") { set("music", MSG_MUSIC); throw new Error(MSG_MUSIC); }
+    const stopped = () => { if (!running) set("off"); throw new Error(MSG_STOPPED); };
+    if (gen !== myGen) stopped();
     set("starting");
     let output = "", exited = false;
     const p = host.spawn(quote(sa().pterm), ["run", sa().app, "--default", "start.js?model=small-sfx"].map(quote), { shell: true });
@@ -66,9 +68,9 @@ export function makeStableAudioStarter({ sleep, settings }) {
     const fail = (msg, st = "failed") => { set(st, msg); kill(); throw new Error(msg); };
     for (let i = 1; i <= MAX_POLLS; i++) {
       await sleep(POLL_MS);
-      if (gen !== myGen) throw new Error(MSG_STOPPED);
+      if (gen !== myGen) { kill(); stopped(); }
       const s = await stableAudioState(host, sa());
-      if (gen !== myGen) throw new Error(MSG_STOPPED);
+      if (gen !== myGen) { kill(); stopped(); }
       if (s === "ready") { set("ready"); return; }
       if (s === "music") return fail(MSG_MUSIC, "music");
       if (exited) return fail(i === 1 || /42000|ECONNREFUSED|connect/i.test(output) ? MSG_PINOKIO : MSG_DIDNT_START);

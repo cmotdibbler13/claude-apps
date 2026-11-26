@@ -212,3 +212,40 @@ test("pterm exiting after ready sets state off", async () => {
   s.ptermProcs[0].exit(1);
   assert.equal(s.starter.state(), "off");
 });
+
+test("stop during the initial probe spawns nothing and ends off", async () => {
+  const s = setup({ curlCode: () => 7 });
+  const starter = makeStableAudioStarter({ settings: { stableAudio: SA }, sleep: async () => {} });
+  const p = starter.ensure(s.host);
+  await starter.stop();
+  await assert.rejects(p, { message: "Stable Audio was stopped." });
+  assert.equal(s.pterms().length, 0);
+  assert.equal(starter.state(), "off");
+});
+
+test("stop during a poll's state check kills pterm and ends off", async () => {
+  const s = setup();
+  let killed = false, curls = 0;
+  const starter = makeStableAudioStarter({ settings: { stableAudio: SA }, sleep: async () => {} });
+  s.host.spawnScript((cmd, args, opts, p) => {
+    s.spawns.push({ cmd, args, opts });
+    if (cmd === "curl") {
+      if (++curls === 2) starter.stop(); // the first poll's probe
+      p.err("refused"); return p.exit(7);
+    }
+    const orig = p.exit; p.exit = (c) => { killed = true; orig(c); };
+  });
+  await assert.rejects(starter.ensure(s.host), { message: "Stable Audio was stopped." });
+  assert.equal(starter.state(), "off");
+  assert.equal(killed, true);
+});
+
+test("quoting covers shell metacharacters and doubles embedded quotes", async () => {
+  const s = setup({ curlCode: () => 7 });
+  const settings = { stableAudio: { ...SA, pterm: "p|q.cmd", app: 'C:\\a"b%c!.git' } };
+  const starter = makeStableAudioStarter({ settings, sleep: async () => {} });
+  await assert.rejects(starter.ensure(s.host));
+  const pt = s.pterms()[0];
+  assert.equal(pt.cmd, '"p|q.cmd"');
+  assert.equal(pt.args[1], '"C:\\a""b%c!.git"');
+});
