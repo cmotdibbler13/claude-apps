@@ -661,7 +661,13 @@ async function boot() {
   app.host = host;
   const desktop = await window.claude.use("desktop");
   desktop.app?.dock?.setIcon(drawIcon()).catch(() => {});
-  mountProbe(host, $("run-probe"), $("probe-results"), () => app.settings);
+  // Probe re-reads .studio-settings.json and updates the one settings object every runner holds.
+  mountProbe(host, $("run-probe"), $("probe-results"), () => app.settings, async () => {
+    if (!app.root || !app.settings) return;
+    const fresh = await loadSettings(host, app.root);
+    for (const k of Object.keys(app.settings)) if (!(k in fresh)) delete app.settings[k];
+    Object.assign(app.settings, fresh);
+  });
   await startWithAccess();
 }
 

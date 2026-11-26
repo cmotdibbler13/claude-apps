@@ -181,7 +181,25 @@ test("Stem Remixer check fails with the settings text when the folder or a file 
   assert.equal(unset.detail, want);
   const noFit = named(await runChecks(await srHost({ files: [".venv\\Scripts\\python.exe", "measure.py"] }), () => {}, srSettings()), "Stem Remixer");
   assert.equal(noFit.ok, false);
-  assert.equal(noFit.detail, want);
+  assert.equal(noFit.detail, `fit.py isn't in ${SRD}. Press Update in Stem Remixer (1.9.0 or newer).`);
+  const noPy = named(await runChecks(await srHost({ files: ["fit.py", "measure.py"] }), () => {}, srSettings()), "Stem Remixer");
+  assert.equal(noPy.detail, `Stem Remixer's Python isn't at ${SRD}\\.venv\\Scripts\\python.exe. Run Install.cmd in ${SRD}, then Probe again.`);
+});
+
+test("Probe re-reads settings before running, so a setting added while the app is open counts", async () => {
+  const { mountProbe } = await import("../js/ui/probe.js");
+  const host = new FakeHost();
+  host.spawnScript((cmd, args, o, p) => { p.out("ok"); p.exit(0); });
+  host.fs.list = async () => [];
+  const settings = { ...srSettings({ stemRemixerDir: null }) };
+  const rows = [];
+  const list = { replaceChildren() {}, append(li) { rows.push(li); } };
+  const button = {};
+  globalThis.document ??= { createElement: () => ({ append() {}, set textContent(v) { this.t = v; }, className: "" }) };
+  let reloaded = 0;
+  mountProbe(host, button, list, () => settings, async () => { reloaded++; settings.stemRemixerDir = SRD; });
+  await button.onclick();
+  assert.equal(reloaded, 1);
 });
 
 test("Stem Remixer check fails on a version below 1.9.0", async () => {

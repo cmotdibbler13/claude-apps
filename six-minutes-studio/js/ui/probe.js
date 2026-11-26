@@ -50,8 +50,12 @@ const older = (v, want) => {
 };
 const stemRemixerCheck = (dir) => async (host) => {
   if (!dir) throw new Error(MSG_SET_STEM_REMIXER);
-  for (const f of [stemPython(dir), join(dir, "fit.py"), join(dir, "measure.py")]) {
-    if (!(await host.fs.exists(f))) throw new Error(MSG_SET_STEM_REMIXER);
+  if (!(await host.fs.exists(dir))) throw new Error(`No folder at ${dir}. ${MSG_SET_STEM_REMIXER}`);
+  if (!(await host.fs.exists(stemPython(dir)))) {
+    throw new Error(`Stem Remixer's Python isn't at ${stemPython(dir)}. Run Install.cmd in ${dir}, then Probe again.`);
+  }
+  for (const f of ["fit.py", "measure.py"]) {
+    if (!(await host.fs.exists(join(dir, f)))) throw new Error(`${f} isn't in ${dir}. Press Update in Stem Remixer (1.9.0 or newer).`);
   }
   let v = null;
   try { v = String(await host.fs.read(join(dir, "VERSION"), "utf8")).trim() || null; } catch { /* no VERSION file */ }
@@ -134,11 +138,13 @@ function row(r) {
   return li;
 }
 
-// getSettings() gives the loaded .studio-settings.json (defaults until the root is read).
-export function mountProbe(host, button, list, getSettings = () => DEFAULT_SETTINGS) {
+// getSettings() gives the loaded .studio-settings.json (defaults until the root is read). reload(), when
+// given, re-reads the file first, so a setting changed while the app is open counts straight away.
+export function mountProbe(host, button, list, getSettings = () => DEFAULT_SETTINGS, reload = null) {
   button.onclick = async () => {
     button.disabled = true;
     list.replaceChildren();
+    if (reload) { try { await reload(); } catch { /* keep the settings already loaded */ } }
     await runChecks(host, (r) => list.append(row(r)), getSettings() ?? DEFAULT_SETTINGS);
     button.disabled = false;
   };
