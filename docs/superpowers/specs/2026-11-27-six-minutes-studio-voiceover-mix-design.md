@@ -38,7 +38,14 @@ The fit is the slow part. ElevenLabs lands the score's big moves 5–15 s off th
    - a limiter with about -1.5 dB headroom.
 
    Studio plays it with a scrubber and the section marks. It also exports `<project>_mix_preview.mp3`, the mix WAV, a voice stem and a ducked-music stem.
-4. **Hand-tweak in Stem Remixer.** An **Open in Stem Remixer** button opens the score with the fit's stretches saved as sections and the chain set. Jon fixes a join by ear and exports. Studio offers **Use this export** and remakes the mix from it.
+4. **Hand-tweak in Stem Remixer (Jon: "make Stem Remixer match").**
+   - An **Open in Stem Remixer** button opens the score with the fit's stretches saved as sections and the chain set.
+   - Stem Remixer plays and exports the chain **exactly as `fit.py` renders it**. That needs:
+     - per-section tempo;
+     - a per-join crossfade (beat-short or ambient-long);
+     - no 9-section cap: the first nine keep their number keys, and the rest are reached by click.
+   - Jon fixes a join by ear and exports. Studio offers **Use this export**, re-measures it, updates the fit sheet, and remakes the mix from it.
+   - These additions are normal Stem Remixer features. They work on any song, they are documented in its README, and they ship as a version bump through its updater.
 
 ## Non-goals (this build)
 - The cloned voice (VoiceStudio). This build is own voice only.
@@ -99,6 +106,14 @@ The fit is the slow part. ElevenLabs lands the score's big moves 5–15 s off th
   - The steps are rendered in order with 30 ms equal-power crossfades on the beat, or 2.5 s crossfades in ambient stretches with no clear beat.
   - Studio checks the plan before rendering: the total length is within 0.5 s of the film length, and the tempos are within ±10 %.
 - **Measuring.** Loudness in 0.1 s steps smoothed over 1.5 s, an onset/beat grid, and the big moves (rises and drops of 6 dB or more held for 2 s, and the final fade). One JSON per take, cached beside it.
+- **Film length** = voiceover + 6 s cold-open hold + end card. The end card is a Studio setting, `endCardS`, default 12 s (the video skill says 10–15 s).
+  - The fitted score and the mix run the full film length. The 5 s fade-out ends at the film's end, under the end card.
+  - The plan check uses this length.
+- **When the fit falls short.** The app never declares a score "unfittable". The fit sheet shows each section's miss in seconds. If any big move still lands more than 5 s from its target, it suggests a new score take on the Score card (which costs credits) and leaves the decision to Jon.
+- **Opening a score in Stem Remixer doesn't split it.** Stem Remixer gains a one-stem load:
+  - `main.py --open <file> [--plan <plan.json>]` loads the file as a single stem called "score";
+  - its project folder is `Stems\<song> [single]\` (`project.json` plus the stem WAV), so saved sections, chain and mix settings persist the same way as for split songs;
+  - no Demucs run, so it is instant.
 - **Stem Remixer `fit.py`.** `fit.py <score> <plan.json> <out.wav>` loads the audio as one stem, renders the steps with the new per-step tempo and beat crossfades, and writes a 48 kHz WAV. It also prints JSON progress lines.
   - **Open in Stem Remixer** writes the plan's steps as that song's saved sections and chain (in the settings file Stem Remixer already keeps per song), then starts the app with the score's path.
   - Stem Remixer gains a matching option: an optional path argument to open a file on start.
