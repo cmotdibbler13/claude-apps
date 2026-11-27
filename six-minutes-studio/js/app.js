@@ -11,11 +11,11 @@ import { makeFilmSession, readSavedJobs } from "./session.js";
 import { makeJobs } from "./jobs.js";
 import { notifyRules } from "./notify.js";
 import { buildShotList } from "./shots.js";
-import { startTake, approve, unapprove, choose, setTool, setPreferComfy, addBlender3d } from "./redo.js";
+import { startTake, approve, unapprove, choose, setTool, setPreferComfy, addBlender3d, addAnimated, removeVersion } from "./redo.js";
 import { ensureProxy, toBlobUrl, openFull, revokeAll } from "./media.js";
 import { makeHiggsfieldRunner } from "./tools/higgsfield.js";
 import { makeBlenderRunner } from "./tools/blender.js";
-import { makeComfyRunner } from "./tools/comfyui.js";
+import { makeComfyRunner, i2vReady } from "./tools/comfyui.js";
 import { makeStableAudioStarter, makeStableAudioRunner } from "./tools/stableaudio.js";
 import { makeComfyStarter } from "./tools/comfystart.js";
 import { autostart, toolsLine } from "./autostart.js";
@@ -173,7 +173,7 @@ async function renderNow() {
     const r = app.review;
     const model = reviewView.reviewModel({
       film: app.film, state: app.store?.state, layout: app.layout, making: r.making, listError: r.listError,
-      cardErrors: r.cardErrors, pending: r.pending, noteFor: r.noteFor, openError: app.openError, prefError: r.prefError ?? null, narration: r.narration ?? null, playing: app.playing, paused: !!app.paused,
+      cardErrors: r.cardErrors, pending: r.pending, noteFor: r.noteFor, openError: app.openError, prefError: r.prefError ?? null, i2v: r.i2v ?? null, removeFor: r.removeFor ?? null, narration: r.narration ?? null, playing: app.playing, paused: !!app.paused,
       audio: app.store?.state?.audio ?? null,
       sa: app.starter ? { state: app.starter.state(), message: app.starter.message() } : null,
       audioUi: { estimating: r.estimating, planning: !!r.planning, planError: r.planError ?? null, adding: !!r.adding, addError: r.addError ?? null },
@@ -283,8 +283,18 @@ async function openReview(dir) {
     app.store = store;
   }
   showView("review");
+  refreshI2v();
   // One free check so the Stable Audio chip is right when Small SFX is already running or was stopped by hand.
   if (app.starter) Promise.resolve(app.starter.refresh(app.host)).catch(() => {}).then(() => render());
+}
+
+// Animate with ComfyUI needs the image-to-video workflow set up: checked when a review opens and after Probe.
+async function refreshI2v() {
+  const r = app.review;
+  if (!r || !app.host) return;
+  let v;
+  try { v = await i2vReady(app.host, app.settings?.comfy ?? {}); } catch (e) { v = { ok: false, why: msg(e) }; }
+  if (app.review === r) { r.i2v = v; render(); }
 }
 
 // ---- live jobs ----
@@ -709,6 +719,13 @@ const reviewActions = {
     app.review.noteFor = null; app.review.draft = "";
   }),
   make3d: cardAction((id) => addBlender3d(ctx(), id)),
+  animate: cardAction((id) => addAnimated(ctx(), id)),
+  // Remove this version asks first, on the card; the takes stay on disk.
+  askRemove(id) { app.review.removeFor = id; app.review.cardErrors.delete(id); render(); },
+  cancelRemove() { app.review.removeFor = null; render(); },
+  removeVersion: cardAction(async (id) => {
+    try { await removeVersion(ctx(), id); } finally { if (app.review.removeFor === id) app.review.removeFor = null; }
+  }),
   // Through cardAction so the per-shot pending guard also covers a take being prepared.
   setTool: cardAction((id, tool) => setTool(ctx(), id, tool)),
   // Ignored while any card action or the shot list is in flight; resolves true once saved.
@@ -889,7 +906,7 @@ async function boot() {
     const fresh = await loadSettings(host, app.root);
     for (const k of Object.keys(app.settings)) if (!(k in fresh)) delete app.settings[k];
     Object.assign(app.settings, fresh);
-  }, () => ({ comfy: app.comfyStarter, stableAudio: app.starter }));
+  }, () => ({ comfy: app.comfyStarter, stableAudio: app.starter }), () => refreshI2v());
   await startWithAccess();
 }
 

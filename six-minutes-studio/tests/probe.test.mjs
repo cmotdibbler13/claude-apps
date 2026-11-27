@@ -204,6 +204,30 @@ test("Probe re-reads settings before running, so a setting added while the app i
   assert.equal(reloaded, 1);
 });
 
+test("a neutral result shows as a neutral row, not a red failure; Probe tells the app when it's done", async () => {
+  const { probeRow, mountProbe } = await import("../js/ui/probe.js");
+  const mk = () => { const el = { kids: [], className: "", textContent: "", append(...k) { this.kids.push(...k); } }; return el; };
+  const saved = globalThis.document;
+  globalThis.document = { createElement: mk };
+  try {
+    const n = probeRow({ name: "Animate workflow", ok: false, neutral: true, detail: "Not set up (only needed for Animate with ComfyUI): x" });
+    assert.equal(n.className, "neutral");
+    assert.equal(n.kids[0].textContent, "Optional");
+    const f = probeRow({ name: "Blender", ok: false, detail: "exit 1" });
+    assert.equal(f.className, "fail");
+    assert.equal(f.kids[0].textContent, "Fail");
+    assert.equal(probeRow({ name: "curl", ok: true, detail: "ok" }).className, "pass");
+    const host = new FakeHost();
+    host.spawnScript((cmd, args, o, p) => { p.out("ok"); p.exit(0); });
+    host.fs.list = async () => [];
+    const button = {};
+    let done = null;
+    mountProbe(host, button, { replaceChildren() {}, append() {} }, () => srSettings(), null, () => ({}), (results) => { done = results; });
+    await button.onclick();
+    assert.ok(Array.isArray(done) && done.some((r) => r.name === "Animate workflow"));
+  } finally { globalThis.document = saved; }
+});
+
 test("Stem Remixer check fails on a version below 1.9.0", async () => {
   const r = named(await runChecks(await srHost({ version: "1.8.2" }), () => {}, srSettings()), "Stem Remixer");
   assert.equal(r.ok, false);
@@ -234,12 +258,19 @@ test("Animate workflow row: ready, or says what is missing", async () => {
   assert.equal(names[names.indexOf("ComfyUI") + 1], "Animate workflow");
   const miss = await get(comfySettings({ i2v: { workflow: wf, nodes } }));
   assert.equal(miss.ok, false);
-  assert.equal(miss.detail, "animate_i2v.json isn't in ComfyUI workflows");
+  // Not a failure: animation is optional, so the row is neutral and says why.
+  assert.equal(miss.neutral, true);
+  assert.equal(miss.detail, "Not set up (only needed for Animate with ComfyUI): animate_i2v.json isn't in ComfyUI workflows");
   host.files.set(wf, "{}");
   const nonodes = await get(comfySettings({ i2v: { workflow: wf, nodes: { prompt: ["2", "text"] } } }));
   assert.equal(nonodes.ok, false);
-  assert.match(nonodes.detail, /^comfy\.i2v\.nodes needs image, prompt and output/);
+  assert.equal(nonodes.neutral, true);
+  assert.match(nonodes.detail, /^Not set up \(only needed for Animate with ComfyUI\): comfy\.i2v\.nodes needs image, prompt and output/);
   const ok = await get(comfySettings({ i2v: { workflow: wf, nodes } }));
   assert.equal(ok.ok, true);
   assert.equal(ok.detail, "ready");
+  assert.ok(!ok.neutral);
+  // Other failures stay failures.
+  const comfy = (await runChecks(host, () => {}, comfySettings({ i2v: { workflow: wf, nodes } }))).find((r) => r.name === "Stem Remixer");
+  assert.ok(!comfy.neutral);
 });

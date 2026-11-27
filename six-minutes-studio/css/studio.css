@@ -32,6 +32,7 @@ h2{font-weight:500;font-size:13px;letter-spacing:.2em;text-transform:uppercase;c
 .checks .pass .st{color:var(--tide)}
 .checks .fail{border-color:var(--eng)}
 .checks .fail .st{color:var(--eng)}
+.checks .neutral .st{color:var(--mut)}
 .checks .detail{grid-column:2;font-size:13px;color:var(--mut);white-space:pre-wrap;overflow-wrap:anywhere}
 .nav .cnt{color:var(--tide);margin-left:6px}
 .banner{background:var(--s1);border:1px solid var(--brass);color:var(--brass);padding:12px 16px;margin:0 0 18px;font-size:14px}
@@ -102,6 +103,15 @@ h2{font-weight:500;font-size:13px;letter-spacing:.2em;text-transform:uppercase;c
 .src .media .ph{font-size:10px;padding:2px}
 .hist{font-size:12px;color:var(--fnt);overflow-wrap:anywhere}
 .hist q{color:var(--mut)}
+.checks3d{display:flex;align-items:flex-start;gap:10px;font-size:12px;color:var(--mut);min-width:0}
+.checks3d .media{position:relative;width:96px;aspect-ratio:16/9;background:var(--s0);flex:none}
+.checks3d .media img{width:100%;height:100%;object-fit:contain}
+.checks3d .media .ph{font-size:10px;padding:2px}
+.checks3d ul{list-style:none;margin:0;padding:0;display:grid;gap:2px;min-width:0}
+.checks3d li{overflow-wrap:anywhere}
+.checks3d b{font-weight:500;color:var(--ink)}
+.row.confirm{margin-top:0;flex-wrap:wrap;align-items:center;gap:8px;font-size:13px;color:var(--ink)}
+.row.confirm span{flex:1 1 100%}
 .row{display:flex;flex-wrap:wrap;gap:8px;margin-top:auto}
 .takes{display:flex;gap:4px}
 .takes button{background:none;border:1px solid var(--rule);width:30px;height:30px;font-size:12px}

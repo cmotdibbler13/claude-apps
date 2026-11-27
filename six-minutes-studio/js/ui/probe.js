@@ -34,9 +34,11 @@ const comfyCheck = (comfy) => async (host) => {
 };
 
 // Animate workflow: the image-to-video workflow file and its image, prompt and output nodes.
+// Optional: not set up is a neutral row, not a failure.
+export const MSG_ANIMATE_NOT_SET = "Not set up (only needed for Animate with ComfyUI)";
 const animateCheck = (comfy) => async (host) => {
   const r = await i2vReady(host, comfy);
-  if (!r.ok) throw new Error(r.why);
+  if (!r.ok) throw Object.assign(new Error(`${MSG_ANIMATE_NOT_SET}: ${r.why}`), { neutral: true });
   return "ready";
 };
 
@@ -134,17 +136,17 @@ export async function runChecks(host, onResult = () => {}, settings = DEFAULT_SE
   for (const c of makeChecks(settings)) {
     let r;
     try { r = { name: c.name, ok: true, detail: await c.run(host) }; }
-    catch (e) { r = { name: c.name, ok: false, detail: String(e?.message ?? e), install: !!e?.install, ...(e?.start ? { start: e.start } : {}) }; }
+    catch (e) { r = { name: c.name, ok: false, detail: String(e?.message ?? e), install: !!e?.install, ...(e?.neutral ? { neutral: true } : {}), ...(e?.start ? { start: e.start } : {}) }; }
     out.push(r);
     onResult(r);
   }
   return out;
 }
 
-function row(r) {
+export function probeRow(r) {
   const li = document.createElement("li");
-  li.className = r.ok ? "pass" : "fail";
-  const st = document.createElement("span"); st.className = "st"; st.textContent = r.ok ? "Pass" : "Fail";
+  li.className = r.ok ? "pass" : r.neutral ? "neutral" : "fail";
+  const st = document.createElement("span"); st.className = "st"; st.textContent = r.ok ? "Pass" : r.neutral ? "Optional" : "Fail";
   const nm = document.createElement("span"); nm.textContent = r.name;
   const d = document.createElement("span"); d.className = "detail"; d.textContent = r.detail;
   li.append(st, nm, d);
@@ -154,18 +156,20 @@ function row(r) {
 // getSettings() gives the loaded .studio-settings.json (defaults until the root is read). reload(), when
 // given, re-reads the file first, so a setting changed while the app is open counts straight away.
 // getStarters(): { comfy, stableAudio } — a check that finds the tool not running gets a Start now row.
-export function mountProbe(host, button, list, getSettings = () => DEFAULT_SETTINGS, reload = null, getStarters = () => ({})) {
+// onDone(results), when given, runs after each Probe (the app re-checks what depends on the settings).
+export function mountProbe(host, button, list, getSettings = () => DEFAULT_SETTINGS, reload = null, getStarters = () => ({}), onDone = null) {
   const run = async () => {
     button.disabled = true;
     list.replaceChildren();
     if (reload) { try { await reload(); } catch { /* keep the settings already loaded */ } }
     const settings = getSettings() ?? DEFAULT_SETTINGS;
-    const results = await runChecks(host, (r) => list.append(row(r)), settings);
+    const results = await runChecks(host, (r) => list.append(probeRow(r)), settings);
     // A missing or old join script can be put right from here: Studio carries the current copy.
     if (results.some((r) => r.install)) list.append(installRow(host, settings.autocueDir ?? DEFAULT_SETTINGS.autocueDir, run));
     const starters = getStarters?.() ?? {};
     for (const r of results) if (r.start && starters[r.start]) list.append(startRow(host, r.name, starters[r.start], run));
     button.disabled = false;
+    if (onDone) { try { await onDone(results); } catch { /* the app's follow-up never breaks Probe */ } }
   };
   button.onclick = run;
 }

@@ -2,7 +2,7 @@
 import { h, btn, toolLabel, mediaEl, playToggle } from "./dom.js";
 import { foldable } from "./fold.js";
 import { orderByScript } from "../shots.js";
-import { canStart, has3d } from "../redo.js";
+import { canStart, has3d, hasDerived } from "../redo.js";
 import { join } from "../paths.js";
 import { countsLine, STATUS_LABEL, NO_LINE_SCRIPT } from "../narration.js";
 import { audioModel, audioSections } from "./audio.js";
@@ -14,12 +14,33 @@ const VIDEO_EXT = /\.(mp4|mov|webm|mkv)$/i;
 export const isVideo = (file) => VIDEO_EXT.test(String(file ?? ""));
 const BROLL_TOOLS = ["higgsfield", "comfyui"];
 const chosenOf = (a) => a?.takes.find((t) => t.n === a.chosen) ?? null;
+const DERIVED = new Set(["blender", "animated"]);
+export const MSG_I2V_SETUP = "Set up the image-to-video workflow (see Probe)";
+export const removeConfirmText = (id) => `Remove ${id} from the review? Its takes stay on disk.`;
+const NOTE_SNIP = 80;
+
+// The Blender check rounds of the chosen take (or the newest take that has them): the last still and each note.
+function checksOf(asset) {
+  const has = (t) => Array.isArray(t?.checks) && t.checks.length > 0;
+  const chosen = chosenOf(asset);
+  const t = has(chosen) ? chosen : [...asset.takes].reverse().find(has);
+  if (!t) return null;
+  const still = [...t.checks].reverse().find((c) => c.still)?.still ?? null;
+  return {
+    take: t.n,
+    still,
+    notes: t.checks.map((c) => {
+      const full = String(c.note ?? "").trim();
+      return { label: `Check ${c.round}`, text: full.length > NOTE_SNIP ? `${full.slice(0, NOTE_SNIP).trimEnd()}\u2026` : full, full };
+    }),
+  };
+}
 
 export function summarize(assets = []) {
   return { approved: assets.filter((a) => a.approved).length, total: assets.length, regenerating: assets.filter(isBusy).length };
 }
 
-export function cardModel(asset, assets, { pending = false, error = null } = {}) {
+export function cardModel(asset, assets, { pending = false, error = null, i2v = null, confirmRemove = false } = {}) {
   const chosen = chosenOf(asset);
   const busy = isBusy(asset);
   const locked = !canStart(asset, assets);
@@ -30,7 +51,7 @@ export function cardModel(asset, assets, { pending = false, error = null } = {})
   let status = null;
   if (!asset.takes.length) status = locked ? null : "No take yet";
   else if (chosen?.status === "failed" || chosen?.status === "interrupted") status = `Take ${chosen.n} failed: ${chosen.error ?? "no reason given"}`;
-  const src = asset.tool === "blender" ? assets.find((a) => a.id === asset.sourceId) : null;
+  const src = asset.tool === "blender" || asset.kind === "animated" ? assets.find((a) => a.id === asset.sourceId) : null;
   const srcTake = chosenOf(src);
   return {
     id: asset.id,
@@ -61,6 +82,13 @@ export function cardModel(asset, assets, { pending = false, error = null } = {})
     canMakeFirst: free && !locked && asset.takes.length === 0,
     canRedo: free && !locked && asset.takes.length > 0,
     can3d: free && asset.kind === "lineart" && !has3d(assets, asset.id),
+    showAnimate: asset.kind === "lineart" && !hasDerived(assets, asset.id, "animated"),
+    canAnimate: free && asset.kind === "lineart" && !hasDerived(assets, asset.id, "animated") && !!i2v?.ok,
+    animateWhy: i2v?.ok ? null : MSG_I2V_SETUP,
+    removable: DERIVED.has(asset.kind),
+    canRemove: free && DERIVED.has(asset.kind),
+    confirmRemove: confirmRemove && DERIVED.has(asset.kind) ? removeConfirmText(asset.id) : null,
+    checks: asset.tool === "blender" ? checksOf(asset) : null,
     error,
   };
 }
@@ -103,7 +131,7 @@ function narrationSection(n, actions) {
   return foldable(h("section", { class: "narration", "aria-label": "Narration" }, kids), "Narration");
 }
 
-export function reviewModel({ film, state, layout = "script", making = false, listError = null, cardErrors = new Map(), pending = new Set(), noteFor = null, openError = null, prefError = null, narration = null, playing = null, paused = false, audio, sa = null, audioUi = {}, mixUi = {} }) {
+export function reviewModel({ film, state, layout = "script", making = false, listError = null, cardErrors = new Map(), pending = new Set(), noteFor = null, openError = null, prefError = null, i2v = null, removeFor = null, narration = null, playing = null, paused = false, audio, sa = null, audioUi = {}, mixUi = {} }) {
   if (openError) return { openFailed: true, dir: openError.dir, title: openError.title, message: `Couldn't open ${openError.title}: ${openError.message}` };
   if (!film) return { noFilm: true };
   const assets = state?.assets ?? [];
@@ -125,7 +153,7 @@ export function reviewModel({ film, state, layout = "script", making = false, li
     mix: mixModel({ state, narration, pending, cardErrors, noteFor, playing, settings: mixUi.settings ?? {}, jobs: mixUi.jobs ?? [], ui: mixUi.ui ?? {}, pacingUi: mixUi.pacing ?? {} }),
     summary: summarize(assets),
     noteFor,
-    cards: ordered.map((a) => cardModel(a, assets, { pending: pending.has(a.id), error: cardErrors.get(a.id) ?? null })),
+    cards: ordered.map((a) => cardModel(a, assets, { pending: pending.has(a.id), error: cardErrors.get(a.id) ?? null, i2v, confirmRemove: removeFor === a.id })),
   };
 }
 
@@ -189,11 +217,28 @@ function controls(c, model, actions) {
   else if (c.approved) row.push(h("span", { class: "ok-tag", text: "\u2713 Approved" }), btn("Undo", () => actions.unapprove(c.id), { ghost: true, disabled: !c.canUndo }));
   else row.push(btn("Approve", () => actions.approve(c.id), { disabled: !c.canApprove }), btn("Redo\u2026", () => actions.openNote(c.id), { ghost: true, disabled: !c.canRedo }));
   if (c.can3d) row.push(btn("Make 3D in Blender", () => actions.make3d(c.id), { ghost: true }));
+  if (c.showAnimate) {
+    const b = btn("Animate with ComfyUI", () => actions.animate(c.id), { ghost: true, disabled: !c.canAnimate });
+    if (c.animateWhy) b.setAttribute("title", c.animateWhy);
+    row.push(b);
+  }
   if (c.file) row.push(btn("Open full size", () => actions.openFull(c.file), { ghost: true }));
-  return [sw, h("div", { class: "row" }, row)];
+  if (c.removable && !c.confirmRemove) row.push(btn("Remove this version", () => actions.askRemove(c.id), { ghost: true, disabled: !c.canRemove }));
+  const confirm = c.confirmRemove ? h("div", { class: "row confirm", role: "group", "aria-label": `Remove ${c.id}` },
+    h("span", { text: c.confirmRemove }),
+    btn("Remove", () => actions.removeVersion(c.id), { disabled: !c.canRemove }),
+    btn("Cancel", () => actions.cancelRemove(), { ghost: true })) : null;
+  return [sw, h("div", { class: "row" }, row), confirm];
 }
 
-function card(c, model, actions) {
+// Blender's own checks on the take: the last still it compared with the drawing, and what each round changed.
+function checksBox(k, id, actions) {
+  return h("div", { class: "checks3d" },
+    k.still ? mediaEl(k.still, false, actions.preview, `${id} take ${k.take} last check`) : null,
+    h("ul", {}, k.notes.map((n) => h("li", { title: n.full }, h("b", { text: `${n.label}: ` }), n.text))));
+}
+
+export function card(c, model, actions) {
   const cls = `card${c.approved ? " ok" : ""}${c.busy ? " gen" : ""}`;
   return h("article", { class: cls },
     thumb(c, actions),
@@ -203,6 +248,7 @@ function card(c, model, actions) {
       c.sourceId ? h("div", { class: "src" },
         c.sourceFile ? mediaEl(c.sourceFile, isVideo(c.sourceFile), actions.preview, `${c.sourceId} source`) : null,
         h("span", { text: `From ${c.sourceId}` })) : null,
+      c.checks ? checksBox(c.checks, c.id, actions) : null,
       c.history.length ? h("div", { class: "hist" }, "History: ", c.history.join("; ")) : null,
       c.pending ? h("div", { class: "hist", text: "Working\u2026" }) : null,
       c.error ? h("div", { class: "err", text: c.error }) : null,

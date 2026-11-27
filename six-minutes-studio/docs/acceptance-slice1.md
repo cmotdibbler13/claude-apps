@@ -130,3 +130,18 @@ Before you start: Probe → **Install join script** (the join script now takes p
 4. Exit Studio from the tray: ComfyUI and Stable Audio close (they were started by Studio). In Task Manager, no python.exe from ComfyUI or Pinokio is left behind. Open ComfyUI yourself, then open Studio: it says Ready and, on Exit, leaves your ComfyUI open.
 5. If it says **ComfyUI: Not found**, add `"comfy": { "exe": "<path to ComfyUI.exe>" }` to `.studio-settings.json` (Probe then has **Start ComfyUI now**).
 6. To stop either starting with Studio: `"autostart": { "comfy": false }` (or `"stableAudio": false`) in `.studio-settings.json`.
+
+## Drawings that move (version 23)
+Nothing here spends credits: Blender and ComfyUI run on the PC.
+1. **Allow pictures.** The first time a 3D take runs, Studio asks to send pictures to Claude: allow it. (If you said no, the take fails with "Claude can't see pictures in this view yet…": allow pictures for Six Minutes Studio when it asks, then press Run again.)
+2. **Make 3D on HF-01 (the stone dresser).** Approve HF-01, press **Make 3D in Blender**, then **Make first take** on the new card. Jobs shows **Modelling**, then **Check 1 of 3** (up to **Check 3 of 3**), then the render.
+3. **The take.** When it's done, the card shows a small check still and a short list of notes ("Check 1: …") saying what each check changed. The MP4 opens on the drawing's view, then the dresser turns about 70° on its own centre so the far upright comes forward. The camera stays still; amber hand-drawn lines on black, no flat picture cards and no dots.
+4. **Redo with a note.** Press **Redo…**, write e.g. "make the top slab thicker", **Redo with note**: a new take runs the same steps, starting from the last one.
+5. **Remove this version.** On the 3D card press **Remove this version**: the card asks "Remove HF-nn from the review? Its takes stay on disk." Press **Remove**: the card goes, and HF-01 has **Make 3D in Blender** again. The take files are still in the film's media folder. (While a take runs, Remove is greyed out.)
+6. **Animate with ComfyUI (set up once).** Until this is done the button is greyed out, and hovering it says "Set up the image-to-video workflow (see Probe)"; Probe's **Animate workflow** row says "Not set up (only needed for Animate with ComfyUI)" and what's missing.
+   1. In ComfyUI open the templates (**Workflow → Browse Templates**) and pick the **LTX Video image-to-video** template. Load the models it asks for.
+   2. **Workflow → Export (API)** and save it as `S:\Youtube video ideas\ComfyUI workflows\animate_i2v.json`.
+   3. Open that JSON in Notepad and note the node ids (the `"12": {` numbers) of: the **LoadImage** node (its input `"image"`), the **positive prompt** text node (input `"text"`), and the **video save** node (input `"filename_prefix"`).
+   4. Add them to `.studio-settings.json`, merged with what's already in `"comfy"`:
+      `"comfy": { "i2v": { "nodes": { "image": ["<id>", "image"], "prompt": ["<id>", "text"], "output": ["<id>", "filename_prefix"] } } }`
+   5. Run Probe: **Animate workflow** says ready. Open the film's Review again: **Animate with ComfyUI** on HF-01 is live. Press it: an animated card appears after the drawing; **Make first take** renders it in ComfyUI. **Remove this version** works the same as for 3D.
