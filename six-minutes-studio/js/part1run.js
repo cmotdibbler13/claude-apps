@@ -1,0 +1,217 @@
+// Part 1 drafts, to-camera picks and the runs that make them: write, revise, redo one clip, edit, restore.
+// State: state.part1 = { setup, drafts:[{n, at, why, note, script}], picks:[{id, text, from, why}], pickNotes:[], approvedAt }.
+import { writeClips, writeLists, redoClip } from "./part1claude.js";
+import { sameWords, scriptLines, clipList } from "./part1script.js";
+import { suggestLines } from "./presenter.js";
+
+export const BUSY = "Wait for Claude to finish.";
+export const NO_REFERENCE = "No reference script found. Set referenceScripts in .studio-settings.json.";
+
+const keyOf = (dir) => String(dir).replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
+const busy = new Set();
+
+export const part1Busy = (dir) => busy.has(keyOf(dir));
+
+async function single(ctx, fn) {
+  const key = keyOf(ctx.store.dir);
+  if (busy.has(key)) throw new Error(BUSY);
+  busy.add(key);
+  try { return await fn(); } finally { busy.delete(key); }
+}
+
+// Claude-backed runs log their start, their end and any failure.
+async function logged(ctx, fn) {
+  await ctx.store.log("Part 1: writing the script");
+  try {
+    const d = await fn();
+    await ctx.store.log(`Part 1: script written (draft ${d.n})`);
+    return d;
+  } catch (e) {
+    await ctx.store.log(`Part 1: failed: ${e?.message ?? e}`);
+    throw e;
+  }
+}
+
+export const currentDraft = (state) => state?.part1?.drafts?.at(-1) ?? null;
+
+const part1Of = (store) => {
+  const p = store.state.part1;
+  if (!p) throw new Error("This film has no Part 1 yet.");
+  return p;
+};
+const two = (n) => String(n).padStart(2, "0");
+
+const claudeSetup = (setup) => ({
+  topic: setup.topic, prefix: setup.prefix, episode: setup.episode, runtimeTarget: setup.runtime, voice: setup.voice ?? "own",
+});
+
+async function readBrief(ctx, setup) {
+  try { return await ctx.host.fs.read(setup.brief, "utf8"); } catch { throw new Error(`Couldn't read the brief: ${setup.brief}`); }
+}
+
+async function readOptional(host, path) {
+  try { if (path && await host.fs.exists(path)) return await host.fs.read(path, "utf8"); } catch { /* unreadable: treat as none */ }
+  return null;
+}
+
+function mergePronunciations(base, extra) {
+  const out = [];
+  const seen = new Set();
+  for (const p of [...(base ?? []), ...(extra ?? [])]) {
+    if (!p?.name || seen.has(p.name)) continue;
+    seen.add(p.name);
+    out.push({ name: p.name, say: p.say });
+  }
+  return out;
+}
+
+const clipPronunciations = (script) => clipList(script).flatMap((c) => c.clip.pronunciations ?? []);
+
+// Saves a draft (and optionally new picks) in one atomic update. Returns the draft.
+async function saveDraft(ctx, { why, note = null, script, picks, pickNotes }) {
+  let draft;
+  await ctx.store.update((s) => {
+    const p = s.part1;
+    draft = { n: (p.drafts.at(-1)?.n ?? 0) + 1, at: ctx.host.now(), why, note, script };
+    p.drafts.push(draft);
+    if (picks !== undefined) p.picks = picks;
+    if (pickNotes !== undefined) p.pickNotes = pickNotes;
+  });
+  return draft;
+}
+
+async function suggest(host, script) {
+  try {
+    const lines = scriptLines(script);
+    const byId = new Map(lines.map((l) => [l.id, l]));
+    const r = await suggestLines(host, { lines: lines.map(({ id, section, text }) => ({ id, section, text })) });
+    return { picks: r.map((x) => ({ id: x.id, text: byId.get(x.id).text, from: "claude", why: x.why })), pickNotes: [] };
+  } catch (e) {
+    return { picks: [], pickNotes: [`Couldn't suggest to-camera lines: ${e?.message ?? e}`] };
+  }
+}
+
+// After a change that doesn't re-suggest: keep picks whose line still exists with the same text.
+function keepPicks(p, script) {
+  const byId = new Map(scriptLines(script).map((l) => [l.id, l.text]));
+  const picks = [];
+  const pickNotes = [...(p.pickNotes ?? [])];
+  for (const pick of p.picks ?? []) {
+    if (byId.get(pick.id) === pick.text) picks.push(pick);
+    else pickNotes.push(`To-camera line ${pick.id} changed: pick again`);
+  }
+  return { picks, pickNotes };
+}
+
+const needDraft = (p) => {
+  const d = p.drafts.at(-1);
+  if (!d) throw new Error("There is no draft yet.");
+  return d;
+};
+
+// ---------- write / revise ----------
+
+export function writeScript(ctx, { note } = {}) {
+  return single(ctx, () => logged(ctx, async () => {
+    const { host, settings, store } = ctx;
+    const p = part1Of(store);
+    const setup = p.setup;
+    const prev = note ? p.drafts.at(-1)?.script ?? null : null;
+    const brief = await readBrief(ctx, setup);
+    let reference = null;
+    for (const path of settings?.referenceScripts ?? []) {
+      try { if (await host.fs.exists(path)) { reference = await host.fs.read(path, "utf8"); break; } } catch { /* try the next */ }
+    }
+    if (reference === null) throw new Error(NO_REFERENCE);
+    const pronunciations = await readOptional(host, settings?.pronunciationsFile);
+
+    const args = { brief, reference, pronunciations, setup: claudeSetup(setup) };
+    if (note) Object.assign(args, { note, current: prev });
+    const clips = await writeClips(host, args);
+    const lists = await writeLists(host, { brief, setup: claudeSetup(setup), sections: clips.sections });
+    const script = { ...clips, ...lists, pronunciations: mergePronunciations([], clipPronunciations(clips)) };
+    const s = await suggest(host, script);
+    return saveDraft(ctx, { why: note ? "Revised from your note" : "Written", note: note || null, script, ...s });
+  }));
+}
+
+// ---------- redo one clip ----------
+
+export function redoOne(ctx, n, note) {
+  return single(ctx, () => logged(ctx, async () => {
+    const p = part1Of(ctx.store);
+    const cur = needDraft(p);
+    const brief = await readBrief(ctx, p.setup);
+    const clip = await redoClip(ctx.host, { brief, setup: claudeSetup(p.setup), script: cur.script, n, note });
+    const script = structuredClone(cur.script);
+    const target = clipList(script).find((c) => c.n === n);
+    if (!target) throw new Error(`Clip ${two(n)} is not in the script.`);
+    const i = target.section.clips.indexOf(target.clip);
+    target.section.clips[i] = clip;
+    script.pronunciations = mergePronunciations(script.pronunciations, clip.pronunciations);
+    return saveDraft(ctx, { why: `Clip ${two(n)} redone: ${note}`, note, script, ...keepPicks(p, script) });
+  }));
+}
+
+// ---------- edits that don't call Claude ----------
+
+export function editClip(ctx, n, { narration, spoken, cue }) {
+  return single(ctx, async () => {
+    const p = part1Of(ctx.store);
+    const cur = needDraft(p);
+    const script = structuredClone(cur.script);
+    const target = clipList(script).find((c) => c.n === n);
+    if (!target) throw new Error(`Clip ${two(n)} is not in the script.`);
+    const c = target.clip;
+    if (narration !== undefined) c.narration = narration;
+    if (spoken !== undefined) c.spoken = spoken;
+    if (cue !== undefined) c.cue = cue;
+    const same = sameWords(c.narration, c.spoken);
+    if (!same.ok) throw new Error(`The reading and spoken words differ: ${same.diff}`);
+    return saveDraft(ctx, { why: `Clip ${two(n)} edited`, script, ...keepPicks(p, script) });
+  });
+}
+
+export function editLists(ctx, patch = {}) {
+  return single(ctx, async () => {
+    const p = part1Of(ctx.store);
+    const lists = ["shots", "sfx", "pronunciations"].filter((k) => patch[k] !== undefined);
+    let draft = null;
+    if (lists.length) {
+      const cur = needDraft(p);
+      const script = structuredClone(cur.script);
+      for (const k of lists) script[k] = structuredClone(patch[k]);
+      draft = await saveDraft(ctx, { why: "Lists edited", script, ...keepPicks(p, script) });
+    }
+    if (patch.episode !== undefined) await ctx.store.update((s) => { s.part1.setup.episode = patch.episode; });
+    return draft ?? currentDraft(ctx.store.state);
+  });
+}
+
+export function restoreDraft(ctx, n) {
+  return single(ctx, async () => {
+    const p = part1Of(ctx.store);
+    const old = p.drafts.find((d) => d.n === n);
+    if (!old) throw new Error(`There is no draft ${n}.`);
+    const script = structuredClone(old.script);
+    return saveDraft(ctx, { why: `Back to draft ${n}`, script, ...keepPicks(p, script) });
+  });
+}
+
+// ---------- picks ----------
+
+export function setPicks(ctx, ids) {
+  return single(ctx, async () => {
+    const p = part1Of(ctx.store);
+    const cur = needDraft(p);
+    const byId = new Map(scriptLines(cur.script).map((l) => [l.id, l.text]));
+    const old = new Map((p.picks ?? []).map((x) => [x.id, x]));
+    const picks = [];
+    for (const id of [...new Set(ids)]) {
+      if (!byId.has(id)) throw new Error(`There is no line ${id}.`);
+      picks.push(old.get(id) ?? { id, text: byId.get(id), from: "jon", why: "" });
+    }
+    await ctx.store.update((s) => { s.part1.picks = picks; });
+    return picks;
+  });
+}
