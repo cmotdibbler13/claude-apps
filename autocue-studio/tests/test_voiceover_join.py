@@ -729,6 +729,22 @@ class JoinCommandTest(unittest.TestCase):
         self.assertAlmostEqual(t1[1]["start"] - t0[1]["start"], 0.65, delta=0.002)
         self.assertAlmostEqual(t1[1]["end"] - t0[1]["end"], 0.65, delta=0.002)
 
+    def test_non_finite_pauses_are_dropped(self):
+        path = os.path.join(self.dir, "inf.json")
+        with open(path, "w") as fh:
+            fh.write('{"inside": {"01.1": [{"at_s": 0.3, "add_s": Infinity}, '
+                     '{"at_s": 0.3, "add_s": NaN}]}, '
+                     '"after": {"01.2": Infinity, "02.1": -Infinity}}')
+        code, lines = self.run_join("--pauses", path)
+        self.assertEqual(code, 0, lines[-1])
+        self.assertEqual(lines[-1]["pauses"], {"inside": 0, "after": 0})
+
+    def test_after_on_the_last_line_is_not_counted(self):
+        path = self.pauses_file({"after": {"02.1": 0.5}})
+        code, lines = self.run_join("--pauses", path)
+        self.assertEqual(code, 0, lines[-1])
+        self.assertEqual(lines[-1]["pauses"], {"inside": 0, "after": 0})
+
     def test_a_broken_pauses_file_is_refused(self):
         path = os.path.join(self.dir, "bad.json")
         with open(path, "w") as fh:

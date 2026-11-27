@@ -776,11 +776,14 @@ def _read_pauses(path):
             data = json.load(fh)
         if not isinstance(data, dict):
             raise ValueError("not an object")
+        def good(v):
+            return math.isfinite(v) and v > 0
         inside = {str(k): [{"at_s": max(0.0, float(p["at_s"])), "add_s": float(p["add_s"])}
-                           for p in v if float(p["add_s"]) > 0]
+                           for p in v
+                           if math.isfinite(float(p["at_s"])) and good(float(p["add_s"]))]
                   for k, v in (data.get("inside") or {}).items()}
         after = {str(k): float(v) for k, v in (data.get("after") or {}).items()
-                 if float(v) > 0}
+                 if good(float(v))}
     except OSError as e:
         raise Refused(f"Could not read the pauses file: {e}") from None
     except (ValueError, TypeError, KeyError, AttributeError) as e:
@@ -836,7 +839,9 @@ def join(args, transcriber=None):
         clips.append((c["clip"], level_clip(audio)))
         clip_after.append(aft[-1])
         n_inside += sum(len(p) for p in ins)
-        n_after += sum(1 for a in aft if a)
+        # an after on the film's last line is never applied (no gap follows it)
+        last_clip = c is plan["clips"][-1]
+        n_after += sum(1 for a in (aft[:-1] if last_clip else aft) if a)
         for line_id, at_list in zip(c["ids"], found):
             tight += [{"id": line_id, "at_s": round(a, 3)} for a in at_list]
     x, timings = assemble(clips, [c["section"] for c in plan["clips"]], project=project,
