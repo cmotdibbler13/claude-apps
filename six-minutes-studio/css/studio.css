@@ -283,3 +283,4 @@ textarea{width:100%;background:var(--s0);color:var(--ink);border:1px solid var(-
 /* Fold a Review section */
 .fold{margin-left:auto;min-width:30px;height:28px;padding:0 8px;background:none;border:1px solid var(--rule);color:var(--mut);cursor:pointer;font-size:14px;line-height:1}
 .fold:hover{border-color:var(--brass);color:var(--brass)}
+.top .credits{margin-left:auto;font-size:12px;letter-spacing:.04em;color:var(--mut);font-variant-numeric:tabular-nums}
