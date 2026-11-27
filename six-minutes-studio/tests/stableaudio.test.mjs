@@ -373,3 +373,54 @@ test("refresh sets ready, off or music from a live check without spawning, and l
   await starter.refresh(h.host);
   assert.equal(starter.state(), "starting");
 });
+
+// ---- Pinokio: opened first when it isn't running (Stable Audio starts through it) ----
+const PINOKIO = "C:\\Users\\Jon\\AppData\\Local\\Programs\\Pinokio\\Pinokio.exe";
+function pinokioSetup({ pinokioUp }) {
+  const host = new FakeHost();
+  const spawns = [];
+  let saUp = false;
+  host.spawnScript((cmd, args, opts, p) => {
+    spawns.push(cmd);
+    if (cmd === "curl") {
+      const url = args.at(-1);
+      if (url.includes(":42000")) { if (pinokioUp()) { p.out("ok"); return p.exit(0); } p.err("refused"); return p.exit(7); }
+      if (!saUp) { p.err("refused"); return p.exit(7); }
+      if (url.endsWith("/gradio_api/info")) { p.out(info); return p.exit(0); }
+      if (url.endsWith("/config")) { p.err("404"); return p.exit(22); }
+      p.out(sfxPage); return p.exit(0);
+    }
+    if (cmd === "taskkill") return p.exit(0);
+    if (/pterm/i.test(cmd)) saUp = true; // the app comes up once pterm runs
+  });
+  return { host, spawns };
+}
+
+test("Pinokio closed: Studio opens it, waits for it, then starts Stable Audio; stop closes both", async () => {
+  let opened = false, polls = 0;
+  const s = pinokioSetup({ pinokioUp: () => opened && ++polls > 2 });
+  await s.host.fs.mkdir("C:\\Users\\Jon\\AppData\\Local\\Programs\\Pinokio");
+  await s.host.fs.write(PINOKIO, "exe");
+  const spawn = s.host.spawn.bind(s.host);
+  s.host.spawn = (cmd, a, o) => { if (cmd === PINOKIO) opened = true; return spawn(cmd, a, o); };
+  const starter = makeStableAudioStarter({ sleep: async () => {}, settings: { stableAudio: { ...SA } } });
+  await starter.ensure(s.host);
+  assert.equal(starter.state(), "ready");
+  const order = s.spawns.filter((c) => c !== "curl");
+  assert.equal(order[0], PINOKIO);
+  assert.match(order[1], /pterm/i);
+  await starter.stop();
+  assert.equal(s.spawns.filter((c) => c === "taskkill").length >= 2, true); // pterm's tree and Pinokio's
+});
+
+test("Pinokio already open: not opened again; never closed on stop", async () => {
+  const s = pinokioSetup({ pinokioUp: () => true });
+  await s.host.fs.mkdir("C:\\Users\\Jon\\AppData\\Local\\Programs\\Pinokio");
+  await s.host.fs.write(PINOKIO, "exe");
+  const starter = makeStableAudioStarter({ sleep: async () => {}, settings: { stableAudio: { ...SA } } });
+  await starter.ensure(s.host);
+  assert.equal(s.spawns.includes(PINOKIO), false);
+  const before = s.spawns.filter((c) => c === "taskkill").length;
+  await starter.stop();
+  assert.equal(s.spawns.filter((c) => c === "taskkill").length - before, 1); // pterm's tree only
+});

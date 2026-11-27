@@ -20,6 +20,8 @@ export const DEFAULT_SETTINGS = {
   stableAudio: {
     url: "http://127.0.0.1:7860", pterm: "C:\\pinokio\\bin\\npm\\pterm.cmd",
     app: "C:\\pinokio\\api\\stable-audio-3-small.pinokio.git", steps: 8, cfg: 1.0,
+    // Pinokio itself: opened first when it isn't running (Stable Audio starts through it).
+    pinokioExe: "C:\\Users\\Jon\\AppData\\Local\\Programs\\Pinokio\\Pinokio.exe", pinokioUrl: "http://127.0.0.1:42000",
   },
 };
 
