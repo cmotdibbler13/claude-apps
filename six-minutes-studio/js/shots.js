@@ -41,15 +41,17 @@ export function onCameraConflict(asset, state) {
 export function deriveWaiting(all = []) {
   const state = { assets: all };
   const assets = all.filter((a) => !onCameraConflict(a, state));
-  if (!all.length) return "Shot list not made yet";
+  // Clips of Jon alone are not a shot list.
+  if (!all.some((a) => a.kind !== "presenter")) return "Shot list not made yet";
   const chosen = (a) => a.takes?.find((t) => t.n === a.chosen) ?? null;
   const busy = (a) => (a.takes ?? []).some((t) => t.status === "queued" || t.status === "running");
-  const review = assets.filter((a) => !a.approved && chosen(a)?.status === "done").length;
+  const outOfStep = (a) => a.kind === "presenter" && !!a.voiceoverChanged;
+  const review = assets.filter((a) => !a.approved && chosen(a)?.status === "done" && !outOfStep(a)).length;
   const redo = assets.filter((a) => !busy(a) && ["failed", "interrupted"].includes(chosen(a)?.status)).length;
   const parts = [];
   if (review) parts.push(`${shots(review)} to review`);
   if (redo) parts.push(`${shots(redo)} need${redo === 1 ? "s" : ""} a redo`);
-  const out = assets.filter((a) => a.kind === "presenter" && a.voiceoverChanged).length;
+  const out = assets.filter(outOfStep).length;
   if (out) parts.push(`${out} clip${out === 1 ? "" : "s"} out of step`);
   if (parts.length) return parts.join(", ");
   if (assets.some(busy)) return null; // running, not waiting on Jon

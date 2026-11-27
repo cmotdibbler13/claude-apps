@@ -172,7 +172,7 @@ One line per sentence, so each take is short and has a fixed ID that drops strai
 - **Words:** exactly the reading script's words, with normal spellings. Never use VoiceStudio respellings (St Austell, not Saint Ostul; TUC, not T U C; baton, not batten).
 - **Numbers and years:** spelled out as words, as in the VoiceStudio copy, so they are read as intended and the captions align.
 - **Pronunciation notes:** under any line with a name from his approved pronunciations or the test list, add `> Name = "say-it"`. The app shows it in amber; it isn't read.
-- **To-camera lines:** after the script is agreed, pick about five lines Jon says face to camera: one or two near the start, two in the middle, one near the end. Each is one sentence, spoken in 12 s or less (about 30 words), and carries the film's voice (a claim, a turn, a question, the sign-off), not a line over maps or data. Write `> to camera` under each one's `[id]`. Autocue Studio shows it in amber so he delivers the line to the lens, and Six Minutes Studio makes a clip of him for it and plans no b-roll on it. List them in the handover.
+- **To-camera lines:** after the script is agreed, pick about five lines Jon says face to camera: one or two near the start, two in the middle, one near the end. Each is one sentence, spoken in 12 s or less (about 30 words), and carries the film's voice (a claim, a turn, a question, the sign-off), not a line over maps or data. Write `> to camera` as a note under each one's line, after its text (as in the example below). Autocue Studio shows it in amber so he delivers the line to the lens, and Six Minutes Studio makes a clip of him for it and plans no b-roll on it. List them in the handover.
 - **Format:**
 
   ```

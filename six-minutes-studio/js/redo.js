@@ -21,8 +21,8 @@ const takeName = (id, n) => (MIX_IDS.has(id) ? `${runLabel(id)} run ${n}` : `${n
 // Every change to the shots also rewrites what the film is waiting on Jon for, in the same update.
 const save = (store, fn) => store.update((d) => { fn(d); d.waiting = deriveWaiting(d.assets); });
 
-export function canStart(asset, assets, state, transcript) {
-  if (asset.kind === "presenter") return !!state && clipLock(asset, state, transcript) === null;
+export function canStart(asset, assets, state, transcript, transcriptAt) {
+  if (asset.kind === "presenter") return !!state && clipLock(asset, state, transcript, transcriptAt) === null;
   if (asset.tool !== "blender" && asset.kind !== "animated") return true;
   const src = assets.find((a) => a.id === asset.sourceId);
   return !!src && !!src.approved;
@@ -102,7 +102,7 @@ export async function startTake(ctx, assetId, { note } = {}) {
   const asset = find(store.state, assetId);
   if (!asset) throw new Error(`Unknown shot ${assetId}`);
   if (asset.kind === "presenter") {
-    const lock = clipLock(asset, store.state, ctx.transcript);
+    const lock = clipLock(asset, store.state, ctx.transcript, ctx.transcriptAt);
     if (lock) throw new Error(lock);
   } else if (!canStart(asset, store.state.assets)) throw new Error(`${asset.id} needs its source line art approved first.`);
   if (asset.takes.some((t) => t.status === "queued" || t.status === "running")) {
@@ -373,8 +373,12 @@ export async function choose(ctx, assetId, n) {
   const a = find(store.state, assetId);
   if (!a) throw new Error(`Unknown shot ${assetId}`);
   if (!a.takes.some((t) => t.n === n)) throw new Error(`${assetId} has no take ${n}.`);
-  await save(store, (d) => { const x = find(d, assetId); x.chosen = n; x.approved = false; });
+  const clip = a.kind === "presenter";
+  // A clip's out-of-step flag belongs to the take it was found on: clear it and check the new take (in the
+  // background, as after a join).
+  await save(store, (d) => { const x = find(d, assetId); x.chosen = n; x.approved = false; if (clip) { delete x.voiceoverChanged; delete x.voiceoverSig; } });
   await store.log(`${assetId} take ${n} chosen`);
+  if (clip) checkClipAudio(ctx).catch((e) => Promise.resolve(store.log(`Clip audio check failed: ${String(e?.message ?? e)}`)).catch(() => {}));
 }
 
 const TOOL_LABEL = { higgsfield: "Higgsfield", comfyui: "ComfyUI" };

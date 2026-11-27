@@ -367,3 +367,9 @@ test("clipAudioArgs and audioSigOf", async () => {
   assert.equal(s.lengthS, 3.14);
   assert.equal(s.hash, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
 });
+
+test("presenter: ffmpeg exits 0 but writes no file: fails before upload and generate", async () => {
+  const t = setup({ mcp: pmcp(), spawn: async (cmd, args, p) => { p.exit(0); } });
+  await assert.rejects(t.runner.start(pjob(), t.ctx), /ffmpeg/);
+  assert.ok(!t.calls.some((c) => c.t === "media_upload" || c.t === "generate_video"));
+});

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FakeHost } from "./fake-host.mjs";
 import { openFilm } from "../js/store.js";
-import { buildShotList, orderByScript } from "../js/shots.js";
+import { buildShotList, orderByScript, deriveWaiting } from "../js/shots.js";
 import { ClaudeError } from "../js/claude.js";
 
 const DIR = "S:\\Youtube video ideas\\Film A";
@@ -163,4 +163,13 @@ test("clips chosen before the shot list: the list can still be made and the clip
   assert.deepEqual(r.map((a) => a.id), ["HF-01"]);
   assert.deepEqual(store.state.assets.map((a) => a.id), ["TC-01", "HF-01"]);
   await assert.rejects(buildShotList(h, store, input), (e) => e.code === "exists");
+});
+
+test("deriveWaiting: clips alone are no shot list; an out-of-step clip counts once", () => {
+  const tc = (o = {}) => ({ id: "TC-01", kind: "presenter", line: "To camera here now.", takes: [], chosen: 0, approved: false, ...o });
+  assert.equal(deriveWaiting([tc()]), "Shot list not made yet");
+  assert.equal(deriveWaiting([tc({ approved: true, takes: [{ n: 1, status: "done" }], chosen: 1 })]), "Shot list not made yet");
+  const hf = { id: "HF-01", kind: "broll", line: "Other line entirely.", takes: [], chosen: 0, approved: true };
+  const out = tc({ takes: [{ n: 1, status: "done" }], chosen: 1, voiceoverChanged: true });
+  assert.equal(deriveWaiting([hf, out]), "1 clip out of step");
 });

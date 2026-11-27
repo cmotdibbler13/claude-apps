@@ -54,11 +54,11 @@ function clipCost(asset, transcript, estimates) {
 
 // state/transcript: the film's state and the last good join's transcript (clip locks, the on-camera conflict).
 // estimates/confirm: clip costs and the card whose unknown-cost press is waiting for a second press.
-export function cardModel(asset, assets, { pending = false, error = null, i2v = null, confirmRemove = false, state = null, transcript = null, estimates = null, confirm = null } = {}) {
+export function cardModel(asset, assets, { pending = false, error = null, i2v = null, confirmRemove = false, state = null, transcript = null, transcriptAt, estimates = null, confirm = null } = {}) {
   const chosen = chosenOf(asset);
   const busy = isBusy(asset);
   const presenter = asset.kind === "presenter";
-  const lock = presenter ? clipLock(asset, state ?? { assets }, transcript) : null;
+  const lock = presenter ? clipLock(asset, state ?? { assets }, transcript, transcriptAt) : null;
   const locked = presenter ? lock !== null : !canStart(asset, assets);
   const conflict = !presenter && !!state && onCameraConflict(asset, state);
   const removable = DERIVED.has(asset.kind) || conflict;
@@ -165,7 +165,7 @@ function narrationSection(n, actions) {
 
 // lineScript/transcript: the film's parsed line script and last good join's transcript (On camera, clip locks).
 // onCamera: { estimates, photosOk, ui } for the On camera step (oncamera.onCameraModel).
-export function reviewModel({ film, state, layout = "script", making = false, listError = null, cardErrors = new Map(), pending = new Set(), noteFor = null, openError = null, prefError = null, i2v = null, removeFor = null, narration = null, playing = null, paused = false, audio, sa = null, audioUi = {}, mixUi = {}, lineScript = null, transcript = null, onCamera = {} }) {
+export function reviewModel({ film, state, layout = "script", making = false, listError = null, cardErrors = new Map(), pending = new Set(), noteFor = null, openError = null, prefError = null, i2v = null, removeFor = null, narration = null, playing = null, paused = false, audio, sa = null, audioUi = {}, mixUi = {}, lineScript = null, transcript = null, transcriptAt, onCamera = {} }) {
   if (openError) return { openFailed: true, dir: openError.dir, title: openError.title, message: `Couldn't open ${openError.title}: ${openError.message}` };
   if (!film) return { noFilm: true };
   const assets = state?.assets ?? [];
@@ -173,7 +173,7 @@ export function reviewModel({ film, state, layout = "script", making = false, li
   const shots = ordered.filter((a) => a.kind !== "presenter");
   const oc = onCamera ?? {};
   const cardFor = (a) => cardModel(a, assets, { pending: pending.has(a.id), error: cardErrors.get(a.id) ?? null, i2v, confirmRemove: removeFor === a.id,
-    state, transcript, estimates: oc.estimates ?? null, confirm: oc.ui?.confirm ?? null });
+    state, transcript, transcriptAt, estimates: oc.estimates ?? null, confirm: oc.ui?.confirm ?? null });
   const onCam = lineScript || state?.presenter?.lines?.length ? {
     ...onCameraModel({ state, lineScript, transcript, estimates: oc.estimates ?? {}, photosOk: !!oc.photosOk, ui: oc.ui ?? {} }),
     // In line-script order (lineIndex is the line script's), not among the b-roll.

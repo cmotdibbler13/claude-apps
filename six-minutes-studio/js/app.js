@@ -11,7 +11,7 @@ import { makeFilmSession, readSavedJobs } from "./session.js";
 import { makeJobs } from "./jobs.js";
 import { notifyRules } from "./notify.js";
 import { buildShotList } from "./shots.js";
-import { scriptCameraIds, suggestLines, setCameraLines, suggestLooks, setLook, lastLook, startPortraits, approvePortrait, keepAnyway,
+import { scriptCameraIds, seedCameraLines, suggestLines, setCameraLines, suggestLooks, setLook, lastLook, startPortraits, approvePortrait, keepAnyway,
   clipSeconds, lineLengthS } from "./presenter.js";
 import { estimateCredits } from "./tools/hfmedia.js";
 import { makeCosts } from "./oncamcosts.js";
@@ -195,7 +195,7 @@ async function renderNow() {
       mixUi: { settings: { stemRemixer: !!app.settings?.stemRemixerDir }, jobs: list, ui: { exports: r.exports ?? null, opened: r.opened ?? null, confirm: r.exportConfirm ?? null },
         pacing: { transcript: r.transcript ?? null, lineScript: r.lineScript ?? null, menu: r.paceMenu ?? null,
           chain: { applying: r.applying ?? null, placing: !!r.placing, error: r.paceError ?? null, info: r.paceInfo ?? null } } },
-      lineScript: r.lineScript ?? null, transcript: r.transcript ?? null,
+      lineScript: r.lineScript ?? null, transcript: r.transcript ?? null, transcriptAt: r.transcript ? r.transcriptAt ?? null : undefined,
       onCamera: { estimates: estimatesView(), photosOk: !!r.oc.photosOk, ui: r.oc },
     });
     r.paceSource = model.mix?.pacing?.source ?? null;
@@ -500,7 +500,7 @@ function loadTranscript() {
   if (!f?.transcript || !app.host) return Promise.resolve(f ? r.transcript ?? null : null);
   if (r.transcriptFor?.at === f.at && r.transcriptFor?.path === f.transcript) return r.transcriptFor.p;
   const p = app.host.fs.read(f.transcript, "utf8").then((t) => JSON.parse(t)).catch((e) => { console.error(e); return null; })
-    .then((t) => { if (app.review === r && r.transcriptFor?.p === p) { r.transcript = t; render(); } return t; });
+    .then((t) => { if (app.review === r && r.transcriptFor?.p === p) { r.transcript = t; r.transcriptAt = f.at; render(); } return t; });
   r.transcriptFor = { at: f.at, path: f.transcript, p };
   return p;
 }
@@ -641,7 +641,7 @@ async function makeShotList() {
 function cameraLinesNow() {
   const ls = app.review.lineScript;
   const chosen = app.store?.state?.presenter?.lines;
-  const ids = chosen?.length ? chosen.map((l) => l.id) : scriptCameraIds(ls);
+  const ids = chosen !== undefined ? chosen.map((l) => l.id) : scriptCameraIds(ls); // Jon's choice, even none, wins
   return ids.map((id) => ({ id, text: ls?.lines?.find((l) => l.id === id)?.text ?? app.store.state.assets.find((a) => a.kind === "presenter" && a.lineId === id)?.line ?? "" }))
     .filter((l) => l.text);
 }
@@ -652,13 +652,19 @@ const costs = makeCosts((tool, input) => estimateCredits(app.host, tool, input))
 const estimatesView = () => costs.view();
 function askEstimates() {
   if (!app.store || !app.host?.mcp) return;
-  costs.ask({ state: app.store.state, transcript: app.review.transcript ?? null }, () => render());
+  // A new cost replaces any "Press again" waiting on the old one.
+  costs.ask({ state: app.store.state, transcript: app.review.transcript ?? null }, () => { app.review.oc.confirm = null; render(); });
 }
 const forgetClipEstimates = () => costs.forgetClips();
 
 // Once per review: whether the presenter photos are there, and the last film's look (both free reads).
 function loadOnCamera() {
   const r = app.review;
+  // Script marks become the chosen lines the first time (free); once per review, never over Jon's choice.
+  if (r.lineScript && app.store && app.store.state.presenter?.lines === undefined && !r.seeding) {
+    r.seeding = true;
+    seedCameraLines(ctx()).catch((e) => { console.error(e); r.oc.lineError = msg(e); }).finally(() => render());
+  }
   askEstimates();
   if (r.ocLoaded || !app.store || !app.host || !(r.lineScript || app.store.state.presenter?.lines?.length)) return;
   r.ocLoaded = true;
@@ -807,7 +813,9 @@ function cardAction(fn) {
   };
 }
 // lineScript and transcript (the last good join's): to-camera lines and clip takes need them.
-const ctx = () => ({ host: app.host, store: app.store, jobs: app.jobs, settings: app.settings ?? {}, lineScript: app.review.lineScript ?? null, transcript: app.review.transcript ?? null });
+// transcriptAt: the join the loaded transcript came from; a clip take needs it to be the current join.
+const ctx = () => ({ host: app.host, store: app.store, jobs: app.jobs, settings: app.settings ?? {}, lineScript: app.review.lineScript ?? null,
+  transcript: app.review.transcript ?? null, transcriptAt: app.review.transcript ? app.review.transcriptAt ?? null : undefined });
 // narration: the mix steps refuse to run from a join that misses a take saved since (joinStale).
 const mixCtx = () => ({ ...ctx(), lineScript: app.review.lineScript ?? null, settings: app.settings ?? {}, narration: app.review.narration ?? null });
 // A Voiceover and mix step's action, guarded like a card (VOICEOVER, FIT or MIX).

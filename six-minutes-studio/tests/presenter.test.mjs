@@ -339,6 +339,8 @@ test("checkClipAudio: changed audio flags the clip, rewrites waiting; a later ma
   const content = { [CHK("TC-01")]: "BBB" };
   const { ctx, store, sigOf } = await vsetup({ content });
   await mkTake(store, "TC-01", "done", { audioSig: await sigOf("AAA") });
+  // A shot list exists, so the waiting line talks about clips (clips alone say "Shot list not made yet").
+  await store.update((d) => { d.assets.push({ id: "HF-01", kind: "broll", line: "A b-roll line here.", takes: [], chosen: 0, approved: true }); });
   await checkClipAudio(ctx);
   const a = store.state.assets[0];
   assert.equal(a.voiceoverChanged, true);
@@ -399,10 +401,12 @@ test("keepAnyway clears the flag, records keptAt and keptSig; same new audio is 
 
 test("deriveWaiting counts clips out of step", () => {
   const mk = (id, extra) => ({ id, kind: "presenter", lineId: id, takes: [{ n: 1, status: "done" }], chosen: 1, approved: true, ...extra });
-  assert.equal(deriveWaiting([mk("a", { voiceoverChanged: true })]), "1 clip out of step");
-  assert.equal(deriveWaiting([mk("a", { voiceoverChanged: true }), mk("b", { voiceoverChanged: true })]), "2 clips out of step");
-  assert.equal(deriveWaiting([mk("a", { approved: false, voiceoverChanged: true }), mk("b", {})]), "1 shot to review, 1 clip out of step");
-  assert.equal(deriveWaiting([mk("a", {})]), "All shots approved");
+  const hf = { id: "HF-01", kind: "broll", line: "A b-roll line here.", takes: [{ n: 1, status: "done" }], chosen: 1, approved: true };
+  assert.equal(deriveWaiting([hf, mk("a", { voiceoverChanged: true })]), "1 clip out of step");
+  assert.equal(deriveWaiting([hf, mk("a", { voiceoverChanged: true }), mk("b", { voiceoverChanged: true })]), "2 clips out of step");
+  // An unapproved out-of-step clip counts once, as out of step.
+  assert.equal(deriveWaiting([hf, mk("a", { approved: false, voiceoverChanged: true }), mk("b", {})]), "1 clip out of step");
+  assert.equal(deriveWaiting([hf, mk("a", {})]), "All shots approved");
 });
 
 test("watchJobs: a clip take that finishes after the join is checked when it finishes (Review Focus 5)", async () => {
@@ -511,4 +515,57 @@ test("watchJobs: a failing check is logged as 'Clip audio check failed' and the 
   rel["TC-02"]();
   await until(() => store.state.assets[1].takes[0].status === "done");
   assert.equal(store.state.assets[1].takes[0].status, "done");
+});
+
+// ---- final-review fix wave ----
+import { seedCameraLines } from "../js/presenter.js";
+import { choose } from "../js/redo.js";
+
+test("seedCameraLines: the script's marks become the chosen lines on first open, from the script; free", async () => {
+  const { ctx, store, host } = await setup({ transcript: null });
+  let asked = 0;
+  host.claudeScript(() => { asked++; throw new Error("no Claude here"); });
+  assert.equal(store.state.presenter?.lines, undefined);
+  assert.equal(await seedCameraLines(ctx), true);
+  assert.deepEqual(store.state.presenter.lines, [{ id: "01", from: "script" }, { id: "03", from: "script" }]);
+  assert.deepEqual(store.state.assets.map((a) => [a.id, a.lineId]), [["TC-01", "01"], ["TC-02", "03"]]);
+  assert.equal(asked, 0);
+  // Never again: Jon's choice stands, even none.
+  await setCameraLines(ctx, []);
+  assert.equal(await seedCameraLines(ctx), false);
+  assert.deepEqual(store.state.presenter.lines, []);
+});
+
+test("seedCameraLines: a marked line over 15 s is left out when the transcript is known; no marks, no seeding", async () => {
+  const long = { sentences: [{ sentence: "01", start: 0, end: 5 }, { sentence: "03", start: 10, end: 30 }] };
+  const a = await setup({ transcript: long });
+  await seedCameraLines(a.ctx);
+  assert.deepEqual(a.store.state.presenter.lines.map((l) => l.id), ["01"]);
+  const b = await setup({ lineScript: parseLineScript("[01]\nOne.\n[02]\nTwo.\n") });
+  assert.equal(await seedCameraLines(b.ctx), false);
+  assert.equal(b.store.state.presenter?.lines, undefined);
+});
+
+test("clipLock: a transcript from an earlier join locks the clip (Join the voiceover first)", () => {
+  const a = { lineId: "01" };
+  const st = { presenter: { portrait: { n: 1, hfId: "h" } }, mix: { voiceover: { status: "done", wav: "v.wav", at: 200 } } };
+  assert.equal(clipLock(a, st, TR, 100), "Join the voiceover first");
+  assert.equal(clipLock(a, st, TR, null), "Join the voiceover first");
+  assert.equal(clipLock(a, st, TR, 200), null);
+});
+
+test("choose on a clip clears its out-of-step flag and checks the new take's audio", async () => {
+  const { ctx, store, sigOf, host } = await vsetup({ content: { [CHK("TC-01")]: "BBB" } });
+  await store.update((d) => {
+    const a = d.assets.find((x) => x.id === "TC-01");
+    a.takes = [{ n: 1, status: "done", file: "a.mp4" }, { n: 2, status: "done", file: "b.mp4" }];
+    a.chosen = 1; a.voiceoverChanged = true;
+  });
+  await setSig(store, "TC-01", await sigOf("AAA"));
+  await store.update((d) => { const a = d.assets.find((x) => x.id === "TC-01"); a.takes[1].audioSig = a.takes[0].audioSig; });
+  await choose(ctx, "TC-01", 2);
+  assert.equal(store.state.assets.find((x) => x.id === "TC-01").voiceoverChanged, undefined);
+  await until(() => host.cuts.length > 0 && store.state.assets.find((x) => x.id === "TC-01").voiceoverChanged);
+  assert.equal(host.cuts.length, 1);
+  assert.equal(store.state.assets.find((x) => x.id === "TC-01").voiceoverChanged, true);
 });

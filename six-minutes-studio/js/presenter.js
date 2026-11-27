@@ -59,9 +59,12 @@ const CLIP_PROMPT = "The man speaks directly to the camera, lips precisely synce
 export const clipPrompt = (note) => (typeof note === "string" && note.trim() !== "" ? `${CLIP_PROMPT} ${note.trim()}` : CLIP_PROMPT);
 
 // Why a clip can't be made yet, or null. A line missing from the transcript counts as not joined.
-export function clipLock(asset, state, transcript) {
+// transcriptAt: the join (voiceover.at) the transcript was read from. When given, it must be the current join, so a
+// new voiceover is never paired with the last join's timings while its transcript is still being read.
+export function clipLock(asset, state, transcript, transcriptAt) {
   if (!state?.presenter?.portrait?.hfId) return "Approve a portrait first";
   if (!state?.mix?.voiceover?.wav) return "Join the voiceover first";
+  if (transcriptAt !== undefined && transcriptAt !== state.mix.voiceover.at) return "Join the voiceover first";
   const len = lineLengthS(transcript, asset.lineId);
   if (len == null) return "Join the voiceover first";
   if (len > MAX_CLIP_S) return TOO_LONG;
@@ -127,6 +130,21 @@ export async function setCameraLines(ctx, ids, opts = {}) {
     p.lines = want.map((id) => byId.get(id));
     d.waiting = deriveWaiting(d.assets);
   });
+}
+
+// First open of a film whose line script marks lines `> to camera`: those become the chosen lines ("from the
+// script"), free. Lines spoken over 15 s (when the transcript is known) are left out. Only while presenter.lines
+// has never been set, so Jon's own choice (even none) is never overridden. Returns whether it seeded.
+export async function seedCameraLines(ctx) {
+  const { store } = ctx;
+  if (store.state.presenter?.lines !== undefined) return false;
+  const marked = scriptCameraIds(ctx.lineScript);
+  if (!marked.length) return false;
+  const ids = marked.filter((id) => { const len = lineLengthS(ctx.transcript, id); return len == null || len <= MAX_CLIP_S; });
+  if (store.state.presenter?.lines !== undefined) return false;
+  await setCameraLines(ctx, ids, { from: "script" });
+  await store.log(`To-camera lines from the script: ${ids.join(", ") || "none under 15 s"}`);
+  return true;
 }
 
 // The chosen lines against the line script now. A chosen id the script no longer has is `missing`.
