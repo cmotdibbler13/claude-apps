@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FakeHost } from "./fake-host.mjs";
-import { probeClip, makeThumb, contactSheet } from "../js/tools/libmedia.js";
+import { probeClip, makeThumb, contactSheet, windowsFont } from "../js/tools/libmedia.js";
 
 const F = "S:\\x\\clip one.mp4";
 function probeHost(json, { code = 0, size = 5 * 1048576 } = {}) {
@@ -31,7 +31,7 @@ test("probeClip throws naming the file on failure or bad output", async () => {
 test("makeThumb argv and failure", async () => {
   const h = new FakeHost();
   const seen = [];
-  h.spawnScript((c, a, o, p) => { seen.push([c, ...a]); p.exit(0); });
+  h.spawnScript(async (c, a, o, p) => { seen.push([c, ...a]); await h.fs.write("t.jpg", new Uint8Array(1)); p.exit(0); });
   await makeThumb(h, "a.mp4", "t.jpg");
   assert.deepEqual(seen[0], ["ffmpeg", "-y", "-ss", "1", "-i", "a.mp4", "-frames:v", "1", "-vf", "scale=320:-2", "t.jpg"]);
   h.spawnScript((c, a, o, p) => { p.err("x\nNo such file"); p.exit(1); });
@@ -60,4 +60,48 @@ test("contactSheet rejects ids that aren't BR-n, and empty input", async () => {
   h.spawnScript((c, a, o, p) => p.exit(0));
   await assert.rejects(contactSheet(h, [{ thumb: "t.jpg", id: "x':y" }], "s.jpg"), /BR-/);
   await assert.rejects(contactSheet(h, [], "s.jpg"));
+});
+
+test("probeClip: missing frame rate throws", async () => {
+  const h = probeHost(JSON.stringify({ streams: [{ width: 10, height: 10 }], format: { duration: "2" } }));
+  await assert.rejects(probeClip(h, F), /Couldn't read clip one\.mp4: no frame rate/);
+});
+
+test("makeThumb retries at -ss 0 when no file appears, then throws", async () => {
+  const h = new FakeHost();
+  const seen = [];
+  h.spawnScript(async (c, a, o, p) => { seen.push(a[a.indexOf("-ss") + 1]); if (a[a.indexOf("-ss") + 1] === "0") await h.fs.write("t.jpg", new Uint8Array(1)); p.exit(0); });
+  await makeThumb(h, "S:\\x\\a.mp4", "t.jpg");
+  assert.deepEqual(seen, ["1", "0"]);
+  const h2 = new FakeHost();
+  h2.spawnScript((c, a, o, p) => p.exit(0));
+  await assert.rejects(makeThumb(h2, "S:\\x\\a.mp4", "t.jpg"), /Couldn't make a thumbnail for a\.mp4/);
+});
+
+test("contactSheet puts an escaped fontfile in each drawtext and reports labelled", async () => {
+  const h = new FakeHost();
+  const seen = [];
+  h.spawnScript((c, a, o, p) => { seen.push(a); p.exit(0); });
+  const r = await contactSheet(h, [{ thumb: "a.jpg", id: "BR-001" }, { thumb: "b.jpg", id: "BR-002" }], "s.jpg", { fontfile: "C:/Windows/Fonts/arial.ttf" });
+  assert.deepEqual(r, { labelled: true });
+  const fc = seen[0][seen[0].indexOf("-filter_complex") + 1];
+  assert.equal(fc.split("drawtext=fontfile='C\\:/Windows/Fonts/arial.ttf':text=").length, 3);
+});
+
+test("contactSheet retries without drawtext when the first run fails", async () => {
+  const h = new FakeHost();
+  const seen = [];
+  h.spawnScript((c, a, o, p) => { seen.push(a); if (seen.length === 1) { p.err("Cannot find font"); p.exit(1); } else p.exit(0); });
+  const r = await contactSheet(h, [{ thumb: "a.jpg", id: "BR-001" }], "s.jpg");
+  assert.deepEqual(r, { labelled: false });
+  assert.equal(seen.length, 2);
+  assert.ok(!seen[1].join(" ").includes("drawtext"));
+});
+
+test("windowsFont finds arial or returns null", async () => {
+  const h = new FakeHost();
+  assert.equal(await windowsFont(h), null);
+  h.files.set("C:/Windows/Fonts/arial.ttf", new Uint8Array(1));
+  h.dirs.add("C:/Windows/Fonts");
+  assert.equal(await windowsFont(h), "C:/Windows/Fonts/arial.ttf");
 });
