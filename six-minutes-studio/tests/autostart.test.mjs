@@ -35,3 +35,14 @@ test("Probe: ComfyUI and Stable Audio rows that aren't running offer Start now",
   assert.equal(rows.find((r) => r.name === "Stable Audio").start, "stableAudio");
   assert.equal(rows.find((r) => r.name === "Blender").start, undefined);
 });
+
+test('"autostart": false turns both off', async () => {
+  const c = starter(), a = starter();
+  const { loadSettings } = await import("../js/settings.js");
+  const h = new FakeHost();
+  await h.fs.mkdir("S:\\r"); await h.fs.write("S:\\r\\.studio-settings.json", JSON.stringify({ autostart: false }));
+  const st = await loadSettings(h, "S:\\r");
+  assert.deepEqual(st.autostart, { comfy: false, stableAudio: false });
+  await autostart({}, st, { comfy: c, stableAudio: a });
+  assert.equal(c.calls + a.calls, 0);
+});

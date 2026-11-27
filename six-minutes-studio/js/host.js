@@ -81,6 +81,7 @@ export async function makeHost(claude = globalThis.claude) {
           if (exited) f(exitCode);
         },
         kill: async () => { try { await p.kill(); } catch { /* already gone */ } },
+        pid: p.pid ?? null, // for closing a whole process tree (taskkill /T)
       };
     },
     mcp: mcp ? {

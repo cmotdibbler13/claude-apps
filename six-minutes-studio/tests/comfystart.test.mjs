@@ -14,6 +14,7 @@ function host({ up = () => false, exeExits = false } = {}) {
   h.spawned = []; h.killed = [];
   h.spawnScript((cmd, args, opts, ctl) => {
     if (cmd === "curl") { if (up()) { ctl.out("{}"); ctl.exit(0); } else { ctl.err("refused"); ctl.exit(7); } return; }
+    if (cmd === "taskkill") { ctl.exit(0); return; }
     h.spawned.push(cmd);
     if (exeExits) ctl.exit(1);
   });
@@ -58,14 +59,14 @@ test("comfy.exe in settings wins", async () => {
   assert.equal(await comfyExe(h, {}), EXE_CANDIDATES[1]);
 });
 
-test("the app exits before ComfyUI answers: failed with the copy, no long wait", async () => {
+test("the app exits and ComfyUI stays silent for 90 s: failed with the copy, not the full 4 minutes", async () => {
   const h = host({ exeExits: true });
   await h.fs.mkdir("C:\\Users\\Jon\\AppData\\Local\\Programs\\ComfyUI"); await h.fs.write(EXE_CANDIDATES[1], "exe");
   let sleeps = 0;
   const s = makeComfyStarter({ settings: settings(), sleep: async () => { sleeps++; } });
   await assert.rejects(s.ensure(h), { message: MSG_COMFY_DIDNT_START });
   assert.equal(s.state(), "failed");
-  assert.ok(sleeps < 5);
+  assert.ok(sleeps <= 32, `slept ${sleeps} times`);
 });
 
 test("ensure twice shares one start; stop kills only what it spawned", async () => {
@@ -92,4 +93,39 @@ test("settings: autostart defaults on, comfy.exe kept", async () => {
   const st = await loadSettings(h, "S:\\root");
   assert.deepEqual(st.autostart, { comfy: false, stableAudio: true });
   assert.equal(st.comfy.exe, "D:\\C.exe");
+});
+
+test("the exe hands over to a window that's still loading: keeps waiting, then ready", async () => {
+  let polls = 0;
+  const h = host({ up: () => ++polls > 6, exeExits: true });
+  await h.fs.mkdir("C:\\Users\\Jon\\AppData\\Local\\Programs\\ComfyUI"); await h.fs.write(EXE_CANDIDATES[1], "exe");
+  const s = makeComfyStarter({ settings: settings(), sleep: noSleep });
+  await s.ensure(h);
+  assert.equal(s.state(), "ready");
+});
+
+test("refresh corrects a stale state both ways", async () => {
+  let up = false;
+  const h = host({ up: () => up });
+  const s = makeComfyStarter({ settings: settings(), sleep: noSleep });
+  await assert.rejects(s.ensure(h)); // nothing found → missing
+  up = true; await s.refresh(h);
+  assert.equal(s.state(), "ready");
+  up = false; await s.refresh(h);
+  assert.equal(s.state(), "off");
+});
+
+test("stop closes the whole process tree it started, and keeps its output drained", async () => {
+  let ready = false;
+  const h = host({ up: () => ready });
+  const runs = [];
+  const spawn = h.spawn;
+  h.spawn = (cmd, args, opts) => { if (cmd === "taskkill") runs.push(args); return spawn(cmd, args, opts); };
+  await h.fs.mkdir("C:\\Users\\Jon\\AppData\\Local\\Programs\\ComfyUI"); await h.fs.write(EXE_CANDIDATES[1], "exe");
+  let n = 0;
+  const s = makeComfyStarter({ settings: settings(), sleep: async () => { if (++n > 1) ready = true; } });
+  await s.ensure(h);
+  await s.stop();
+  assert.equal(runs.length >= 1, true);
+  assert.deepEqual(runs[0].slice(0, 3), ["/PID", "4242", "/T"]);
 });

@@ -31,7 +31,9 @@ function withDefaults(root, v = {}) {
   const comfy = { ...d.comfy, ...c, nodes: { ...d.comfy.nodes, ...(isObj(c.nodes) ? c.nodes : {}) } };
   if (!comfy.workflow) comfy.workflow = join(root, "ComfyUI workflows", "broll_ltx.json");
   const stableAudio = { ...d.stableAudio, ...(isObj(v.stableAudio) ? v.stableAudio : {}) };
-  const autostart = { ...d.autostart, ...(isObj(v.autostart) ? v.autostart : {}) };
+  // "autostart": false (or true) switches both; an object sets each.
+  const autostart = typeof v.autostart === "boolean" ? { comfy: v.autostart, stableAudio: v.autostart }
+    : { ...d.autostart, ...(isObj(v.autostart) ? v.autostart : {}) };
   return { ...d, ...v, comfy, stableAudio, autostart };
 }
 

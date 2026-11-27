@@ -209,6 +209,10 @@ async function loadRoot() {
     // ComfyUI Desktop, started with Stable Audio when Studio opens (settings "autostart"); closed on exit if Studio started it.
     app.comfyStarter = makeComfyStarter({ settings, sleep: (ms) => new Promise((res) => setTimeout(res, ms)) });
     app.comfyStarter.onChange(() => { render(); updateTray(); });
+    // Load ComfyUI and Stable Audio now, so a job never waits on them (states show on Films and in the tray).
+    autostart(host, settings, { comfy: app.comfyStarter, stableAudio: starter }).catch(() => {});
+    // A free check every 30 s keeps the line true when Jon opens or closes either tool himself.
+    setInterval(() => { for (const s of [app.comfyStarter, app.starter]) Promise.resolve(s?.refresh(host)).catch(() => {}); }, 30_000);
     app.jobs = makeJobs(host, {
       runners: {
         higgsfield: makeHiggsfieldRunner({ settings }),
@@ -230,8 +234,6 @@ async function loadRoot() {
     app.jobs.onChange((list) => { onJobsChanged(list); render(); });
     app.jobs.onPersistError(() => render());
     app.jobs.restore(saved);
-    // Load ComfyUI and Stable Audio now, so a job never waits on them (states show on Films and in the tray).
-    autostart(host, settings, { comfy: app.comfyStarter, stableAudio: starter }).catch(() => {});
   }
   app.films = await scanFilms(host, app.root);
   render();

@@ -1,6 +1,6 @@
 // ComfyUI Desktop: started when Studio opens (if it isn't already running), so b-roll jobs never wait on it.
 // Mirrors the Stable Audio starter: state, ensure (one start shared), refresh (a free check), stop (only what it started).
-import { runProcess } from "../proc.js";
+import { runProcess, killTree } from "../proc.js";
 
 export const EXE_CANDIDATES = [
   "C:\\Users\\Jon\\AppData\\Local\\Programs\\@comfyorgcomfyui-electron\\ComfyUI.exe",
@@ -10,6 +10,8 @@ export const MSG_COMFY_MISSING = "ComfyUI Desktop wasn't found. Set comfy.exe in
 export const MSG_COMFY_DIDNT_START = "ComfyUI didn't start. Open it yourself and look at its window.";
 const POLL_MS = 3000;
 const MAX_POLLS = 80; // 4 minutes
+const AFTER_EXIT_POLLS = 30; // the launcher handed over to a window already loading: wait up to 90 s more
+const KEEP = 16 * 1024;
 
 const urlOf = (comfy) => String(comfy?.url || "http://127.0.0.1:8188").replace(/\/+$/, "");
 
@@ -30,7 +32,7 @@ export async function comfyExe(host, comfy) {
 }
 
 export function makeComfyStarter({ settings, sleep }) {
-  let state = "off", message = null, proc = null, running = null, gen = 0;
+  let state = "off", message = null, proc = null, running = null, gen = 0, host0 = null;
   const subs = new Set();
   const set = (s, m = null) => {
     if (s === state && m === message) return;
@@ -40,6 +42,7 @@ export function makeComfyStarter({ settings, sleep }) {
   const comfy = () => settings.comfy ?? {};
 
   async function start(host) {
+    host0 = host;
     const myGen = gen;
     set("starting"); // checking counts as starting, so the line never reads "Off" while Studio looks
     if (await comfyUp(host, comfy())) { set("ready"); return; }
@@ -47,17 +50,23 @@ export function makeComfyStarter({ settings, sleep }) {
     if (!exe) { set("missing", MSG_COMFY_MISSING); throw new Error(MSG_COMFY_MISSING); }
     if (gen !== myGen) { set("off"); return; }
     set("starting");
-    let exited = false;
+    let exited = -1, tail = "";
     const p = host.spawn(exe, []);
     proc = p;
-    p.onExit(() => { exited = true; if (proc === p) proc = null; });
+    // Its log is read and dropped (a full pipe would stall ComfyUI); the tail is kept for nothing else.
+    const keep = (c) => { tail = (tail + String(c)).slice(-KEEP); };
+    p.onOut(keep); p.onErr(keep);
+    let polls = 0;
+    p.onExit(() => { exited = polls; if (proc === p) proc = null; });
     const fail = () => { set("failed", MSG_COMFY_DIDNT_START); throw new Error(MSG_COMFY_DIDNT_START); };
     for (let i = 0; i < MAX_POLLS; i++) {
+      polls = i;
       await sleep(POLL_MS);
       if (gen !== myGen) { set("off"); return; }
       if (await comfyUp(host, comfy())) { set("ready"); return; }
-      // The Desktop app can hand over to an already-open window and exit; only give up once it's gone and silent.
-      if (exited && i >= 1) return fail();
+      // ComfyUI Desktop allows one window: a second launch hands over to the open one (maybe still loading) and
+      // exits. So an exit only means failure once ComfyUI has stayed silent for 90 s after it.
+      if (exited >= 0 && i - exited >= AFTER_EXIT_POLLS) return fail();
     }
     return fail();
   }
@@ -84,7 +93,7 @@ export function makeComfyStarter({ settings, sleep }) {
     async stop() {
       const p = proc;
       proc = null; gen++; running = null;
-      if (p) { try { await p.kill(); } catch { /* already gone */ } }
+      if (p) await killTree(host0, p);
       if (state === "ready" || state === "starting") set("off");
     },
   };

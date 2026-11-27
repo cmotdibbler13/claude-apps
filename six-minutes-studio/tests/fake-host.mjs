@@ -124,6 +124,7 @@ export class FakeHost {
       onErr: (f) => h.err.push(f),
       onExit: (f) => h.exit.push(f),
       kill: () => ctl.exit(null),
+      pid: 4242,
     };
     Promise.resolve().then(() => this._spawn(cmd, args, opts, ctl));
     return proc;

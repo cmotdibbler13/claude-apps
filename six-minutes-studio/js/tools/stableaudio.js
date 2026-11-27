@@ -1,5 +1,5 @@
 // Stable Audio 3 Small SFX (Pinokio): status check and a starter that keeps the pterm process alive.
-import { runProcess } from "../proc.js";
+import { killTree, runProcess } from "../proc.js";
 import { join } from "../paths.js";
 import { finishSfx, measure } from "../audio.js";
 
@@ -57,7 +57,7 @@ export async function stableAudioState(host, sa) {
 }
 
 export function makeStableAudioStarter({ sleep, settings }) {
-  let state = "off", message = null, proc = null, running = null, gen = 0;
+  let state = "off", message = null, proc = null, running = null, gen = 0, host0 = null;
   const subs = new Set();
   const set = (s, m = null) => {
     if (s === state && m === message) return;
@@ -67,6 +67,7 @@ export function makeStableAudioStarter({ sleep, settings }) {
   const sa = () => settings.stableAudio;
 
   async function start(host) {
+    host0 = host;
     const myGen = gen;
     const live = await stableAudioState(host, sa());
     if (live === "ready") { set("ready"); return; }
@@ -120,7 +121,8 @@ export function makeStableAudioStarter({ sleep, settings }) {
     async stop() {
       const p = proc;
       proc = null; gen++; running = null;
-      if (p) { try { await p.kill(); } catch { /* already gone */ } }
+      // The whole tree: pterm runs under cmd.exe (shell), and the app under pterm.
+      if (p) await (host0 ? killTree(host0, p) : Promise.resolve(p.kill()).catch(() => {}));
       if (state === "ready" || state === "starting") set("off");
     },
   };

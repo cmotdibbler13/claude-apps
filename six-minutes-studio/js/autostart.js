@@ -7,7 +7,10 @@ export async function autostart(host, settings, starters) {
   const runs = [];
   for (const k of ["comfy", "stableAudio"]) {
     const s = starters?.[k];
-    if (s && on[k] !== false) runs.push(Promise.resolve().then(() => s.ensure(host)).catch(() => {}));
+    if (!s) continue;
+    // Off: only a free check, so the line says Ready when Jon started it himself.
+    const go = on[k] !== false ? () => s.ensure(host) : () => s.refresh?.(host);
+    runs.push(Promise.resolve().then(go).catch(() => {}));
   }
   await Promise.all(runs);
 }

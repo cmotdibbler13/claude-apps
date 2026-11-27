@@ -127,6 +127,6 @@ Before you start: Probe → **Install join script** (the join script now takes p
 1. Close ComfyUI and Stable Audio (in Pinokio). Exit Studio from the tray and open it again.
 2. The Films page shows **ComfyUI: Starting… · Stable Audio: Starting…** and, after a minute or two, **Ready** for both. The tray tooltip shows the same.
 3. Run Probe: ComfyUI and Stable Audio pass without you opening them.
-4. Exit Studio from the tray: ComfyUI and Stable Audio close (they were started by Studio). Open ComfyUI yourself, then open Studio: it says Ready and, on Exit, leaves your ComfyUI open.
+4. Exit Studio from the tray: ComfyUI and Stable Audio close (they were started by Studio). In Task Manager, no python.exe from ComfyUI or Pinokio is left behind. Open ComfyUI yourself, then open Studio: it says Ready and, on Exit, leaves your ComfyUI open.
 5. If it says **ComfyUI: Not found**, add `"comfy": { "exe": "<path to ComfyUI.exe>" }` to `.studio-settings.json` (Probe then has **Start ComfyUI now**).
 6. To stop either starting with Studio: `"autostart": { "comfy": false }` (or `"stableAudio": false`) in `.studio-settings.json`.
