@@ -5,6 +5,7 @@ import { runProcess, killTree } from "../proc.js";
 export const EXE_CANDIDATES = [
   "C:\\Users\\Jon\\AppData\\Local\\Programs\\@comfyorgcomfyui-electron\\ComfyUI.exe",
   "C:\\Users\\Jon\\AppData\\Local\\Programs\\ComfyUI\\ComfyUI.exe",
+  "C:\\Users\\Jon\\AppData\\Local\\Programs\\Comfy Desktop\\Comfy Desktop.exe", // Jon's install (2026-11)
 ];
 export const MSG_COMFY_MISSING = "ComfyUI Desktop wasn't found. Set comfy.exe in .studio-settings.json.";
 export const MSG_COMFY_DIDNT_START = "ComfyUI didn't start. Open it yourself and look at its window.";
