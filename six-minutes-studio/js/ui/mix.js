@@ -78,11 +78,12 @@ function joinStep(state, narration, o) {
   const again = vo && vo.status !== "queued" && vo.status !== "running";
   const label = notOk.length ? `Join anyway (${notOk.length} not OK)` : again ? "Join again" : "Join voiceover";
   const out = { ...s, title: "Join voiceover", counts, flagged: notOk.length ? `Not OK: ${notOk.map((r) => `${r.id} ${r.status}`).join(", ")}` : null,
-    run: { label, allowFlagged: notOk.length > 0, enabled: s.free && !lock }, file: null, playing: false, lengthText: null, details: [] };
+    run: { label, allowFlagged: notOk.length > 0, enabled: s.free && !lock }, file: null, playing: false, playerKey: null, lengthText: null, details: [] };
   if (vo?.status === "done") {
     const words = (narration?.rows ?? []).reduce((n, r) => n + String(r.text ?? "").split(/\s+/).filter(Boolean).length, 0);
     out.file = vo.wav ?? null;
     out.playing = !!vo.wav && vo.wav === o.playing;
+    out.playerKey = vo.wav ? playerKey(vo.wav, vo.at) : null;
     out.lengthText = Number.isFinite(vo.lengthS) ? `${mmss(vo.lengthS)}${words ? ` (the script estimate is ${mmss((words / WPM) * 60)})` : ""}` : null;
     for (const t of vo.tightened ?? []) out.details.push(`Stall tightened: ${t.id}, ${Number(t.from_s).toFixed(1)} s to ${Number(t.to_s).toFixed(1)} s`);
     if (vo.extra?.length) out.details.push(`Takes that match no line: ${vo.extra.join(", ")}`);
@@ -107,7 +108,7 @@ function fitStep(state, o) {
   const s = base("FIT", fit, { lock, stale, pending: o.pending.has("FIT"), jobs: o.jobs, error: o.cardErrors.get("FIT") });
   const label = s.state === "done" ? "Fit again with a note" : fit && s.state !== "ready" && s.state !== "locked" ? "Fit again" : "Fit score";
   const out = { ...s, title: "Fit score", run: { label, enabled: s.free && !lock, note: s.state === "done" }, noteOpen: o.noteFor === "FIT",
-    sheet: null, suggestion: null, notes: null, sourceText: null, file: null, playing: false, lengthText: null,
+    sheet: null, suggestion: null, notes: null, sourceText: null, file: null, playing: false, playerKey: null, lengthText: null,
     canOpen: false, canUseExport: false, exports: null, opened: o.ui.opened ?? null, confirm: o.ui.confirm ?? null };
   if (fit?.status === "done") {
     const sh = fit.sheet ?? { rows: [] };
@@ -119,6 +120,7 @@ function fitStep(state, o) {
     if (fit.source === "stemremixer") out.sourceText = `Using your Stem Remixer export: ${basename(fit.file)}`;
     out.file = fit.file ?? null;
     out.playing = !!fit.file && fit.file === o.playing;
+    out.playerKey = fit.file ? playerKey(fit.file, fit.at) : null;
     out.lengthText = Number.isFinite(fit.lengthS) ? mmss(fit.lengthS) : null;
     out.canOpen = s.free && !!o.settings.stemRemixer && !!(fit.scoreFile ?? approvedScore(state)?.file);
     out.canUseExport = s.free && !lock;
@@ -162,8 +164,6 @@ export function mixModel({ state, narration = null, settings = {}, pending = new
 }
 
 // ---- DOM ----
-const playBtn = (file, playing, label, actions) => h("button", { type: "button", class: `nplay${playing ? " on" : ""}`, "aria-label": `${playing ? "Stop" : "Play"} ${label}`,
-  title: playing ? "Stop" : "Play", onclick: () => actions.playTake(file) }, playing ? "■" : "▶");
 
 function statusLine(s) {
   if (!s.statusText) return null;
@@ -175,8 +175,8 @@ function joinBody(s, actions) {
   return [
     s.counts ? h("p", { class: "hist", text: s.counts }) : null,
     s.flagged ? h("p", { class: "mflag", text: s.flagged }) : null,
-    s.lengthText || s.file ? h("div", { class: "mplay" }, s.file ? playBtn(s.file, s.playing, "the voiceover", actions) : null,
-      s.lengthText ? h("span", { text: `Voiceover ${s.lengthText}` }) : null) : null,
+    s.lengthText ? h("p", { class: "mplay", text: `Voiceover ${s.lengthText}` }) : null,
+    s.file ? h("div", { class: "mplayer" }, actions.audioPlayer("voice", s.file, s.playerKey, "the voiceover")) : null,
     s.details.length ? h("ul", { class: "mlist" }, s.details.map((d) => h("li", { text: d }))) : null,
     h("div", { class: "row" }, btn(s.run.label, () => actions.joinVoiceover(s.run.allowFlagged), { disabled: !s.run.enabled, ghost: s.state === "done" })),
   ];
@@ -223,7 +223,10 @@ function exportsBox(ex, s, actions) {
 function fitBody(s, actions) {
   const kids = [];
   if (s.sourceText) kids.push(h("p", { class: "hist", text: s.sourceText }));
-  if (s.file) kids.push(h("div", { class: "mplay" }, playBtn(s.file, s.playing, "the fitted score", actions), h("span", { text: `Fitted score${s.lengthText ? ` ${s.lengthText}` : ""}` })));
+  if (s.file) {
+    kids.push(h("p", { class: "mplay", text: `Fitted score${s.lengthText ? ` ${s.lengthText}` : ""}` }));
+    kids.push(h("div", { class: "mplayer" }, actions.audioPlayer("fit", s.file, s.playerKey, "the fitted score")));
+  }
   if (s.sheet?.length) kids.push(sheetTable(s.sheet));
   if (s.suggestion) kids.push(h("p", { class: "mflag", text: s.suggestion }));
   if (s.notes) kids.push(h("p", { class: "hist", text: s.notes }));

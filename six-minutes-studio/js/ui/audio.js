@@ -1,6 +1,6 @@
 // Review view, music and sound effects: the Score card, the Sound effects cards and the Stable Audio chip.
 // audioModel is pure; audioSections builds the DOM from it.
-import { h, btn, toolLabel } from "./dom.js";
+import { h, btn, toolLabel, playToggle } from "./dom.js";
 import { nodeSig } from "../tools/elevenlabs.js";
 import { formatStart } from "../audioplan.js";
 
@@ -194,8 +194,7 @@ function loopBox(c, actions) {
 function takeRow(c, t, actions) {
   return h("li", { class: `arow${t.chosen ? " on" : ""}` },
     t.file
-      ? h("button", { type: "button", class: `nplay${t.playing ? " on" : ""}`, "aria-label": `${t.playing ? "Stop" : "Play"} ${c.id} take ${t.n}`,
-        title: t.playing ? "Stop" : "Play this take", onclick: () => actions.playTake(t.file) }, t.playing ? "■" : "▶")
+      ? playToggle(t.file, t.playing, `${c.id} take ${t.n}`, actions)
       : h("span", { class: "nplay-gap" }),
     h("div", { class: "abody" },
       h("div", { class: "ahead" }, h("span", { class: "an", text: `Take ${t.n}` }), h("span", { class: "asrc", text: t.sourceLabel })),

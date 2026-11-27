@@ -166,7 +166,7 @@ async function renderNow() {
     const r = app.review;
     const model = reviewView.reviewModel({
       film: app.film, state: app.store?.state, layout: app.layout, making: r.making, listError: r.listError,
-      cardErrors: r.cardErrors, pending: r.pending, noteFor: r.noteFor, openError: app.openError, prefError: r.prefError ?? null, narration: r.narration ?? null, playing: app.playing,
+      cardErrors: r.cardErrors, pending: r.pending, noteFor: r.noteFor, openError: app.openError, prefError: r.prefError ?? null, narration: r.narration ?? null, playing: app.playing, paused: !!app.paused,
       audio: app.store?.state?.audio ?? null,
       sa: app.starter ? { state: app.starter.state(), message: app.starter.message() } : null,
       audioUi: { estimating: r.estimating, planning: !!r.planning, planError: r.planError ?? null, adding: !!r.adding, addError: r.addError ?? null },
@@ -229,7 +229,7 @@ const filmsActions = {
 
 function resetReview() {
   stopTake();
-  dropMixPlayer();
+  for (const slot of Object.keys(players)) dropPlayer(slot);
   app.previews.clear();
   revokeAll();
   app.review = { making: false, listError: null, cardErrors: new Map(), pending: new Set(), estimating: new Set(), noteFor: null, draft: "" };
@@ -314,18 +314,33 @@ function pollNarration() {
   narrTimer = setInterval(() => { if (app.view === "review") tick(); }, 10_000);
 }
 
-// ---- listening to a narration take: one player, pressing again (or another line) stops it ----
+// ---- listening: one sound at a time. A take's ▶ plays, pauses and carries on from the same place;
+// pressing another take (or a player below) pauses this one and forgets where it was. ----
 let player = null;
 function stopTake() {
   if (player) { player.pause(); player.onended = player.onerror = null; player = null; }
   app.playing = null;
+  app.paused = false;
+}
+function pausePlayers(except = null) {
+  for (const p of Object.values(players)) if (p.el && p.el !== except) { try { p.el.pause(); } catch { /* not loaded */ } }
 }
 async function playTake(file) {
-  const again = app.playing === file;
+  if (app.playing === file && player) {
+    if (app.paused) {
+      pausePlayers();
+      app.paused = false;
+      player.play().catch((e) => { console.error(e); stopTake(); render(); });
+    } else {
+      player.pause();
+      app.paused = true;
+    }
+    render();
+    return;
+  }
+  if (app.playing === file) return;              // still loading: the press counts once
   stopTake();
-  try { mixPlayer.el?.pause(); } catch { /* not loaded */ }
-  render();
-  if (again) return;
+  pausePlayers();
   app.playing = file;
   render();
   try {
@@ -341,27 +356,36 @@ async function playTake(file) {
   }
 }
 
-// ---- the mix preview: one <audio> with its own scrubber, kept across re-renders so it keeps playing ----
-const mixPlayer = { key: null, el: null };
-function dropMixPlayer() {
-  if (mixPlayer.el) { try { mixPlayer.el.pause(); } catch { /* gone */ } mixPlayer.el.removeAttribute("src"); }
-  mixPlayer.key = null; mixPlayer.el = null;
+// ---- the voiceover, fitted score and mix players: <audio> with pause and a scrubber, one per slot,
+// kept across re-renders so they keep playing and keep their place ----
+const players = { voice: { key: null, el: null }, fit: { key: null, el: null }, mix: { key: null, el: null } };
+const mixPlayer = players.mix;
+function dropPlayer(slot) {
+  const p = players[slot];
+  if (p.el) { try { p.el.pause(); } catch { /* gone */ } p.el.removeAttribute("src"); }
+  p.key = null; p.el = null;
 }
-// key = the file and the mix run's time: "Make mix again" writes the same path, so a new run gets a new player.
-function mixAudioEl(file, key, label) {
-  if (keepPlayer(mixPlayer, key)) return mixPlayer.el;
-  dropMixPlayer();
+function dropMixPlayer() { dropPlayer("mix"); }
+// key = the file and its run's time: a new join, fit or mix writes the same path, so a new run gets a new player.
+function audioEl(slot, file, key, label) {
+  const p = players[slot];
+  if (keepPlayer(p, key)) return p.el;
+  dropPlayer(slot);
   const el = document.createElement("audio");
   el.controls = true;
   el.preload = "metadata";
   el.className = "maudio";
-  el.setAttribute("aria-label", `Mix preview ${label ?? ""}`.trim());
-  // Starting the mix stops a narration or score take that is playing (one sound at a time).
-  el.addEventListener("play", () => { if (app.playing) { stopTake(); render(); } });
-  mixPlayer.key = key; mixPlayer.el = el;
-  toBlobUrl(app.host, file).then((url) => { if (mixPlayer.el === el) el.src = url; }, (e) => console.error(e));
+  el.setAttribute("aria-label", `Player for ${label ?? ""}`.trim());
+  // Starting one stops a take that is playing and pauses the other players.
+  el.addEventListener("play", () => {
+    pausePlayers(el);
+    if (app.playing) { stopTake(); render(); }
+  });
+  p.key = key; p.el = el;
+  toBlobUrl(app.host, file).then((url) => { if (p.el === el) el.src = url; }, (e) => console.error(e));
   return el;
 }
+function mixAudioEl(file, key, label) { return audioEl("mix", file, key, `Mix preview ${label ?? ""}`.trim()); }
 function seekMix(t) {
   const el = mixPlayer.el;
   if (!el) return;
@@ -634,6 +658,8 @@ const reviewActions = {
   makeMix: stepAction("MIX", () => { userStarted(); return startMix(mixCtx()); }),
   approveMix: stepAction("MIX", () => approveMix(mixCtx())),
   mixPlayer: (file, key, label) => mixAudioEl(file, key, label),
+  audioPlayer: (slot, file, key, label) => audioEl(slot, file, key, label),
+  isPaused: (file) => app.playing === file && !!app.paused,
   seekMix,
   field: (k) => fields.get(k),
   setField(k, v) { if (v === undefined) fields.delete(k); else fields.set(k, v); },

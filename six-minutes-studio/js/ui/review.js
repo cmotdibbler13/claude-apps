@@ -1,5 +1,5 @@
 // Review view, b-roll section: shot cards in script order (or a grid), takes, approve, redo with a note.
-import { h, btn, toolLabel, mediaEl } from "./dom.js";
+import { h, btn, toolLabel, mediaEl, playToggle } from "./dom.js";
 import { orderByScript } from "../shots.js";
 import { canStart, has3d } from "../redo.js";
 import { join } from "../paths.js";
@@ -89,7 +89,7 @@ function narrationSection(n, actions) {
     kids.push(h("p", { class: "note", text: n.counts }));
     kids.push(h("ul", { class: "narr" }, n.rows.map((r) => h("li", { class: `n-${r.status}` },
       r.file
-        ? h("button", { type: "button", class: `nplay${r.playing ? " on" : ""}`, "aria-label": `${r.playing ? "Stop" : "Play"} ${r.id}`, title: r.playing ? "Stop" : "Play this take", onclick: () => actions.playTake(r.file) }, r.playing ? "\u25A0" : "\u25B6")
+        ? playToggle(r.file, r.playing, r.id, actions)
         : h("span", { class: "nplay-gap" }),
       h("span", { class: "nid", text: r.id }),
       h("span", { class: "ntx", title: r.full, text: r.text }),
@@ -102,13 +102,14 @@ function narrationSection(n, actions) {
   return h("section", { class: "narration", "aria-label": "Narration" }, kids);
 }
 
-export function reviewModel({ film, state, layout = "script", making = false, listError = null, cardErrors = new Map(), pending = new Set(), noteFor = null, openError = null, prefError = null, narration = null, playing = null, audio, sa = null, audioUi = {}, mixUi = {} }) {
+export function reviewModel({ film, state, layout = "script", making = false, listError = null, cardErrors = new Map(), pending = new Set(), noteFor = null, openError = null, prefError = null, narration = null, playing = null, paused = false, audio, sa = null, audioUi = {}, mixUi = {} }) {
   if (openError) return { openFailed: true, dir: openError.dir, title: openError.title, message: `Couldn't open ${openError.title}: ${openError.message}` };
   if (!film) return { noFilm: true };
   const assets = state?.assets ?? [];
   const ordered = orderByScript(assets);
   return {
     noFilm: false,
+    paused: !!playing && !!paused, // a take paused part way: its button shows ▶ to carry on
     title: film.title,
     eyebrow: `${film.title} / Part 2 assets / review`,
     layout: layout === "grid" ? "grid" : "script",
