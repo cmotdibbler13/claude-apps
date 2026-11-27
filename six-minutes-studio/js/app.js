@@ -19,6 +19,7 @@ import { makeComfyRunner, i2vReady } from "./tools/comfyui.js";
 import { makeStableAudioStarter, makeStableAudioRunner } from "./tools/stableaudio.js";
 import { makeComfyStarter } from "./tools/comfystart.js";
 import { autostart, toolsLine } from "./autostart.js";
+import { makeCredits } from "./credits.js";
 import { makeElevenRunner } from "./tools/elevenlabs.js";
 import { planAudio, addCue, editItem, getEstimate, rewriteFromNote, startAudioTake, approveAudio, unapproveAudio, chooseAudio, proposeStarts } from "./audioplan.js";
 import { makeVoiceJoinRunner } from "./tools/voicejoin.js";
@@ -90,7 +91,7 @@ function updateTray() {
     const open = () => { try { app.host.showWindow?.().catch(() => {}); } catch { /* ignore */ } };
     Promise.resolve(app.host.tray({
       icon: drawTrayIcon(), iconIsTemplate: false,
-      toolTip: `Six Minutes Studio \u2014 ${n} running${app.comfyStarter ? `\n${toolsLine({ comfy: app.comfyStarter, stableAudio: app.starter })}` : ""}`,
+      toolTip: `Six Minutes Studio \u2014 ${n} running${app.comfyStarter ? `\n${toolsLine({ comfy: app.comfyStarter, stableAudio: app.starter })}` : ""}${app.credits?.line() ? `\nCredits: ${app.credits.line()}` : ""}`,
       menu: [
         { label: "Open", click: open },
         { label: "Live jobs", click: () => { open(); showView("jobs"); } },
@@ -106,9 +107,18 @@ function userStarted() {
   updateTray();
 }
 
+const PAID = new Set(["higgsfield", "elevenlabs"]);
+function paintCredits() {
+  const el = $("credits"); if (!el || !app.credits) return;
+  const line = app.credits.line();
+  el.hidden = !line; el.textContent = line ?? ""; el.title = app.credits.title();
+}
 function onJobsChanged(list) {
   if (!armed) { prevJobs = list; return; }
   const msgs = notifyRules(prevJobs, list);
+  // A paid take finishing changes a balance: read it again (free).
+  const was = new Map((prevJobs ?? []).map((j) => [j.id, j.status]));
+  if (list.some((j) => PAID.has(j.tool) && (j.status === "done" || j.status === "failed") && was.get(j.id) !== j.status)) app.credits?.refresh();
   prevJobs = list;
   for (const m of msgs) { try { Promise.resolve(app.host.notify(m)).catch(() => {}); } catch { /* a no is final */ } }
   updateTray();
@@ -920,6 +930,11 @@ async function boot() {
     return;
   }
   app.host = host;
+  // Credits left in Higgsfield and ElevenLabs, in the top bar and the tray: now, every 10 minutes, after paid takes.
+  app.credits = makeCredits(host);
+  app.credits.onChange(() => { paintCredits(); updateTray(); });
+  app.credits.refresh();
+  setInterval(() => app.credits.refresh(), 10 * 60_000);
   const desktop = await window.claude.use("desktop");
   desktop.app?.dock?.setIcon(drawIcon()).catch(() => {});
   // Probe re-reads .studio-settings.json and updates the one settings object every runner holds.
