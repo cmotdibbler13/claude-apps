@@ -407,21 +407,27 @@ def build_clip(parts, rate=RATE, inside=None, after=None):
     return (y, tight) if inside is not None else y
 
 
-def level_clip(x, rate=RATE, target_db=CLIP_RMS_DB):
+def level_clip(x, rate=RATE, target_db=CLIP_RMS_DB, ref=None):
     """Gain plus the same limiter, repeated until the clip's RMS is within
-    0.5 dB (aiming for 0.05 dB) of -13.8 dB."""
+    0.5 dB (aiming for 0.05 dB) of -13.8 dB. With ref (the same clip without
+    its inserted pauses), the gain is found on ref and then applied, with the
+    limiter, to x: the silence a pause adds never raises the voice's level."""
     x = _as_float(x)
-    if rms_db(x) <= FLOOR_DBFS:
+    r = x if ref is None else _as_float(ref)
+    level = rms_db(r)
+    if level <= FLOOR_DBFS:
         return x
     aim = target_db
-    y = limit(set_rms(x, aim), rate)
+    y = limit(r * 10 ** ((aim - level) / 20.0), rate)
     for _ in range(8):
         err = target_db - rms_db(y)
         if abs(err) < 0.05:
             break
         aim += err
-        y = limit(set_rms(x, aim), rate)
-    return y
+        y = limit(r * 10 ** ((aim - level) / 20.0), rate)
+    if ref is None:
+        return y
+    return limit(x * 10 ** ((aim - level) / 20.0), rate)
 
 
 # ----------------------------------------------------------------- assembly ----
@@ -836,7 +842,11 @@ def join(args, transcriber=None):
         ins = [list(inside_map.get(i, [])) for i in c["ids"]]
         aft = [after_map.get(i, 0.0) for i in c["ids"]]
         audio, found = build_clip([parts[i] for i in c["ids"]], inside=ins, after=aft[:-1])
-        clips.append((c["clip"], level_clip(audio)))
+        # The level is set on the clip as it is without its pauses (see level_clip).
+        ref = None
+        if any(ins) or any(aft[:-1]):
+            ref = build_clip([parts[i] for i in c["ids"]])
+        clips.append((c["clip"], level_clip(audio, ref=ref)))
         clip_after.append(aft[-1])
         n_inside += sum(len(p) for p in ins)
         # an after on the film's last line is never applied (no gap follows it)

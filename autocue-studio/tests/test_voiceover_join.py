@@ -739,6 +739,31 @@ class JoinCommandTest(unittest.TestCase):
         self.assertEqual(code, 0, lines[-1])
         self.assertEqual(lines[-1]["pauses"], {"inside": 0, "after": 0})
 
+    def test_a_clip_with_pauses_keeps_the_voice_level_of_the_clip_without(self):
+        # The clip's level is set on its voice, not on its voice plus the silence the pauses add.
+        def voice_rms(path):
+            x = vj.decode48(path)
+            n = RATE // 100
+            f = np.asarray(x[:len(x) // n * n], dtype=np.float64).reshape(-1, n)
+            db = 10 * np.log10(np.maximum(np.mean(f ** 2, axis=1), 1e-20))
+            return vj.rms_db(f[db > -40.0].ravel())
+        code, base = self.run_join()
+        self.assertEqual(code, 0, base[-1])
+        plain = voice_rms(base[-1]["wav"])
+        path = self.pauses_file({"inside": {"01.1": [{"at_s": 0.3, "add_s": 1.0}]},
+                                 "after": {"01.1": 1.0}})
+        code, lines = self.run_join("--pauses", path)
+        self.assertEqual(code, 0, lines[-1])
+        self.assertAlmostEqual(voice_rms(lines[-1]["wav"]), plain, delta=0.1)
+
+    def test_level_clip_with_a_reference_uses_the_reference_gain(self):
+        clip = vj.build_clip([tone(0.8, -25.0), tone(0.6, -8.0)])
+        padded = np.concatenate([clip[:RATE // 2], np.zeros(RATE), clip[RATE // 2:]])
+        y0 = vj.level_clip(clip)
+        y1 = vj.level_clip(padded, ref=clip)
+        np.testing.assert_allclose(np.concatenate([y1[:RATE // 2], y1[RATE // 2 + RATE:]]), y0, atol=1e-6)
+        np.testing.assert_array_equal(vj.level_clip(clip, ref=clip), y0)
+
     def test_after_on_the_last_line_is_not_counted(self):
         path = self.pauses_file({"after": {"02.1": 0.5}})
         code, lines = self.run_join("--pauses", path)
