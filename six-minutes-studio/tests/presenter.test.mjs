@@ -450,3 +450,65 @@ test("watchJobs: a voiceover job turning done runs the check; an error in the ch
   await tickN(20);
   assert.equal(store.state.mix.voiceover.status, "done");
 });
+
+// ---- coalescing: the check never blocks job mirroring, never runs twice at once ----
+async function gated() {
+  const rel = {};
+  const runners = { higgsfield: { start: (j) => new Promise((r) => { rel[j.assetId] = () => r({ file: j.input.out + ".mp4", meta: { hfId: "x", audioSig: { lengthS: 5, hash: "old" } } }); }) } };
+  const s = await csetup(runners);
+  const { host, store, ctx } = s;
+  s.gate = { open: false, waiters: [] };
+  s.reads = 0;
+  const read = host.fs.read.bind(host.fs);
+  host.fs.read = async (p, ...r) => { if (p === TRPATH) s.reads++; return read(p, ...r); };
+  host.spawnScript(async (cmd, args, _o, p) => {
+    if (!s.gate.open) await new Promise((r) => s.gate.waiters.push(r));
+    await host.fs.write(args[args.length - 1], "NEW"); p.exit(0);
+  });
+  s.release = () => { s.gate.open = true; s.gate.waiters.forEach((f) => f()); };
+  await host.fs.mkdir(DIR + "\\studio\\presenter");
+  await host.fs.write(VO_WAV, "w");
+  await host.fs.write(TRPATH, JSON.stringify(TR));
+  await store.update((d) => { d.mix.voiceover.transcript = TRPATH; });
+  s.rel = rel;
+  watchJobs(ctx);
+  await startTake(ctx, "TC-01");
+  await startTake(ctx, "TC-02");
+  await until(() => rel["TC-01"] && rel["TC-02"]);
+  return s;
+}
+
+test("watchJobs: a second trigger while a check runs gives exactly one more run; job mirroring is not held up", async () => {
+  const s = await gated();
+  const { store, rel } = s;
+  rel["TC-01"]();
+  await until(() => store.state.assets[0].takes[0].status === "done");
+  await until(() => s.gate.waiters.length === 1); // check 1 is cutting TC-01, held
+  assert.equal(s.reads, 1);
+  rel["TC-02"](); // another trigger, and it is mirrored while check 1 is stuck
+  await until(() => store.state.assets[1].takes[0].status === "done");
+  assert.equal(store.state.assets[1].takes[0].status, "done");
+  assert.equal(s.reads, 1);
+  s.release();
+  await until(() => store.state.assets[1].voiceoverChanged);
+  await tickN(40);
+  assert.equal(s.reads, 2);
+  assert.equal(store.state.assets[0].voiceoverChanged, true);
+  assert.equal(store.state.assets[1].voiceoverChanged, true);
+});
+
+test("watchJobs: a failing check is logged as 'Clip audio check failed' and the watcher keeps going", async () => {
+  const s = await gated();
+  const { store, host, rel } = s;
+  const logs = [];
+  const log = store.log.bind(store);
+  store.log = async (m) => { logs.push(m); return log(m); };
+  s.release();
+  await host.fs.write(TRPATH, "{not json");
+  rel["TC-01"]();
+  await until(() => logs.some((m) => /^Clip audio check failed/.test(m)));
+  assert.ok(logs.some((m) => /^Clip audio check failed/.test(m)));
+  rel["TC-02"]();
+  await until(() => store.state.assets[1].takes[0].status === "done");
+  assert.equal(store.state.assets[1].takes[0].status, "done");
+});

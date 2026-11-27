@@ -339,7 +339,7 @@ export function watchJobs(ctx) {
     }
     try { onError(null); } catch { /* ignore */ }
     for (const l of lines) await store.log(l);
-    if ([...doneKeys(store.state)].some((k) => !before.has(k))) await check();
+    if ([...doneKeys(store.state)].some((k) => !before.has(k))) check(); // not awaited: the cuts must not hold up the chain
   };
   const sync = () => {
     if (queued) return; // one pending reconcile covers every change since it was queued
