@@ -257,3 +257,26 @@ test("placeFromNotes with nothing new does not call Claude", async () => {
   host.claudeScript(() => { throw new Error("called"); });
   assert.deepEqual(await placeFromNotes(host, store, { transcript: TR, lineScript: SCRIPT }), { placed: [], replies: [] });
 });
+
+test("placeFromNotes tells Jon when Claude leaves a line out", async () => {
+  const { host, store } = await pSetup({ "02.1": { note: "n", noteAt: 10 } });
+  host.claudeScript(() => []);
+  const r = await placeFromNotes(host, store, { transcript: TR, lineScript: SCRIPT });
+  assert.deepEqual(r, { placed: [], replies: [] });
+  const line = store.state.mix.pacing.lines["02.1"];
+  assert.equal(line.reply, "Claude didn't place a pause for this note. Click the word to place one.");
+  assert.ok(line.placedAt >= 0);
+});
+
+test("placeFromNotes skips a Claude mark on Jon's key and places an end mark", async () => {
+  const { host, store } = await pSetup({ "02.1": { note: "n", noteAt: 10, pauses: [{ ...jonMark, size: "short" }] } });
+  host.claudeScript(() => [{ id: "02.1", pauses: [{ after: 1, size: "long" }, { after: "end", size: "long" }] }]);
+  await placeFromNotes(host, store, { transcript: TR, lineScript: SCRIPT, takeSigs: { "02.1": "t" } });
+  const ps = store.state.mix.pacing.lines["02.1"].pauses;
+  assert.deepEqual(ps.find((m) => m.key === "village#1"), { ...jonMark, size: "short" });
+  const end = ps.find((m) => m.key === "end");
+  assert.equal(end.by, "claude");
+  assert.equal(end.size, "long");
+  assert.equal(end.take, "t");
+  assert.equal(ps.length, 2);
+});

@@ -192,6 +192,8 @@ export async function placeFromNotes(host, store, { transcript, lineScript, take
         line = { ...line, pauses: (line.pauses || []).filter((m) => m.by !== "claude") };
         for (const p of it.pauses) {
           const w = p.after === "end" ? null : wordsOf[it.id][p.after];
+          const key = p.after === "end" || isLast(wordsOf[it.id], w.word, w.nth) ? "end" : keyOf(w.word, w.nth);
+          if (line.pauses.some((m) => m.key === key && m.by === "jon")) continue; // Jon's mark stays as it is
           line = addMark(line, {
             after: p.after === "end" ? "end" : true, word: w?.word, nth: w?.nth,
             size: p.size, by: "claude", take: takeSigs[it.id], words: wordsOf[it.id],
@@ -206,8 +208,12 @@ export async function placeFromNotes(host, store, { transcript, lineScript, take
       line.placedAt = now;
       lines[it.id] = line;
     }
-    // A line that got no answer is done with this note too.
-    for (const id of ids) if (!out.some((it) => it.id === id)) lines[id].placedAt = now;
+    // A line Claude left out is done with this note too; say so.
+    for (const id of ids) {
+      if (out.some((it) => it.id === id)) continue;
+      lines[id].placedAt = now;
+      lines[id].reply = "Claude didn't place a pause for this note. Click the word to place one.";
+    }
   });
   if (placed.length) await store.log(`Pauses placed for ${placed.join(", ")}`);
   return { placed, replies };
