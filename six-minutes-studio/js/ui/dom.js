@@ -33,6 +33,9 @@ export function playToggle(file, active, label, actions, playTitle = "Play this 
     title: going ? "Pause" : paused ? "Carry on from here" : playTitle, onclick: () => actions.playTake(file) }, going ? "\u275A\u275A" : "\u25B6");
 }
 
+// A player is kept across re-renders while it plays the same file from the same run.
+export const playerKey = (file, at) => `${file ?? ""}#${at ?? ""}`;
+
 export const basename = (p) => String(p ?? "").split(/[\\/]/).filter(Boolean).pop() ?? "";
 
 // An <img> or <video> whose blob URL arrives later from preview(file); failures show as text.

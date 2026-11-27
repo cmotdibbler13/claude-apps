@@ -3,7 +3,8 @@ import { makeHost } from "./host.js";
 import { accessGate } from "./gate.js";
 import { resolveRoot, join } from "./paths.js";
 import { loadSettings } from "./settings.js";
-import { withRerecord, rerecordsToClear } from "./pacing.js";
+import { withRerecord, rerecordsToClear, lineWords, takeSig, addMark, setSize, moveMark, removeMark, buildPauses, marksSig, placeFromNotes } from "./pacing.js";
+import { applyPauses, NOT_OK } from "./pacingchain.js";
 import { findLineScript, loadLineScript, refreshLineScript, narrationStatus } from "./narration.js";
 import { scanFilms } from "./films.js";
 import { makeFilmSession, readSavedJobs } from "./session.js";
@@ -27,6 +28,7 @@ import * as filmsView from "./ui/films.js";
 import * as jobsView from "./ui/jobs.js";
 import * as reviewView from "./ui/review.js";
 import { keepPlayer } from "./ui/mix.js";
+import { followPlayer } from "./ui/pacing.js";
 
 const $ = (id) => document.getElementById(id);
 const msg = (e) => String(e?.message ?? e);
@@ -126,7 +128,7 @@ function paint(name, el, model, view, actions) {
   const refocus = document.activeElement?.id === "note-box" || (name === "review" && app.review.focusNote);
   // An audio prompt, length or cue box Jon is typing in keeps its caret across the re-render.
   const act = document.activeElement;
-  const keep = act?.id?.startsWith("au-") ? { id: act.id, start: act.selectionStart ?? null, end: act.selectionEnd ?? null } : null;
+  const keep = act?.id?.startsWith("au-") || act?.id?.startsWith("pace-") ? { id: act.id, start: act.selectionStart ?? null, end: act.selectionEnd ?? null } : null;
   rendering = true;
   try { view.render(el, model, actions); } finally { rendering = false; }
   const ta = refocus ? $("note-box") : null;
@@ -171,10 +173,17 @@ async function renderNow() {
       audio: app.store?.state?.audio ?? null,
       sa: app.starter ? { state: app.starter.state(), message: app.starter.message() } : null,
       audioUi: { estimating: r.estimating, planning: !!r.planning, planError: r.planError ?? null, adding: !!r.adding, addError: r.addError ?? null },
-      mixUi: { settings: { stemRemixer: !!app.settings?.stemRemixerDir }, jobs: list, ui: { exports: r.exports ?? null, opened: r.opened ?? null, confirm: r.exportConfirm ?? null } },
+      mixUi: { settings: { stemRemixer: !!app.settings?.stemRemixerDir }, jobs: list, ui: { exports: r.exports ?? null, opened: r.opened ?? null, confirm: r.exportConfirm ?? null },
+        pacing: { transcript: r.transcript ?? null, lineScript: r.lineScript ?? null, menu: r.paceMenu ?? null,
+          chain: { applying: r.applying ?? null, placing: !!r.placing, error: r.paceError ?? null, info: r.paceInfo ?? null } } },
     });
+    r.paceSource = model.mix?.pacing?.source ?? null;
     paint("review", $("view-review"), model, reviewView, reviewActions);
+    attachFollow();
+    // A ‖ just opened: its menu takes the focus (Escape closes it).
+    if (r.focusMenu) { r.focusMenu = false; document.querySelector("#view-review .pmenu .pop")?.focus(); }
     proposeOnce();
+    loadTranscript();
   }
 }
 
@@ -230,6 +239,7 @@ const filmsActions = {
 
 function resetReview() {
   stopTake();
+  unfollow();
   for (const slot of Object.keys(players)) dropPlayer(slot);
   app.previews.clear();
   revokeAll();
@@ -361,7 +371,7 @@ async function playTake(file) {
 
 // ---- the voiceover, fitted score and mix players: <audio> with pause and a scrubber, one per slot,
 // kept across re-renders so they keep playing and keep their place ----
-const players = { voice: { key: null, el: null }, fit: { key: null, el: null }, mix: { key: null, el: null } };
+const players = { voice: { key: null, el: null }, fit: { key: null, el: null }, mix: { key: null, el: null }, review: { key: null, el: null } };
 const mixPlayer = players.mix;
 function dropPlayer(slot) {
   const p = players[slot];
@@ -394,6 +404,117 @@ function seekMix(t) {
   if (!el) return;
   try { el.currentTime = Math.max(0, Number(t) || 0); } catch { /* not loaded yet */ }
   el.play().catch(() => {});
+}
+
+// ---- pacing review: the line being spoken follows the mix player (or the voiceover's, when the mix is older) ----
+let follow = { el: null, list: null, off: null };
+function unfollow() { follow.off?.(); follow = { el: null, list: null, off: null }; }
+const reviewEl = () => (app.review.paceSource === "mix" ? players.mix.el : players.review.el);
+// After a render: the list is new whenever the review was painted again; the player only on a new run.
+function attachFollow() {
+  const list = document.querySelector("#view-review ul.pace");
+  const el = app.view === "review" ? reviewEl() : null;
+  if (!list || !el) { unfollow(); return; }
+  if (follow.el === el && follow.list === list) return;
+  unfollow();
+  follow = { el, list, off: followPlayer(el, list) };
+}
+function seekReview(t) {
+  const el = reviewEl();
+  if (!el || t == null) return;
+  try { el.currentTime = Math.max(0, Number(t) || 0); } catch { /* not loaded yet */ }
+  el.play().catch(() => {});
+}
+
+// The joined voiceover's transcript (lines and words), read once per join.
+function loadTranscript() {
+  const r = app.review;
+  const vo = app.store?.state?.mix?.voiceover;
+  if (!vo || vo.status !== "done" || !vo.transcript || !app.host) return Promise.resolve(r.transcript ?? null);
+  if (r.transcriptFor?.at === vo.at && r.transcriptFor?.path === vo.transcript) return r.transcriptFor.p;
+  const p = app.host.fs.read(vo.transcript, "utf8").then((t) => JSON.parse(t)).catch((e) => { console.error(e); return null; })
+    .then((t) => { if (app.review === r && r.transcriptFor?.p === p) { r.transcript = t; render(); } return t; });
+  r.transcriptFor = { at: vo.at, path: vo.transcript, p };
+  return p;
+}
+
+const takeSigsNow = () => Object.fromEntries((app.review.narration?.rows ?? []).map((x) => [x.id, takeSig(x)]).filter(([, v]) => v != null));
+const takeOf = (id) => takeSig((app.review.narration?.rows ?? []).find((x) => x.id === id)) ?? null;
+const wordsOf = (id) => lineWords(app.review.transcript, id);
+const EMPTY_SIG = marksSig({ lines: {} }, {});
+
+// One line's marks and note, changed through the store (saved in the film's state.json).
+async function editLine(id, fn) {
+  const r = app.review;
+  try {
+    await app.store.update((d) => {
+      d.mix ??= {};
+      d.mix.pacing ??= { lines: {} };
+      d.mix.pacing.lines ??= {};
+      d.mix.pacing.lines[id] = fn(d.mix.pacing.lines[id] ?? {});
+    });
+    return true;
+  } catch (e) {
+    if (app.review === r) r.paceError = `Couldn't save: ${msg(e)}`;
+    return false;
+  } finally { render(); }
+}
+
+// A mark Jon changes is his from then on, so Claude's next placing leaves it alone.
+const jonOwns = (line, keys) => ({ ...line, pauses: (line.pauses ?? []).map((p) => (keys.has(p.key) ? { ...p, by: "jon" } : p)) });
+
+async function editMark(id, key, op) {
+  const r = app.review;
+  const words = wordsOf(id);
+  let next = key;
+  await editLine(id, (l) => {
+    if (op === "remove") { next = null; return removeMark(l, key); }
+    if (op === "left" || op === "right") {
+      const before = new Set((l.pauses ?? []).filter((p) => p.key !== key).map((p) => p.key));
+      const moved = moveMark(l, key, op === "left" ? -1 : 1, words);
+      if (moved === l) return l;
+      next = (moved.pauses ?? []).map((p) => p.key).find((k) => !before.has(k)) ?? null;
+      return next ? jonOwns(moved, new Set([next])) : moved;
+    }
+    return jonOwns(setSize(l, key, op), new Set([key]));
+  });
+  if (app.review === r) { r.paceMenu = next ? { id, key: next } : null; render(); }
+}
+
+async function placePauses() {
+  const r = app.review;
+  if (r.placing || r.applying || !app.store) return;
+  r.placing = true; r.paceError = null; r.paceInfo = null; render();
+  try {
+    const transcript = await loadTranscript();
+    await placeFromNotes(app.host, app.store, { transcript, lineScript: r.lineScript ?? null, takeSigs: takeSigsNow() });
+  } catch (e) {
+    if (app.review === r) r.paceError = msg(e);
+  } finally {
+    r.placing = false;
+    render();
+  }
+}
+
+// Join with the marks, then fit and mix again (pacingchain). Notes and marks can still be edited meanwhile.
+async function runApplyPauses() {
+  const r = app.review;
+  if (r.applying || r.placing || !app.store) return;
+  userStarted();
+  r.applying = { step: null }; r.paceError = null; r.paceInfo = null; r.paceMenu = null; render();
+  try {
+    await loadTranscript();
+    const fit = app.store.state.mix?.fit;
+    const res = await applyPauses(mixCtx(), { onStep: (step) => { if (r.applying) { r.applying = { step }; render(); } } });
+    if (app.review === r && res?.stoppedAt === "FIT" && fit?.status === "done" && fit.source === "stemremixer") {
+      r.paceInfo = "Joined with the pauses. The score fit is your Stem Remixer export, so it was left as it is.";
+    }
+  } catch (e) {
+    if (app.review === r) r.paceError = msg(e);
+  } finally {
+    r.applying = null;
+    render();
+  }
 }
 
 // Once a voiceover is joined (and when Review opens on a film that has one), Claude's start times for the
@@ -631,7 +752,21 @@ const reviewActions = {
   unapproveAudio: cardAction((id) => unapproveAudio(ctx(), id)),
   startStableAudio: () => { startStableAudio(); },
   // Voiceover and mix
-  joinVoiceover: stepAction("VOICEOVER", (allowFlagged) => { userStarted(); return startJoin(mixCtx(), { allowFlagged: !!allowFlagged }); }),
+  // The join always takes the pause marks as they are now (Apply pauses also refits and remixes).
+  joinVoiceover: stepAction("VOICEOVER", async (allowFlagged) => {
+    userStarted();
+    const notOkIds = (app.review.narration?.rows ?? []).filter((x) => NOT_OK.has(x.status)).map((x) => x.id);
+    const takeSigs = takeSigsNow();
+    const pacing = app.store.state.mix?.pacing;
+    const sig = marksSig(pacing, takeSigs);
+    let pauses = null;
+    if (sig !== EMPTY_SIG) {
+      const transcript = await loadTranscript();
+      const { file } = buildPauses(pacing, transcript, app.store.state.mix?.voiceover?.pausesApplied ?? {}, takeSigs);
+      pauses = { file, sig, applied: file.inside, allowedIds: notOkIds };
+    }
+    return startJoin({ ...mixCtx(), notOkIds }, { allowFlagged: !!allowFlagged, pauses });
+  }),
   fitScore: stepAction("FIT", async (note) => {
     if (note !== undefined && !String(note).trim()) throw new Error("Write a note saying what should change.");
     userStarted();
@@ -664,6 +799,37 @@ const reviewActions = {
   audioPlayer: (slot, file, key, label) => audioEl(slot, file, key, label),
   isPaused: (file) => app.playing === file && !!app.paused,
   seekMix,
+  // Pacing review
+  reviewPlayer: (file, key, label) => audioEl("review", file, key, label),
+  seekReview,
+  markWord(id, i) {
+    const words = wordsOf(id);
+    const w = words[i];
+    if (!w) return;
+    editLine(id, (l) => addMark(l, { after: true, word: w.word, nth: w.nth, size: "medium", by: "jon", take: takeOf(id), words }));
+  },
+  markGap(id) { editLine(id, (l) => addMark(l, { after: "end", size: "medium", by: "jon", take: takeOf(id), words: wordsOf(id) })); },
+  openMark(id, key) {
+    const m = app.review.paceMenu;
+    app.review.paceMenu = m && m.id === id && m.key === key ? null : { id, key };
+    app.review.focusMenu = !!app.review.paceMenu;
+    render();
+  },
+  editMark: (id, key, op) => { editMark(id, key, op); },
+  // Saving a note never asks Claude; Place pauses does.
+  saveNote(id, text) {
+    const now = app.host.now();
+    return editLine(id, (l) => ({ ...l, note: text, noteAt: now }));
+  },
+  async setRerecord(id, on) {
+    const now = app.host.now();
+    await editLine(id, (l) => ({ ...l, rerecord: on ? { at: now } : null }));
+    await Promise.resolve(app.store.log(`Narration ${id}: ${on ? "marked to re-record" : "Re-record removed"}`)).catch(() => {});
+    await refreshNarration();
+    render();
+  },
+  placePauses: () => { placePauses(); },
+  applyPauses: () => { runApplyPauses(); },
   field: (k) => fields.get(k),
   setField(k, v) { if (v === undefined) fields.delete(k); else fields.set(k, v); },
   rendering: () => rendering,
