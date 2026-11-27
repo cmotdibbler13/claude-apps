@@ -176,3 +176,30 @@ test("appendMd keeps CRLF line endings", () => {
   assert.ok(out.includes("| BR-010 | HF-01 | used | 5.0 s | a | b | c | d |\r\n| BR-011 | x |\r\n\r\n## Other Film"));
   assert.ok(!/[^\r]\n/.test(out));
 });
+
+test("appendMd puts a table under an existing heading that has none", () => {
+  const md = `${MD}\n## Empty Film\n\n## Last\n\n${HEAD}\n| BR-030 | a |\n`.replace("## Last", "## Later");
+  const out = appendMd(md, "Empty Film", ["| BR-040 | x |"]);
+  assert.equal(out.split("## Empty Film").length, 2);
+  assert.ok(out.includes(`## Empty Film\n\n${HEAD}\n| BR-040 | x |\n\n## Later`));
+  const atEnd = appendMd(`${MD}\n## Empty Film\n`, "Empty Film", ["| BR-040 | x |"]);
+  assert.ok(atEnd.endsWith(`## Empty Film\n\n${HEAD}\n| BR-040 | x |\n`));
+});
+
+test("appendMd throws when the MD has no table", () => {
+  assert.throws(() => appendMd("# Catalogue\n", "F", ["| x |"]), { message: "Couldn't find a table in broll_catalogue.md to copy its columns from." });
+});
+
+test("mdRow throws for an approved entry without a duration", () => {
+  const e = { id: "BR-600", shot: "HF-01", status: "approved", description: "d", period: "p", tags: ["x"], notes: "n" };
+  assert.throws(() => mdRow(e), { message: "BR-600 has no duration" });
+  assert.throws(() => mdRow({ ...e, duration_s: NaN }), /no duration/);
+});
+
+test("plannedEntries throws for ComfyUI without workflow or seed", () => {
+  const mk = (local) => shot("HF-03", { chosen: { file: ROOT + "The Christmas Tree\\studio\\media\\HF-03_t1.mp4", hfJob: null, local }, others: [] });
+  const msg = { message: "HF-03 take has no ComfyUI workflow/seed recorded" };
+  assert.throws(() => plannedEntries({ ...base, shots: [mk({ tool: "comfyui", seed: 1 })] }), msg);
+  assert.throws(() => plannedEntries({ ...base, shots: [mk({ tool: "comfyui", workflow: "w.json" })] }), msg);
+  assert.equal(plannedEntries({ ...base, shots: [mk({ tool: "comfyui", workflow: "w.json", seed: 0 })] })[0].entry.job_id, "local ComfyUI w.json seed 0");
+});

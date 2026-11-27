@@ -41,10 +41,13 @@ function rel(root, p) {
 const round1 = (n) => Math.round(n * 10) / 10;
 const sizeOf = (n) => (typeof n === "number" && isFinite(n) ? round1(n) : null);
 
-function jobId(take, root) {
+function jobId(take, root, shot) {
   if (take.hfJob) return `higgsfield:${take.hfJob}`;
   const l = take.local;
-  if (l && l.tool === "comfyui") return `local ComfyUI ${String(l.workflow).split(/[\\/]/).pop()} seed ${l.seed}`;
+  if (l && l.tool === "comfyui") {
+    if (!l.workflow || l.seed == null) throw new Error(`${shot} take has no ComfyUI workflow/seed recorded`);
+    return `local ComfyUI ${String(l.workflow).split(/[\\/]/).pop()} seed ${l.seed}`;
+  }
   if (l && l.tool === "blender") return `Blender: ${rel(root, l.script)}`;
   return null;
 }
@@ -64,7 +67,7 @@ export function plannedEntries({ shots, entries, film, filmFolder, slug, startNu
       entry: {
         id, film, shot: s.id, status: "approved", aspect: s.aspect,
         description: undefined, setting: undefined, period: undefined, tags: undefined,
-        prompt: s.prompt, job_id: jobId(s.chosen, root), notes: undefined,
+        prompt: s.prompt, job_id: jobId(s.chosen, root, s.id), notes: undefined,
         size_mb: sizeOf(s.probe.size_mb), source_path: chosenRel,
         library_path: `B-roll library\\clips\\${slug}\\${slug}_${s.id}.mp4`, in_library: true, duplicate_of: null,
         duration_s: s.probe.duration_s, width: s.probe.width, height: s.probe.height, fps: s.probe.fps,
@@ -79,7 +82,7 @@ export function plannedEntries({ shots, entries, film, filmFolder, slug, startNu
         entry: {
           id: brId(n++), film: common.film, shot: common.shot, status: "rejected", aspect: common.aspect,
           description: undefined, setting: undefined, period: undefined, tags: undefined,
-          prompt: s.prompt, job_id: jobId(o, root), notes: undefined,
+          prompt: s.prompt, job_id: jobId(o, root, s.id), notes: undefined,
           size_mb: sizeOf(o.size_mb), source_path: srcRel,
           library_path: null, in_library: false, duplicate_of: null,
         },
@@ -121,6 +124,7 @@ const esc = (v) => String(v ?? "").replace(/\r?\n/g, " ").replace(/\|/g, "\\|");
 
 export function mdRow(e) {
   const rej = e.status === "rejected";
+  if (!rej && !Number.isFinite(e.duration_s)) throw new Error(`${e.id} has no duration`);
   const status = rej ? "rejected (not copied)" : e.status;
   const dur = rej ? DASH : `${Number(e.duration_s).toFixed(1)} s`;
   const period = rej ? DASH : e.period;
@@ -132,6 +136,12 @@ export function appendMd(mdText, film, rows) {
   const trailing = /\n$/.test(mdText);
   const lines = mdText.replace(/\r?\n$/, "").split(/\r?\n/);
   const isRow = (l) => l.trimStart().startsWith("|");
+  let end = lines.length - 1;
+  while (end >= 0 && !isRow(lines[end])) end--;
+  if (end < 0) throw new Error("Couldn't find a table in broll_catalogue.md to copy its columns from.");
+  let start = end;
+  while (start > 0 && isRow(lines[start - 1])) start--;
+  const header = lines.slice(start, Math.min(start + 2, end + 1));
   const h = lines.findIndex((l) => l.trim() === `## ${film}`);
   if (h >= 0) {
     let i = h + 1;
@@ -139,15 +149,13 @@ export function appendMd(mdText, film, rows) {
     if (i < lines.length && isRow(lines[i])) {
       while (i < lines.length && isRow(lines[i])) i++;
       lines.splice(i, 0, ...rows);
-      return lines.join(eol) + (trailing ? eol : "");
+    } else {
+      const add = ["", ...header, ...rows];
+      if (h + 1 < lines.length && lines[h + 1].trim() !== "") add.push("");
+      lines.splice(h + 1, 0, ...add);
     }
+    return lines.join(eol) + (trailing ? eol : "");
   }
-  let end = lines.length - 1;
-  while (end >= 0 && !isRow(lines[end])) end--;
-  let start = end;
-  while (start > 0 && isRow(lines[start - 1])) start--;
-  const header = end >= 0 ? lines.slice(start, Math.min(start + 2, end + 1)) : [];
   const base = mdText.replace(/(\r?\n)*$/, "");
-  const block = ["", `## ${film}`, "", ...header, ...rows];
-  return (base ? base + eol : "") + block.join(eol) + eol;
+  return base + eol + ["", `## ${film}`, "", ...header, ...rows].join(eol) + eol;
 }
