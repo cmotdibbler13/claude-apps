@@ -249,7 +249,7 @@ test("a crash then a good still goes on to the render", async () => {
 test("no image support fails with the copy before any spawn or Claude call", async () => {
   const t = take3({ images: false, answers: [SCRIPT("one")] });
   await assert.rejects(t.runner.start(t.job, t.ctx), (e) => e.message === NO_PICTURES);
-  assert.equal(NO_PICTURES, "Claude can't see pictures in this view yet. Allow pictures for Six Minutes Studio when it asks, then press Run again.");
+  assert.equal(NO_PICTURES, "Claude can't see pictures in this view yet. Allow pictures for Six Minutes Studio (reopen Studio, or its Permissions menu), then press Run again.");
   assert.equal(t.calls.length, 0);
   assert.equal(t.asks.length, 0);
 });
@@ -358,13 +358,77 @@ test("a Claude refusal mid-loop fails the take with a readable message and no re
 test("a Claude call that never answers fails after the wait, for the script and for the check", async () => {
   const never = () => new Promise(() => {});
   const s = take3({ answers: [never], wait: 20 });
-  await assert.rejects(s.runner.start(s.job, s.ctx), (e) => e.message === "Claude didn't answer the Blender script in 5 minutes. Press Run again.");
+  await assert.rejects(s.runner.start(s.job, s.ctx), (e) => e.message === "Claude didn't answer the Blender script in 5 minutes (or a permission prompt is waiting). Press Run again.");
   assert.equal(s.calls.length, 0);
   const c = take3({ answers: [SCRIPT("one"), never], wait: 20 });
-  await assert.rejects(c.runner.start(c.job, c.ctx), (e) => e.message === "Claude didn't answer the Blender check in 5 minutes. Press Run again.");
+  await assert.rejects(c.runner.start(c.job, c.ctx), (e) => e.message === "Claude didn't answer the Blender check in 5 minutes (or a permission prompt is waiting). Press Run again.");
   assert.equal(renders(c.calls).length, 0);
 });
 
 test("the default wait for Claude is 5 minutes", () => {
   assert.equal(CLAUDE_WAIT_MS, 5 * 60 * 1000);
+});
+
+// ---- Final review fixes ----
+const codeErr = (code) => () => { const e = new Error(`sample said ${code}`); e.code = code; throw e; };
+
+test("a declined picture consent (not_granted, images_unavailable) fails with the pictures copy, not Run again", async () => {
+  for (const code of ["not_granted", "images_unavailable"]) {
+    const s = take3({ answers: [codeErr(code)] });
+    await assert.rejects(s.runner.start(s.job, s.ctx), (e) => e.message === NO_PICTURES && e.code === code, `script call, ${code}`);
+    const c = take3({ answers: [SCRIPT("one"), codeErr(code)] });
+    await assert.rejects(c.runner.start(c.job, c.ctx), (e) => e.message === NO_PICTURES && e.code === code, `check call, ${code}`);
+    assert.equal(renders(c.calls).length, 0);
+  }
+});
+
+test("a rejected picture says the drawing may be too large", async () => {
+  const t = take3({ answers: [codeErr("image_rejected")] });
+  await assert.rejects(t.runner.start(t.job, t.ctx), (e) => {
+    assert.equal(e.message, "Claude couldn't take the drawing (HF-02_t1.png): it may be too large. Save it smaller and press Run again.");
+    assert.equal(e.code, "image_rejected");
+    return true;
+  });
+});
+
+test("other Claude codes keep the Run again copy", async () => {
+  const t = take3({ answers: [codeErr("rate_limited")] });
+  await assert.rejects(t.runner.start(t.job, t.ctx), (e) => e.message === "Claude stopped on the Blender script: sample said rate_limited. Press Run again, or Redo with a note.");
+});
+
+test("a Claude call that runs out of time is aborted through its signal", async () => {
+  let signal;
+  const never = () => new Promise(() => {});
+  const t = take3({ answers: [never], wait: 20 });
+  const inner = t.host._claude;
+  t.host.claudeScript((kind, input, opts) => { signal = opts.signal; return inner(kind, input, opts); });
+  await assert.rejects(t.runner.start(t.job, t.ctx), /didn't answer the Blender script/);
+  assert.ok(signal, "a signal was passed");
+  assert.equal(signal.aborted, true);
+});
+
+test("a Claude call that answers in time is not aborted", async () => {
+  const signals = [];
+  const t = take3({ answers: [SCRIPT("one"), { verdict: "matches", note: "ok" }] });
+  const inner = t.host._claude;
+  t.host.claudeScript((kind, input, opts) => { signals.push(opts.signal); return inner(kind, input, opts); });
+  await t.runner.start(t.job, t.ctx);
+  assert.equal(signals.length, 2);
+  assert.ok(signals.every((s) => s && !s.aborted));
+});
+
+test("Blender Claude calls never replay a cached answer", async () => {
+  const t = take3({ answers: [SCRIPT("one"), { verdict: "matches", note: "ok" }] });
+  await t.runner.start(t.job, t.ctx);
+  assert.equal(t.asks.length, 2);
+  assert.ok(t.asks.every((a) => a.opts.cache === false));
+});
+
+test("Run again after the check loop finished renders without pictures", async () => {
+  const check1 = JSON.stringify({ round: 1, still: BASE + "_check1.png", verdict: "matches", note: "n1", frames: 96 });
+  const t = take3({ images: false, files: { [BASE + "_r1.py"]: "# one\n", [BASE + "_check1.json"]: check1, [BASE + ".py"]: "# one\n" } });
+  const r = await t.runner.start(t.job, t.ctx);
+  assert.equal(r.file, OUT);
+  assert.equal(t.asks.length, 0);
+  assert.deepEqual(t.calls, [["-b", "--python-exit-code", "1", "-P", BASE + ".py", "--", SRC, OUT]]);
 });

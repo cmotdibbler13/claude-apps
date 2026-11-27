@@ -19,6 +19,10 @@ export const MSG_I2V_SETUP = "Set up the image-to-video workflow (see Probe)";
 export const removeConfirmText = (id) => `Remove ${id} from the review? Its takes stay on disk.`;
 const NOTE_SNIP = 80;
 
+// What each check did. A fix on the last round (3) is never rendered: the take uses round 3's script.
+const VERDICT = { matches: "matched", fix: "fixed", blank: "blank" };
+const verdictLabel = (c) => (c.verdict === "fix" && c.round >= 3 ? "not applied" : VERDICT[c.verdict] ?? String(c.verdict ?? "checked"));
+
 // The Blender check rounds of the chosen take (or the newest take that has them): the last still and each note.
 function checksOf(asset) {
   const has = (t) => Array.isArray(t?.checks) && t.checks.length > 0;
@@ -31,7 +35,7 @@ function checksOf(asset) {
     still,
     notes: t.checks.map((c) => {
       const full = String(c.note ?? "").trim();
-      return { label: `Check ${c.round}`, text: full.length > NOTE_SNIP ? `${full.slice(0, NOTE_SNIP).trimEnd()}\u2026` : full, full };
+      return { label: `Check ${c.round} (${verdictLabel(c)})`, text: full.length > NOTE_SNIP ? `${full.slice(0, NOTE_SNIP).trimEnd()}\u2026` : full, full };
     }),
   };
 }

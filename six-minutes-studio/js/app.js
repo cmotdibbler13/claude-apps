@@ -1,7 +1,7 @@
 // Boot: host, install gate, project root, jobs, routing and re-rendering of the three screens.
 import { makeHost } from "./host.js";
 import { accessGate } from "./gate.js";
-import { resolveRoot, join } from "./paths.js";
+import { resolveRoot, join, filmKey } from "./paths.js";
 import { loadSettings } from "./settings.js";
 import { withRerecord, rerecordsToClear, lineWords, takeSig, addMark, setSize, moveMark, removeMark, placeFromNotes, newTakeIds } from "./pacing.js";
 import { applyPauses, JOINED_WITHOUT } from "./pacingchain.js";
@@ -11,7 +11,7 @@ import { makeFilmSession, readSavedJobs } from "./session.js";
 import { makeJobs } from "./jobs.js";
 import { notifyRules } from "./notify.js";
 import { buildShotList } from "./shots.js";
-import { startTake, approve, unapprove, choose, setTool, setPreferComfy, addBlender3d, addAnimated, removeVersion } from "./redo.js";
+import { startTake, approve, unapprove, choose, setTool, setPreferComfy, addBlender3d, addAnimated, removeVersion, jobGone, jobRemoved, removedText } from "./redo.js";
 import { ensureProxy, toBlobUrl, openFull, revokeAll } from "./media.js";
 import { makeHiggsfieldRunner } from "./tools/higgsfield.js";
 import { makeBlenderRunner } from "./tools/blender.js";
@@ -39,7 +39,7 @@ const LAYOUT_KEY = "six-minutes-studio.reviewLayout";
 
 const app = {
   host: null, root: null, jobs: null, films: [], view: "films",
-  film: null, store: null, session: null, playing: null, retried: new Set(), movedAside: null, stateError: null, bootError: null, openError: null,
+  film: null, store: null, session: null, playing: null, retried: new Set(), goneJobs: new Map(), movedAside: null, stateError: null, bootError: null, openError: null,
   review: { making: false, listError: null, cardErrors: new Map(), pending: new Set(), estimating: new Set(), noteFor: null, draft: "" },
   starter: null, saBusy: false,
   previews: new Map(),
@@ -167,7 +167,7 @@ async function renderNow() {
       tools: app.comfyStarter ? toolsLine({ comfy: app.comfyStarter, stableAudio: app.starter }) : null }), filmsView, filmsActions);
   } else if (app.view === "jobs") {
     const log = app.store ? await app.store.readLog(50) : null;
-    const model = jobsView.jobsModel({ jobs: list, log, retried: app.retried, persistError: null });
+    const model = jobsView.jobsModel({ jobs: list, log, retried: app.retried, persistError: null, gone: goneJobs(list) });
     paint("jobs", $("view-jobs"), model, jobsView, jobsActions);
   } else if (app.view === "review") {
     const r = app.review;
@@ -298,18 +298,40 @@ async function refreshI2v() {
 }
 
 // ---- live jobs ----
+// Jobs whose shot was removed from the review (open film from its state; others once a click was refused).
+function goneJobs(list) {
+  const m = new Map(app.goneJobs);
+  const st = app.store;
+  if (st) for (const j of list) if (filmKey(j.film) === filmKey(st.dir) && jobGone(st.state, j)) m.set(j.id, removedText(j.assetId));
+  return m;
+}
+
+// Retry or Check on a removed shot would run the whole job and throw the result away: refuse it.
+async function refusedAsGone(id) {
+  const job = app.jobs?.list().find((j) => j.id === id);
+  if (!job) return false;
+  let why = null;
+  try { why = await jobRemoved(app.host, job, app.store); } catch (e) { console.error(e); }
+  if (!why) return false;
+  app.goneJobs.set(id, why);
+  render();
+  return true;
+}
+
 const jobsActions = {
-  retry(id) {
+  async retry(id) {
     if (app.retried.has(id)) return;
     // An ElevenLabs re-run is paid: new takes start only from the card, where the cost is shown.
     if (app.jobs?.list().find((j) => j.id === id)?.tool === "elevenlabs") return;
     app.retried.add(id);
+    if (await refusedAsGone(id)) return;
     userStarted();
     try { app.jobs.retry(id); } catch (e) { console.error(e); }
     render();
   },
   // Free: polls the existing job by its id, never generates.
-  check(id) {
+  async check(id) {
+    if (await refusedAsGone(id)) return;
     userStarted();
     try { app.jobs.check(id); } catch (e) { console.error(e); }
     render();

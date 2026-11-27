@@ -9,12 +9,17 @@ export class ClaudeError extends Error {
 
 const CODE_MAP = { refused: "refusal", invalid_json: "bad_json" };
 
-export async function askJson(host, { instructions, data, tier = "default", validate, images }) {
+// signal (AbortSignal) cancels the call; cache: false stops the runtime replaying an earlier answer.
+export async function askJson(host, { instructions, data, tier = "default", validate, images, signal, cache }) {
   if (!host?.claude) throw new ClaudeError("unavailable", "Claude is not available in this view.");
   const input = `${instructions}\n\nDATA (JSON):\n${JSON.stringify(data ?? null)}\n\nAnswer with JSON only.`;
   let out;
   try {
-    out = await host.claude.json(input, images?.length ? { tier, images } : { tier });
+    const opts = { tier };
+    if (images?.length) opts.images = images;
+    if (signal) opts.signal = signal;
+    if (cache !== undefined) opts.cache = cache;
+    out = await host.claude.json(input, opts);
   } catch (e) {
     const raw = e?.code ?? "upstream_error";
     throw new ClaudeError(CODE_MAP[raw] ?? raw, e?.message ?? String(e));

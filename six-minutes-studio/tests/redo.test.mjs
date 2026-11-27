@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { FakeHost } from "./fake-host.mjs";
 import { openFilm } from "../js/store.js";
 import { makeJobs } from "../js/jobs.js";
-import { startTake, watchJobs, approve, unapprove, choose, canStart, setTool, setPreferComfy, addBlender3d, has3d, hasDerived, addAnimated, removeVersion } from "../js/redo.js";
+import { startTake, watchJobs, approve, unapprove, choose, canStart, setTool, setPreferComfy, addBlender3d, has3d, hasDerived, addAnimated, removeVersion, jobGone, removedText, jobRemoved } from "../js/redo.js";
 
 const DIR = "S:\\Youtube video ideas\\Film A";
 const hf = (o = {}) => ({ id: "HF-01", kind: "lineart", line: "L", lineIndex: 0, desc: "A lighthouse", tool: "higgsfield", draftPrompt: "draft prompt", takes: [], chosen: 0, approved: false, ...o });
@@ -100,7 +100,8 @@ test("blender redo passes the note, previous script and last check still; done c
   const input = jobs.list()[0].input;
   assert.equal(input.note, "turn left");
   assert.equal(input.previousScript, pb + ".py");
-  assert.equal(input.previousStill, pb + "_check3.png");
+  // The final script is round 2's (no _r3.py), so round 2's still goes with it, not a stray _check3.png.
+  assert.equal(input.previousStill, pb + "_check2.png");
   assert.equal(input.base, DIR + "\\studio\\blender\\HF-02_t2");
   await tick(); await tick();
   const t = store.state.assets[1].takes[1];
@@ -531,4 +532,41 @@ test("startTake fails cleanly when the version is removed during the prompt rewr
     return { prompt: "new" };
   });
   await assert.rejects(() => startTake(ctx, id, { note: "n" }), new RegExp(`${id} changed while the take was being prepared\\.`));
+});
+
+test("blender redo: the previous still is the chosen script's round, none when that round crashed", async () => {
+  const src = hf({ takes: [{ n: 1, prompt: "p", status: "done", file: "S:\\a.png", at: 1 }], chosen: 1, approved: true });
+  const pb = DIR + "\\studio\\blender\\HF-02_t1";
+  const prev = { n: 1, status: "failed", error: "Blender stopped", at: 1 };
+  const { ctx, host, jobs } = await setup([src, bl({ takes: [prev], chosen: 1 })], idle);
+  await host.fs.mkdir(DIR + "\\studio\\blender");
+  // Round 2's script was written by round 1's fix, but its still never came (crash): no still at all.
+  for (const f of ["_r1.py", "_r2.py", "_check1.png"]) host.files.set(pb + f, "x");
+  await startTake(ctx, "HF-02", { note: "n" });
+  const input = jobs.list()[0].input;
+  assert.equal(input.previousScript, pb + "_r2.py");
+  assert.equal(input.previousStill, undefined);
+});
+
+test("jobGone: a job whose shot was removed from the review", () => {
+  const state = { assets: [bl()], audio: { score: { id: "SCORE", takes: [] }, sfx: [{ id: "SFX-01", takes: [] }] } };
+  assert.equal(jobGone(state, { assetId: "HF-02" }), false);
+  assert.equal(jobGone(state, { assetId: "SCORE" }), false);
+  assert.equal(jobGone(state, { assetId: "SFX-01" }), false);
+  assert.equal(jobGone(state, { assetId: "HF-07" }), true);
+  assert.equal(jobGone(state, {}), false, "a job without a shot is never gone");
+  assert.equal(jobGone(null, { assetId: "HF-07" }), false, "unknown state: not refused");
+  assert.equal(removedText("HF-07"), "HF-07 was removed from the review.");
+});
+
+test("jobRemoved: Retry and Check refuse a job whose shot was removed, for the open film or one on disk", async () => {
+  const { ctx, host, store } = await setup([hf({ approved: true }), bl()], idle);
+  await removeVersion(ctx, "HF-02");
+  const job = { id: "j", film: DIR, assetId: "HF-02", take: 1, tool: "blender" };
+  assert.equal(await jobRemoved(host, job, store), "HF-02 was removed from the review.");
+  assert.equal(await jobRemoved(host, { ...job, assetId: "HF-01" }, store), null);
+  // Not the open film: its state is read from disk.
+  assert.equal(await jobRemoved(host, job, null), "HF-02 was removed from the review.");
+  // A film whose state can't be read is not refused.
+  assert.equal(await jobRemoved(host, { ...job, film: "S:\\Youtube video ideas\\Nope" }, null), null);
 });

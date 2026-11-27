@@ -251,3 +251,18 @@ test("makeHost spawn: detached gets no pipes and its handlers still attach", asy
   proc.h.exit(0);
   assert.deepEqual(seen, ["x0"]);
 });
+
+test("makeHost passes signal and cache to sample, and leaves them out when not given", async () => {
+  const f = fakeClaude();
+  const h = await makeHost(f.claude);
+  const ac = new AbortController();
+  await h.claude.json("p", { tier: "default", signal: ac.signal, cache: false });
+  await h.claude.text("p", { signal: ac.signal, cache: false });
+  await h.claude.json("p", { tier: "quick" });
+  const calls = f.log.filter((e) => Array.isArray(e) && e[0].startsWith("sample"));
+  assert.equal(calls[0][2].signal, ac.signal);
+  assert.equal(calls[0][2].cache, false);
+  assert.equal(calls[1][2].signal, ac.signal);
+  assert.equal(calls[1][2].cache, false);
+  assert.deepEqual(calls[2][2], { modelTier: "quick" });
+});

@@ -11,6 +11,8 @@ export async function makeHost(claude = globalThis.claude) {
   const sampleOpts = (o = {}) => {
     const r = o.tier ? { modelTier: o.tier } : {};
     if (o.images?.length) r.images = o.images;
+    if (o.signal) r.signal = o.signal;
+    if (o.cache !== undefined) r.cache = o.cache;
     return r;
   };
 

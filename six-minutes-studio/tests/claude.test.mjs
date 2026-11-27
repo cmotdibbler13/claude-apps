@@ -44,3 +44,15 @@ test("failed validate throws invalid with the reason", async () => {
     (e) => e.code === "invalid" && /n must be 2/.test(e.message),
   );
 });
+
+test("askJson passes signal and cache through to the host only when given", async () => {
+  const h = new FakeHost();
+  let seen;
+  h.claudeScript((kind, input, opts) => { seen = opts; return { ok: 1 }; });
+  const ac = new AbortController();
+  await askJson(h, { instructions: "x", data: {}, signal: ac.signal, cache: false });
+  assert.equal(seen.signal, ac.signal);
+  assert.equal(seen.cache, false);
+  await askJson(h, { instructions: "x", data: {} });
+  assert.deepEqual(seen, { tier: "default" });
+});

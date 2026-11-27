@@ -439,7 +439,7 @@ test("cardModel checks: the chosen blender take's last check still and its notes
   const c = cardModel(b, [la, b]);
   assert.equal(c.checks.take, 1);
   assert.equal(c.checks.still, "S:\\f\\HF-02_t1_check2.png");
-  assert.deepEqual(c.checks.notes.map((n) => n.label), ["Check 1", "Check 2"]);
+  assert.deepEqual(c.checks.notes.map((n) => n.label), ["Check 1 (fixed)", "Check 2 (matched)"]);
   assert.equal(c.checks.notes[1].text, "Matches the drawing.");
   assert.ok(c.checks.notes[0].text.length <= 81 && c.checks.notes[0].text.endsWith("\u2026"));
   assert.equal(c.checks.notes[0].full, CHECKS[0].note);
@@ -534,8 +534,8 @@ test("card DOM: a blender take's checks show the last still and the notes", () =
   assert.equal(img.src, "blob:S:\\f\\HF-02_t1_check2.png");
   const items = all(box, (x) => x.tag === "li").map(textOf);
   assert.equal(items.length, 2);
-  assert.match(items[0], /^Check 1: Made the top slab thicker/);
-  assert.equal(items[1], "Check 2: Matches the drawing.");
+  assert.match(items[0], /^Check 1 \(fixed\): Made the top slab thicker/);
+  assert.equal(items[1], "Check 2 (matched): Matches the drawing.");
 }));
 
 // ---- Score and sound effects ----
@@ -974,4 +974,33 @@ test("mix: a ticked missing line still locks Join", async () => {
   const n = withRerecord(narr([nrow("01.1", "missing"), nrow("01.2", "ok")]), { lines: { "01.1": { rerecord: { at: 5 } } } });
   const j = step(mm(mstate(), { narration: n }), "VOICEOVER");
   assert.match(j.lock, /^Record these first: 01\.1/);
+});
+
+test("cardModel checks: each label carries its verdict; a third-round fix was not applied", () => {
+  const la = asset({ id: "HF-01", approved: true });
+  const checks = [
+    { round: 1, still: "S:\\f\\c1.png", verdict: "blank", note: "all navy" },
+    { round: 2, still: "S:\\f\\c2.png", verdict: "fix", note: "moved the camera" },
+    { round: 3, still: "S:\\f\\c3.png", verdict: "fix", note: "thicker slab" },
+  ];
+  const b = asset({ id: "HF-02", kind: "blender", tool: "blender", sourceId: "HF-01", takes: [take(1, "done", { file: "a.mp4", checks })], chosen: 1 });
+  assert.deepEqual(cardModel(b, [la, b]).checks.notes.map((n) => n.label), ["Check 1 (blank)", "Check 2 (fixed)", "Check 3 (not applied)"]);
+  const m = { ...b, takes: [take(1, "done", { file: "a.mp4", checks: [checks[0], checks[1], { ...checks[2], verdict: "matches" }] })] };
+  assert.equal(cardModel(m, [la, m]).checks.notes[2].label, "Check 3 (matched)");
+});
+
+test("live jobs: a job whose shot was removed offers neither Run again nor Check again", () => {
+  const m = jobsModel({ jobs: [
+    job({ id: "a", status: "failed", tool: "blender", assetId: "HF-09" }),
+    job({ id: "b", status: "interrupted", tool: "comfyui", assetId: "HF-10", jobRef: "p1" }),
+    job({ id: "c", status: "failed", tool: "blender", assetId: "HF-11" }),
+  ], log: null, retried: new Set(), gone: new Map([["a", "HF-09 was removed from the review."], ["b", "HF-10 was removed from the review."]]) });
+  const by = Object.fromEntries(m.rows.map((r) => [r.id, r]));
+  assert.equal(by.a.canRetry, false);
+  assert.equal(by.a.retryNote, "HF-09 was removed from the review.");
+  assert.equal(by.b.canCheck, false);
+  assert.equal(by.b.canRetry, false);
+  assert.equal(by.b.retryNote, "HF-10 was removed from the review.");
+  assert.equal(by.c.canRetry, true);
+  assert.equal(by.c.retryNote, null);
 });

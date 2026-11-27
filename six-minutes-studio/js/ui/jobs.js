@@ -17,7 +17,8 @@ export const keepOpenText = (inTray) => inTray
 
 const STATUS_TEXT = { done: "Done", failed: "Failed", interrupted: "Interrupted", queued: "queued" };
 
-export function jobRow(job, index, jobs, retried) {
+// gone: why a job can't run or be checked again (its shot was removed from the review), or undefined.
+export function jobRow(job, index, jobs, retried, gone) {
   const pct = typeof job.progress === "number" ? Math.round(Math.min(1, Math.max(0, job.progress)) * 100) : null;
   let eta;
   if (job.status === "running") eta = typeof job.eta === "string" && job.eta ? job.eta : pct !== null ? `${pct}%` : "Running";
@@ -41,10 +42,10 @@ export function jobRow(job, index, jobs, retried) {
     eta,
     error: ended ? job.error ?? (job.status === "interrupted" ? "Interrupted when the app closed" : "Failed") : null,
     // An ElevenLabs re-run is paid, and its cost is shown only on the card's Generate button.
-    canRetry: ended && !eleven && !retried.has(job.id) && !superseded,
-    retryNote: ended && eleven ? "Make a new take from its card" : null,
+    canRetry: ended && !eleven && !retried.has(job.id) && !superseded && !gone,
+    retryNote: ended && gone ? gone : ended && eleven ? "Make a new take from its card" : null,
     // Checking by job id (or ComfyUI prompt id, or ElevenLabs flow run) is free; running Higgsfield again is a new paid generation.
-    canCheck: ended && !!job.jobRef && (hf || comfy || eleven) && !superseded,
+    canCheck: ended && !!job.jobRef && (hf || comfy || eleven) && !superseded && !gone,
     retryLabel: hf ? "Run again (new generation, uses credits)" : "Run again",
     warning: !unsure ? null
       : hf ? "Check Higgsfield first: this job may still be running."
@@ -62,8 +63,8 @@ export const movedAsideBanner = (name) => name
 
 export const stateErrorBanner = (film, message) => `Couldn't save ${basename(film)}'s state: ${message}`;
 
-export function jobsModel({ jobs = [], log = null, retried = new Set(), persistError = null }) {
-  const rows = jobs.map((j, i) => jobRow(j, i, jobs, retried)).reverse();
+export function jobsModel({ jobs = [], log = null, retried = new Set(), persistError = null, gone = new Map() }) {
+  const rows = jobs.map((j, i) => jobRow(j, i, jobs, retried, gone.get(j.id))).reverse();
   return {
     rows,
     log: log ? log.map((e) => ({ time: clock(e.t), text: String(e.text ?? "") })) : null,

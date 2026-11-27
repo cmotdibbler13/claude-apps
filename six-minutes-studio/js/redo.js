@@ -148,14 +148,17 @@ export async function startTake(ctx, assetId, { note } = {}) {
     // script or checks from the job, and that is exactly when Jon redoes it with a note.
     if (prev) {
       const pb = join(store.dir, "studio", "blender", `${asset.id}_t${prev.n}`);
-      const firstThere = async (paths) => {
-        for (const p of paths) if (p && (await host.fs.exists(p))) return p;
-        return undefined;
-      };
-      const previousScript = await firstThere([pb + ".py", pb + "_r3.py", pb + "_r2.py", pb + "_r1.py", prev.script]);
-      const previousStill = await firstThere([pb + "_check3.png", pb + "_check2.png", pb + "_check1.png"]);
+      // The newest round script; the final script is a copy of it. The still sent with it must be
+      // that same round's: a round whose still never came (Blender crashed) sends none.
+      let round = 0;
+      for (let k = 3; k >= 1 && !round; k--) if (await host.fs.exists(`${pb}_r${k}.py`)) round = k;
+      let previousScript;
+      if (await host.fs.exists(pb + ".py")) previousScript = pb + ".py";
+      else if (round) previousScript = `${pb}_r${round}.py`;
+      else if (prev.script && (await host.fs.exists(prev.script))) previousScript = prev.script;
       if (previousScript) input.previousScript = previousScript;
-      if (previousScript && previousStill) input.previousStill = previousStill;
+      const previousStill = round ? `${pb}_check${round}.png` : null;
+      if (previousScript && previousStill && (await host.fs.exists(previousStill))) input.previousStill = previousStill;
     }
   } else {
     const prompt = await nextPrompt();
@@ -203,6 +206,26 @@ export async function startTake(ctx, assetId, { note } = {}) {
   });
   await store.log(`${asset.id} take ${n} started${hasNote ? `: ${note}` : ""}`);
   return structuredClone(store.state.assets.find((a) => a.id === assetId).takes.find((t) => t.n === n));
+}
+
+// A job whose shot is no longer in the film's review (a removed 3D or animated version): running or
+// checking it again would do the whole job and throw the result away. Unknown state is never refused.
+export const removedText = (id) => `${id} was removed from the review.`;
+export function jobGone(state, job) {
+  if (!state || job?.assetId === undefined || job?.assetId === null) return false;
+  return !holders(state).some((h) => h.id === job.assetId);
+}
+
+// The refusal text for a Jobs-panel Retry or Check, or null to go ahead. The open film's state is
+// used when the job is for it; any other film's is read from disk (unreadable: not refused).
+export async function jobRemoved(host, job, store) {
+  if (job?.assetId === undefined || job?.assetId === null) return null;
+  let state = null;
+  if (store && filmKey(store.dir) === filmKey(job.film)) state = store.state;
+  else {
+    try { state = JSON.parse(await host.fs.read(join(job.film, "studio", "state.json"), "utf8")); } catch { state = null; }
+  }
+  return jobGone(state, job) ? removedText(job.assetId) : null;
 }
 
 // Mirror job status onto takes. Each sync reconciles against the current job list and writes

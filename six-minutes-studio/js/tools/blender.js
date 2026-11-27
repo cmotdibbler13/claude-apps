@@ -8,22 +8,37 @@ import { moveAside } from "../paths.js";
 import { DEFAULT_SETTINGS } from "../settings.js";
 import { SCRIPT_INSTRUCTIONS, CHECK_INSTRUCTIONS, validateScript, validateCheck } from "./blenderprompts.js";
 
-export const NO_PICTURES = "Claude can't see pictures in this view yet. Allow pictures for Six Minutes Studio when it asks, then press Run again.";
+export const NO_PICTURES = "Claude can't see pictures in this view yet. Allow pictures for Six Minutes Studio (reopen Studio, or its Permissions menu), then press Run again.";
+export const imageRejectedText = (name) => `Claude couldn't take the drawing (${name}): it may be too large. Save it smaller and press Run again.`;
 export const BLANK_TWICE = "The 3D render came out blank. Redo with a note.";
 const ROUNDS = 3;
 export const CLAUDE_WAIT_MS = 5 * 60 * 1000;
+// A declined picture consent stands for the rest of the view, so "Run again" alone can never pass.
+const NO_PICTURE_CODES = new Set(["not_granted", "images_unavailable"]);
 
 // The job holds the only gpu slot while Claude thinks, so a call that never answers must not hold it for ever.
-async function askBounded(host, what, waitMs, opts) {
+// The wait also covers a consent prompt nobody answers; on time-out the call itself is cancelled.
+// cache: false, so a Run again never replays an answer that failed here.
+async function askBounded(host, what, waitMs, opts, drawingName) {
+  const ac = new AbortController();
   let timer;
   const late = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`Claude didn't answer ${what} in 5 minutes. Press Run again.`)), waitMs);
+    timer = setTimeout(() => {
+      reject(new Error(`Claude didn't answer ${what} in 5 minutes (or a permission prompt is waiting). Press Run again.`));
+      ac.abort();
+    }, waitMs);
   });
+  const call = askJson(host, { ...opts, signal: ac.signal, cache: false });
+  call.catch(() => {}); // an answer after the time-out (or the abort's rejection) is dropped
   try {
-    return await Promise.race([askJson(host, opts), late]);
+    return await Promise.race([call, late]);
   } catch (e) {
     if (e?.name !== "ClaudeError") throw e;
-    const err = new Error(`Claude stopped on ${what}: ${String(e.message).replace(/\.?\s*$/, ".")} Press Run again, or Redo with a note.`);
+    let text;
+    if (NO_PICTURE_CODES.has(e.code)) text = NO_PICTURES;
+    else if (e.code === "image_rejected") text = imageRejectedText(drawingName);
+    else text = `Claude stopped on ${what}: ${String(e.message).replace(/\.?\s*$/, ".")} Press Run again, or Redo with a note.`;
+    const err = new Error(text);
     err.code = e.code;
     throw err;
   } finally {
@@ -117,7 +132,6 @@ export function makeBlenderRunner({ settings = DEFAULT_SETTINGS, claudeWaitMs = 
       }
       const { host } = ctx;
       const { asset, take, note, previousScript, previousStill, sourceFile, base, out } = input;
-      if (!(await canSendImages(host))) throw new Error(NO_PICTURES);
       await host.fs.mkdir(parentOf(base));
       const scriptOf = (k) => `${base}_r${k}.py`;
       const stillOf = (k) => `${base}_check${k}.png`;
@@ -140,6 +154,8 @@ export function makeBlenderRunner({ settings = DEFAULT_SETTINGS, claudeWaitMs = 
       const loopDone = (await host.fs.exists(finalScript)) && (saved.some((c) => c.verdict === "matches") || saved.length >= ROUNDS);
 
       if (!loopDone) {
+        // Pictures are only needed while Claude still checks: a render-only Run again works without them.
+        if (!(await canSendImages(host))) throw new Error(NO_PICTURES);
         const drawing = await readImages(host, [sourceFile]);
         let k = top;
         if (k === 0) {
@@ -149,7 +165,7 @@ export function makeBlenderRunner({ settings = DEFAULT_SETTINGS, claudeWaitMs = 
           if (previousScript) { try { data.previousScript = await host.fs.read(previousScript, "utf8"); } catch { /* gone: model afresh */ } }
           const images = [...drawing];
           if (data.previousScript != null && previousStill && (await host.fs.exists(previousStill))) images.push(...(await readImages(host, [previousStill])));
-          const r = await askBounded(host, "the Blender script", claudeWaitMs, { instructions: SCRIPT_INSTRUCTIONS, data, tier: "default", validate: validateScript, images });
+          const r = await askBounded(host, "the Blender script", claudeWaitMs, { instructions: SCRIPT_INSTRUCTIONS, data, tier: "default", validate: validateScript, images }, fileName(sourceFile));
           k = 1;
           await writeScript(k, r.script);
           frames = r.frames;
@@ -170,7 +186,7 @@ export function makeBlenderRunner({ settings = DEFAULT_SETTINGS, claudeWaitMs = 
           const data = { asset: { id: asset.id, desc: asset.desc, line: asset.line }, take, round: k, script, frames };
           if (!ok) data.error = code !== 0 ? `Blender stopped with exit code ${code}.\n${log}` : `Blender finished but didn't write ${fileName(still)}.\n${log}`;
           const images = ok ? [...drawing, ...(await readImages(host, [still]))] : drawing;
-          const r = await askBounded(host, "the Blender check", claudeWaitMs, { instructions: CHECK_INSTRUCTIONS, data, tier: "default", validate: validateCheck, images });
+          const r = await askBounded(host, "the Blender check", claudeWaitMs, { instructions: CHECK_INSTRUCTIONS, data, tier: "default", validate: validateCheck, images }, fileName(sourceFile));
           const blankTwice = r.verdict === "blank" && checks.find((c) => c.round === k - 1)?.verdict === "blank";
           const goOn = k < ROUNDS && !blankTwice && !(ok && r.verdict === "matches");
           const nextFrames = goOn && r.frames != null ? r.frames : frames;
