@@ -2,6 +2,7 @@
 // A generation costs credits, so generate is called at most once per start() and never retried.
 import { DEFAULT_SETTINGS } from "../settings.js";
 import { runProcess } from "../proc.js";
+import { uploadMedia } from "./hfmedia.js";
 
 const MIN_POLL_MS = 20_000;
 const CAP_MS = 30 * 60 * 1000;
@@ -36,7 +37,8 @@ function parseJobId(p) {
 
 const VIDEO_EXT = ["mp4", "mov", "webm"];
 const IMAGE_EXT = ["png", "jpg", "jpeg", "webp"];
-const allowedExt = (kind) => (kind === "lineart" ? IMAGE_EXT : VIDEO_EXT);
+const isImage = (kind) => kind === "lineart" || kind === "portrait";
+const allowedExt = (kind) => (isImage(kind) ? IMAGE_EXT : VIDEO_EXT);
 const urlExt = (url) => url.split(/[?#]/)[0].match(/\/[^/]*\.([a-z0-9]{2,5})$/i)?.[1].toLowerCase() ?? null;
 const isUrl = (v) => typeof v === "string" && /^https?:\/\//i.test(v);
 
@@ -62,7 +64,7 @@ const parentOf = (p) => String(p).replace(/[\\/][^\\/]*$/, "");
 
 const extOf = (url, kind) => {
   const ext = urlExt(url);
-  return allowedExt(kind).includes(ext) ? ext : kind === "lineart" ? "png" : "mp4";
+  return allowedExt(kind).includes(ext) ? ext : isImage(kind) ? "png" : "mp4";
 };
 
 export function makeHiggsfieldRunner({ settings = DEFAULT_SETTINGS, sleep = realSleep } = {}) {
@@ -107,10 +109,12 @@ export function makeHiggsfieldRunner({ settings = DEFAULT_SETTINGS, sleep = real
       if (BAD.has(status)) throw new Error(`Higgsfield job ${status}${error ? `: ${error}` : ""}`);
       if (OK.has(status) || (!status && anyUrl)) {
         if (!url) {
-          const what = job.input?.kind === "lineart" ? "image" : "video";
+          const what = isImage(job.input?.kind) ? "image" : "video";
           throw new Error(anyUrl ? `Higgsfield finished but returned no ${what} result URL.` : "Higgsfield finished but returned no result URL.");
         }
-        return download(host, url, job.input);
+        const r = await download(host, url, job.input);
+        // A portrait's Higgsfield job id is the media value later used as a clip's start_image.
+        return job.input?.kind === "portrait" ? { ...r, meta: { hfId: jobId } } : r;
       }
       // Every job has ended but none succeeded: say so now instead of polling to the 30 min cap.
       if (p?.all_terminal === true) throw new Error(`Higgsfield job ${status || "ended"} without a result${error ? `: ${error}` : ""}`);
@@ -129,8 +133,15 @@ export function makeHiggsfieldRunner({ settings = DEFAULT_SETTINGS, sleep = real
       if (typeof out !== "string" || !out) throw new Error("This job has no output path; not generating.");
       try { await host.fs.mkdir(parentOf(out)); } catch (e) { throw new Error(`Couldn't make the folder for this take (${msg(e)}); not generating.`); }
       const video = kind === "broll";
-      const params = { model: video ? settings.videoModel : settings.imageModel, prompt, aspect_ratio: "16:9", count: 1, use_unlim: false };
+      const portrait = kind === "portrait";
+      const params = { model: video ? settings.videoModel : portrait ? "seedream_5_5" : settings.imageModel, prompt, aspect_ratio: "16:9", count: 1, use_unlim: false };
       if (video) { params.mode = "pro"; params.sound = false; }
+      if (portrait) {
+        // Uploads are free and happen before generate, so a failure here is a plain failure.
+        params.resolution = "2k";
+        params.medias = [];
+        for (const photo of job.input.photos ?? []) params.medias.push({ value: await uploadMedia(host, photo, "image"), role: "image_references" });
+      }
       const payload = await call(host, video ? "generate_video" : "generate_image", { params }).catch((e) => {
         const code = typeof e?.code === "string" ? e.code : null;
         throw code && !DEFINITE.has(code) ? ambiguous(msg(e)) : new Error(msg(e));

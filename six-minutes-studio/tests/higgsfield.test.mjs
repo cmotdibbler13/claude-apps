@@ -289,3 +289,27 @@ test("a known result key without an extension is saved with the kind's default",
   const r = await t.runner.start(job("lineart"), t.ctx);
   assert.equal(r.file, OUT + ".png");
 });
+
+test("portrait: uploads photos, generate_image with seedream params and image_references, hfId in meta, image file", async () => {
+  const PH = ["C:\\jon\\a.jpg", "C:\\jon\\b.png"];
+  let up = 0;
+  const t = setup({ mcp: (tool, i) => {
+    if (tool === "media_upload") return { uploads: [{ upload_url: `https://up.example.com/${up++}/aaaaaaaa-1111-2222-3333-44444444444${up}?X=1`, media_id: `m${up}` }] };
+    if (tool === "media_confirm") return {};
+    if (tool === "generate_image") return { job_id: UUID };
+    return done("https://cdn.example.com/p.webp");
+  } });
+  const r = await t.runner.start(job("portrait", { input: { kind: "portrait", prompt: "P", photos: PH, out: ROOT + "\\studio\\presenter\\PORTRAIT_t1" } }), t.ctx);
+  const gen = t.calls.find((c) => c.t === "generate_image");
+  assert.deepEqual(gen.i, { params: { model: "seedream_5_5", prompt: "P", aspect_ratio: "16:9", count: 1, use_unlim: false, resolution: "2k", medias: [{ value: "m1", role: "image_references" }, { value: "m2", role: "image_references" }] } });
+  assert.ok(t.calls.findIndex((c) => c.t === "generate_image") > t.calls.findLastIndex((c) => c.t === "media_confirm"));
+  assert.equal(r.file, ROOT + "\\studio\\presenter\\PORTRAIT_t1.webp");
+  assert.deepEqual(r.meta, { hfId: UUID });
+  assert.deepEqual(t.refs, [UUID]);
+});
+
+test("portrait: an upload failure fails before generate_image", async () => {
+  const t = setup({ mcp: (tool) => { if (tool === "media_upload") throw new Error("nope"); return {}; } });
+  await assert.rejects(t.runner.start({ id: "j", input: { kind: "portrait", prompt: "P", photos: ["C:\\a.jpg"], out: OUT } }, t.ctx), /nope/);
+  assert.ok(!t.calls.some((c) => c.t === "generate_image"));
+});

@@ -34,7 +34,9 @@ export async function uploadMedia(host, file, type) {
 // Credits a generation would cost, or null when the estimate can't be had.
 export async function estimateCredits(host, tool, params) {
   try {
-    const n = Number(parse(await call(host, tool, params))?.cost?.credits);
+    const c = parse(await call(host, tool, params))?.cost?.credits;
+    if (typeof c !== "number" && !(typeof c === "string" && c.trim() !== "")) return null;
+    const n = Number(c);
     return Number.isFinite(n) ? n : null;
   } catch { return null; }
 }

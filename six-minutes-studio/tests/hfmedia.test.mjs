@@ -68,3 +68,15 @@ test("estimateCredits returns cost.credits, null on error or odd reply", async (
   host.mcpScript(() => ({}));
   assert.equal(await estimateCredits(host, "estimate_video_cost", {}), null);
 });
+
+test("estimateCredits is null for null, empty or non-numeric credits; numeric strings count", async () => {
+  const host = new FakeHost();
+  for (const c of [null, "", "  ", "abc", undefined, {}]) {
+    host.mcpScript(() => ({ cost: { credits: c } }));
+    assert.equal(await estimateCredits(host, "estimate_image_cost", {}), null, JSON.stringify(c));
+  }
+  host.mcpScript(() => ({ cost: { credits: "12.5" } }));
+  assert.equal(await estimateCredits(host, "estimate_image_cost", {}), 12.5);
+  host.mcpScript(() => ({ cost: { credits: 0 } }));
+  assert.equal(await estimateCredits(host, "estimate_image_cost", {}), 0);
+});

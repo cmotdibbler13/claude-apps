@@ -13,8 +13,8 @@ const filled = (v) => typeof v === "string" && v.trim() !== "";
 const find = (state, id) => state.assets.find((a) => a.id === id);
 // Everything that has takes: b-roll shots, then the score, then the sound-effect cues, then the
 // voiceover join, score fit and mix preview (VOICEOVER, FIT, MIX: one take per run).
-export const holders = (d) => [...d.assets ?? [], ...(d.audio?.score ? [d.audio.score] : []), ...(d.audio?.sfx ?? []), ...mixHolders(d)];
-const META = ["lengthS", "peakDb", "meanDb", "quiet", "checks", "script"];
+export const holders = (d) => [...d.assets ?? [], ...(d.audio?.score ? [d.audio.score] : []), ...(d.audio?.sfx ?? []), ...mixHolders(d), ...(d.presenter?.portraits ? [d.presenter.portraits] : [])];
+const META = ["lengthS", "peakDb", "meanDb", "quiet", "checks", "script", "hfId", "audioSig"];
 const nameOf = (id) => (id === "SCORE" ? "Score" : id);
 const takeName = (id, n) => (MIX_IDS.has(id) ? `${runLabel(id)} run ${n}` : `${nameOf(id)} take ${n}`);
 // Every change to the shots also rewrites what the film is waiting on Jon for, in the same update.
