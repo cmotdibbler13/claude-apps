@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import {
   PAUSE_S, norm, lineWords, addMark, setSize, moveMark, removeMark,
   markState, toUnpaused, buildPauses, marksSig, takeSig,
+  notesToPlace, placeFromNotes,
 } from "../js/pacing.js";
+import { FakeHost } from "./fake-host.mjs";
+import { openFilm } from "../js/store.js";
 
 const W = (word, start, end, sentence = "02.1") => ({ word, start, end, sentence });
 const TR = {
@@ -171,4 +174,86 @@ test("an inside mark on the last word is sent as the gap, keeping the larger", (
   assert.equal(r.file.after["02.1"], 0.6);
   r = buildPauses(pacingOf([mk("end", null, null, "short"), mk("he#1", "he", 1, "medium")]), TR, {}, {});
   assert.equal(r.file.after["02.1"], 0.6);
+});
+
+// --- placeFromNotes ---
+const DIR = "S:\\Youtube video ideas\\Film A";
+const SCRIPT = { lines: [
+  { id: "01.1", section: "Intro", text: "First line." },
+  { id: "02.1", section: "Body", text: "Pictish village in Orkney, Pictish he" },
+  { id: "02.2", section: "Body", text: "Last line." },
+] };
+async function pSetup(lines) {
+  const host = new FakeHost();
+  await host.fs.mkdir(DIR);
+  const store = await openFilm(host, DIR);
+  await store.update((s) => { s.mix = { pacing: { lines } }; });
+  return { host, store };
+}
+const jonMark = { key: "village#1", word: "village", nth: 1, size: "short", by: "jon", take: null };
+
+test("notesToPlace picks lines with a note newer than placedAt", () => {
+  const p = { lines: {
+    a: { note: "x", noteAt: 5 }, b: { note: "x", noteAt: 5, placedAt: 5 },
+    c: { note: "", noteAt: 9 }, d: { note: "y", noteAt: 9, placedAt: 4 },
+  } };
+  assert.deepEqual(notesToPlace(p), ["a", "d"]);
+});
+
+test("placeFromNotes places a Claude mark, keeps Jon's, sends only new notes", async () => {
+  const { host, store } = await pSetup({
+    "02.1": { note: "pause after the second Pictish", noteAt: 10, pauses: [jonMark, { key: "old#1", word: "old", nth: 1, size: "long", by: "claude", take: null }] },
+    "02.2": { note: "old", noteAt: 3, placedAt: 4 },
+  });
+  let sent;
+  host.claudeScript((kind, input) => {
+    sent = JSON.parse(input.split("DATA (JSON):\n")[1].split("\n\nAnswer")[0]);
+    return [{ id: "02.1", pauses: [{ after: 4, size: "medium" }] }];
+  });
+  const r = await placeFromNotes(host, store, { transcript: TR, lineScript: SCRIPT, takeSigs: { "02.1": "a.wav|3" } });
+  assert.deepEqual(r, { placed: ["02.1"], replies: [] });
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].id, "02.1");
+  assert.equal(sent[0].before, "First line.");
+  assert.equal(sent[0].after, "Last line.");
+  assert.equal(sent[0].words[4].word, "Pictish");
+  const line = store.state.mix.pacing.lines["02.1"];
+  assert.deepEqual(line.pauses.map((m) => m.key).sort(), ["pictish#2", "village#1"]);
+  const m = line.pauses.find((x) => x.key === "pictish#2");
+  assert.equal(m.by, "claude");
+  assert.equal(m.take, "a.wav|3");
+  assert.equal(line.reply, null);
+  assert.ok(line.placedAt >= 0);
+});
+
+test("placeFromNotes stores a reply and leaves marks", async () => {
+  const { host, store } = await pSetup({ "02.1": { note: "slower please", noteAt: 10, pauses: [jonMark] } });
+  host.claudeScript(() => [{ id: "02.1", reply: "This sounds like a delivery change: tick Re-record" }]);
+  const r = await placeFromNotes(host, store, { transcript: TR, lineScript: SCRIPT });
+  assert.deepEqual(r, { placed: [], replies: ["02.1"] });
+  const line = store.state.mix.pacing.lines["02.1"];
+  assert.match(line.reply, /Re-record/);
+  assert.deepEqual(line.pauses, [jonMark]);
+});
+
+test("placeFromNotes rejects bad answers and writes nothing", async () => {
+  for (const bad of [
+    [{ id: "02.1", pauses: [{ after: 9, size: "medium" }] }],
+    [{ id: "02.1", pauses: [{ after: 1.5, size: "medium" }] }],
+    [{ id: "02.1", pauses: [{ after: 2, size: "huge" }] }],
+    [{ id: "09.9", reply: "x" }],
+    [{ id: "02.1" }],
+  ]) {
+    const { host, store } = await pSetup({ "02.1": { note: "n", noteAt: 10 } });
+    host.claudeScript(() => bad);
+    await assert.rejects(placeFromNotes(host, store, { transcript: TR, lineScript: SCRIPT }), (e) => e.code === "invalid");
+    assert.equal(store.state.mix.pacing.lines["02.1"].placedAt, undefined);
+    assert.equal(store.state.mix.pacing.lines["02.1"].pauses, undefined);
+  }
+});
+
+test("placeFromNotes with nothing new does not call Claude", async () => {
+  const { host, store } = await pSetup({ "02.1": { note: "n", noteAt: 3, placedAt: 4 } });
+  host.claudeScript(() => { throw new Error("called"); });
+  assert.deepEqual(await placeFromNotes(host, store, { transcript: TR, lineScript: SCRIPT }), { placed: [], replies: [] });
 });

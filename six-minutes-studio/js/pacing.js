@@ -1,6 +1,8 @@
 // Pacing marks: pauses (‖) Jon sets after a word or after a line, tied to the word and its occurrence so they survive a new transcription,
 // and the pauses file that voiceover_join.py --pauses reads. Pure: no store or host access.
 
+import { askJson } from "./claude.js";
+
 export const PAUSE_S = { short: 0.3, medium: 0.6, long: 1.0 };
 const RANK = { short: 1, medium: 2, long: 3 };
 const ms = (n) => Math.round(n * 1000) / 1000;
@@ -126,4 +128,87 @@ export function marksSig(pacing, takeSigs) {
     if (marks.length) out.push([id, marks]);
   }
   return JSON.stringify(out);
+}
+
+export const PLACE_INSTRUCTIONS = `You place pauses in a voiceover for a Six Minutes On... documentary film (calm, precise, British English).
+Jon has written a note on some lines of his script. For each line you get its id, its text, its words (i is the word's index, word is the word), his note, and the text of the line before and after (null at the ends).
+
+For each line, answer one of two things:
+- pauses: [{"after": index, "size": "short" | "medium" | "long"}]. "after" is the index i of the word the pause follows, or "end" for the gap after the whole line. Use pauses only where the note asks for them. Prefer "end" for "after this line". Short is 0.3 s, medium 0.6 s, long 1.0 s; choose medium unless the note says otherwise.
+- reply: a short sentence in plain British English, when the note is about delivery or wording rather than a pause, for example "This sounds like a delivery change: tick Re-record".
+
+Reply with JSON only: a list with one item per line, {"id": "...", "pauses": [...]} or {"id": "...", "reply": "..."}.`;
+
+export function notesToPlace(pacing) {
+  return Object.entries(pacing?.lines || {})
+    .filter(([, l]) => String(l?.note ?? "").trim() && (l.noteAt ?? 0) > (l.placedAt ?? 0))
+    .map(([id]) => id);
+}
+
+export async function placeFromNotes(host, store, { transcript, lineScript, takeSigs = {} } = {}) {
+  const pacing = store.state?.mix?.pacing;
+  const ids = notesToPlace(pacing);
+  if (!ids.length) return { placed: [], replies: [] };
+  const script = lineScript?.lines || [];
+  const data = ids.map((id) => {
+    const at = script.findIndex((l) => l.id === id);
+    return {
+      id,
+      text: script[at]?.text ?? "",
+      words: lineWords(transcript, id).map((w) => ({ i: w.i, word: w.word })),
+      note: pacing.lines[id].note,
+      before: at > 0 ? script[at - 1].text : null,
+      after: at >= 0 && at < script.length - 1 ? script[at + 1].text : null,
+    };
+  });
+  const wordsOf = Object.fromEntries(ids.map((id) => [id, lineWords(transcript, id)]));
+  const out = await askJson(host, {
+    instructions: PLACE_INSTRUCTIONS,
+    data,
+    tier: "quick",
+    validate: (a) => {
+      if (!Array.isArray(a)) throw new Error("The answer must be a list.");
+      for (const it of a) {
+        if (!it || !ids.includes(it.id)) throw new Error(`Unknown line ${it?.id}.`);
+        const hasPauses = Array.isArray(it.pauses) && it.pauses.length > 0;
+        const hasReply = typeof it.reply === "string" && it.reply.trim() !== "";
+        if (!hasPauses && !hasReply) throw new Error(`Line ${it.id} has neither pauses nor a reply.`);
+        for (const p of hasPauses ? it.pauses : []) {
+          if (!Object.hasOwn(PAUSE_S, p?.size)) throw new Error(`Line ${it.id}: size ${p?.size} is not short, medium or long.`);
+          const ok = p.after === "end" || (Number.isInteger(p.after) && p.after >= 0 && p.after < wordsOf[it.id].length);
+          if (!ok) throw new Error(`Line ${it.id}: after ${p.after} is not a word index or "end".`);
+        }
+      }
+    },
+  });
+  const placed = [];
+  const replies = [];
+  const now = host.now();
+  await store.update((s) => {
+    const lines = s.mix.pacing.lines;
+    for (const it of out) {
+      let line = lines[it.id];
+      if (Array.isArray(it.pauses) && it.pauses.length) {
+        line = { ...line, pauses: (line.pauses || []).filter((m) => m.by !== "claude") };
+        for (const p of it.pauses) {
+          const w = p.after === "end" ? null : wordsOf[it.id][p.after];
+          line = addMark(line, {
+            after: p.after === "end" ? "end" : true, word: w?.word, nth: w?.nth,
+            size: p.size, by: "claude", take: takeSigs[it.id], words: wordsOf[it.id],
+          });
+        }
+        line.reply = null;
+        placed.push(it.id);
+      } else {
+        line = { ...line, reply: it.reply };
+        replies.push(it.id);
+      }
+      line.placedAt = now;
+      lines[it.id] = line;
+    }
+    // A line that got no answer is done with this note too.
+    for (const id of ids) if (!out.some((it) => it.id === id)) lines[id].placedAt = now;
+  });
+  if (placed.length) await store.log(`Pauses placed for ${placed.join(", ")}`);
+  return { placed, replies };
 }
