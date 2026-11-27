@@ -33,6 +33,7 @@ import { makeStemFitRunner, listExports } from "./tools/stemfit.js";
 import { makeMixdownRunner } from "./tools/mixdown.js";
 import { startFit, startMix, useStemRemixerExport, approveMix, parseCsv, openFitInStemRemixer, stemExportDir, pastedPath, goodFrame } from "./mixplan.js";
 import { mountProbe } from "./ui/probe.js";
+import { approvePart2 } from "./part2run.js";
 import * as filmsView from "./ui/films.js";
 import * as jobsView from "./ui/jobs.js";
 import * as reviewView from "./ui/review.js";
@@ -198,6 +199,7 @@ async function renderNow() {
           chain: { applying: r.applying ?? null, placing: !!r.placing, error: r.paceError ?? null, info: r.paceInfo ?? null } } },
       lineScript: r.lineScript ?? null, transcript: r.transcript ?? null, transcriptAt: r.transcript ? r.transcriptAt ?? null : undefined,
       onCamera: { estimates: estimatesView(), photosOk: !!r.oc.photosOk, ui: r.oc },
+      part2Ui: r.p2 ?? {},
     });
     r.paceSource = model.mix?.pacing?.source ?? null;
     // No voiceover player in the review now (a rejoin is running, or the mix is current): stop the old one, unseen.
@@ -879,8 +881,39 @@ function preview(file) {
   return app.previews.get(file);
 }
 
+// ---- Approve Part 2 ----
+// Free: copies into the B-roll library and writes the handover. Each step shows as it happens; one press at a time.
+async function approvePart2Now() {
+  const r = app.review, store = app.store;
+  if (!store || r.p2?.running) return;
+  r.p2 = { running: true, steps: [], error: null, warnings: [] };
+  render();
+  try {
+    const res = await approvePart2({ ...ctx(), root: app.root }, { onStep: (s) => { if (app.review === r) { r.p2.steps.push(s.text); render(); } } });
+    if (app.review === r) r.p2.warnings = res.warnings ?? [];
+  } catch (e) {
+    if (app.review === r) r.p2.error = msg(e);
+  } finally {
+    if (app.review === r) r.p2.running = false;
+    render();
+  }
+}
+
+// Copy the Part 3 opening message; if the clipboard refuses, select it so Ctrl+C works.
+async function copyMessage(text, box) {
+  try {
+    await navigator.clipboard.writeText(text);
+    const b = box?.nextElementSibling;
+    if (b) b.textContent = "Copied";
+  } catch {
+    try { box?.focus(); box?.select(); } catch { /* nothing more to do */ }
+  }
+}
+
 const reviewActions = {
   makeShotList: () => { makeShotList(); },
+  approvePart2: () => { approvePart2Now(); },
+  copyMessage: (text, box) => { copyMessage(text, box); },
   setLayout(v) {
     app.layout = v;
     try { localStorage.setItem(LAYOUT_KEY, v); } catch { /* storage blocked: per-session only */ }
@@ -1092,7 +1125,7 @@ async function boot() {
   desktop.app?.dock?.setIcon(drawIcon()).catch(() => {});
   // Probe re-reads .studio-settings.json and updates the one settings object every runner holds.
   mountProbe(host, $("run-probe"), $("probe-results"), () => app.settings, reloadSettings,
-    () => ({ comfy: app.comfyStarter, stableAudio: app.starter }), () => refreshI2v(), choosePresenterPhotos);
+    () => ({ comfy: app.comfyStarter, stableAudio: app.starter }), () => refreshI2v(), choosePresenterPhotos, () => app.root);
   await startWithAccess();
 }
 

@@ -163,3 +163,24 @@ Before you start:
 6. **Clips.** Each line has a card below. Until a portrait is approved it says "Approve a portrait first"; until the voiceover is joined, "Join the voiceover first". Press **Make clip (≈N credits)**: the take saves as `studio\presenter\TC-01_t1.mp4`. Check his lips match your recording and the arms and elbows look natural. **Redo…** with a note, then **Approve**, as for other shots.
 7. **A new portrait.** Approve the other portrait: finished clips say "Made with an earlier portrait". They stay as they are; redo them if you want.
 8. **The voiceover changed.** Re-record a to-camera line (or put a pause inside it) and join again: its clip says "The voiceover for this line changed: redo to match, or Keep anyway" and counts in the film's waiting line. **Keep anyway** clears it. Then the other way round: change a different line (not a to-camera one) and join again: this clip shows no warning.
+
+## Approve Part 2 (version 28)
+Free: no credits. It copies files into the shared B-roll library and writes the Part 2 handover; it never deletes or overwrites anything (old catalogues are copied aside, an old contact sheet or handover is moved aside, each renamed with the date, e.g. `broll_catalogue_2026-11-27-1405.json`).
+
+Before you press:
+- **Probe:** the **B-roll library** row passes with e.g. "41 clips, next BR-042". If it fails it says why (e.g. "Couldn't read S:\Youtube video ideas\B-roll library\broll_catalogue.json: …" or "… isn't valid JSON"); fix that first, or Approve Part 2 stops at its first step with the same reason.
+- **Nothing running:** let every job for this film finish (Live jobs). A press while one runs says "Wait for the running jobs to finish."
+
+1. **The lock.** Open the film's Review. In the summary bar (beside Approved / Regenerating) **Approve Part 2** is greyed out with what's left beside it, e.g. "3 shots, the score and 2 sound effects still to approve" (hover the button for the same sentence). Approve the last thing it names: the sentence goes and the button lights up.
+2. **Press and watch.** Press **Approve Part 2**. It reads **Approving…** and lists each step as it happens: "Reading the library", "Adding N clips", "Thumbnails and contact sheet", "Hand-off files", "Writing the handover". If something stops it, the reason shows under the button (e.g. "Missing file: …") and nothing has been written to the library or the handover.
+3. **Done.** The bar says "Part 2 handed over 27 Nov 2026 14:05", any warnings as a short list (e.g. "The contact sheet was made without BR labels."), and the Part 3 opening message in a box: "Part 3 of Six minutes on… <Topic>. Load /documentary-explainer-video, read <film>\handover\part2_handover.md, and carry on." **Copy** puts it on the clipboard (if Windows refuses, the text is selected: press Ctrl+C). The button now reads **Write the handover again**.
+4. **Check in Explorer:**
+   - `S:\Youtube video ideas\B-roll library\clips\<slug>\`: one `<slug>_HF-nn.mp4` per approved b-roll, 3D and animated shot (no line art, no on-camera clips, no portrait).
+   - `B-roll library\thumbs\BR-nnn.jpg` for each new clip, and `contact_sheets\<slug>.jpg` showing them with their BR labels.
+   - `broll_catalogue.json` and `broll_catalogue.md`: the new rows at the end (in the MD under a `## <Film>` heading), the takes you didn't choose as "rejected" rows with your redo note; beside each catalogue the dated copy of the old one.
+   - `<film>\handover\part2_handover.md`: every file with its real path, the BR ids beside the shots, your decisions, ending with the opening message.
+   - `<film>\studio\handover\sfx_cues.json` and `mix_settings.json`.
+   - Films shows Part 2 as done.
+5. **Press again.** Press **Write the handover again**: the steps run, "Adding 0 clips"; the catalogues gain no rows and no new dated copies; no clip is copied twice; the old `part2_handover.md` is now `part2_handover_<date>.md` beside the new one (the same for `sfx_cues.json` and `mix_settings.json`).
+6. **Changed since.** Un-approve a shot (or pick another take and approve it): the bar says "Changed since the Part 2 handover" (and the button locks again until it is approved). Approve it and press **Write the handover again** to bring the handover up to date.
+7. **Part 3.** Open a new Claude Code session, paste the opening message and send it: it loads the video skill and reads the handover.

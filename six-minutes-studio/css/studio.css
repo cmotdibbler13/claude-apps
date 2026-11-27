@@ -77,6 +77,18 @@ h2{font-weight:500;font-size:13px;letter-spacing:.2em;text-transform:uppercase;c
 .sum{display:flex;flex-wrap:wrap;gap:12px 28px;align-items:center;background:var(--s1);border:1px solid var(--rule);padding:16px 18px;position:sticky;top:var(--toph,0px);z-index:2}
 .sum .big{font-size:30px;font-weight:300;font-variant-numeric:tabular-nums}
 .sum .lbl{font-size:12px;color:var(--mut);letter-spacing:.12em;text-transform:uppercase}
+.sum.tall{position:static}
+.p2{flex:1 1 320px;min-width:0;display:flex;flex-direction:column;gap:8px}
+.p2row{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px}
+.p2row .locked,.p2when,.p2changed{font-size:13px;overflow-wrap:anywhere}
+.p2when{color:var(--lw)}
+.p2changed{color:var(--brass);border:1px solid var(--brass);padding:2px 8px}
+.p2steps,.p2warn{margin:0;padding-left:1.4em;font-size:13px;color:var(--mut)}
+.p2steps li:last-child{color:var(--ink)}
+.p2warn{color:var(--brass)}
+.p2copy{display:flex;gap:8px;align-items:flex-start}
+.p2copy .p2msg{flex:1;min-width:0;min-height:4.5em;font-size:13px}
+@media(max-width:600px){.p2copy{flex-direction:column;align-items:stretch}.p2copy .p2msg{min-height:7.5em}}
 .h2row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 16px;margin:30px 0 12px}
 .h2row h2{margin:0}
 .toggle{display:flex;gap:4px}

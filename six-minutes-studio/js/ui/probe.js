@@ -7,6 +7,8 @@ import { stableAudioState, MSG_MUSIC } from "../tools/stableaudio.js";
 import { join } from "../paths.js";
 import { photoPicker } from "./photopick.js";
 import { MSG_SET_STEM_REMIXER, stemPython } from "../tools/stemfit.js";
+import { readCatalogue } from "../libraryio.js";
+import { nextBrNumber } from "../library.js";
 
 const ROOT = "S:\\Youtube video ideas\\";
 const UNC = "\\\\192.168.1.171\\jon\\Youtube video ideas\\";
@@ -96,6 +98,13 @@ const presenterPhotosCheck = (presenter) => async (host) => {
   return `${photos.length} photos`;
 };
 
+// B-roll library: the catalogue Approve Part 2 adds to reads, and the next BR number it would give.
+const libraryCheck = (root) => async (host) => {
+  const cat = await readCatalogue(host, root);
+  const n = cat.entries.length;
+  return `${n} ${n === 1 ? "clip" : "clips"}, next BR-${String(nextBrNumber(cat.entries, cat.md)).padStart(3, "0")}`;
+};
+
 const toolsCheck = (server, want) => async (host) => {
   if (!host.mcp) throw new Error("connector access is not available");
   const tools = await host.mcp.listTools(server);
@@ -104,7 +113,8 @@ const toolsCheck = (server, want) => async (host) => {
   return `${tools.length} tools`;
 };
 
-export const makeChecks = (settings = DEFAULT_SETTINGS) => [
+// root: the films folder (the app's resolved root), where the B-roll library lives.
+export const makeChecks = (settings = DEFAULT_SETTINGS, root = ROOT) => [
   { name: "S: root readable", run: listCheck(ROOT) },
   { name: "UNC root readable", run: listCheck(UNC) },
   { name: "Blender", run: cmdCheck(settings.blenderPath || DEFAULT_SETTINGS.blenderPath, ["--version"]) },
@@ -127,6 +137,7 @@ export const makeChecks = (settings = DEFAULT_SETTINGS) => [
     },
   },
   { name: "Presenter photos", run: presenterPhotosCheck(settings.presenter) },
+  { name: "B-roll library", run: libraryCheck(root || ROOT) },
   { name: "ElevenLabs tools", run: toolsCheck("ElevenLabs", ["creative_create_flow", "creative_add_flow_node", "creative_run_flow_nodes", "creative_get_flow_run_status"]) },
   {
     name: "Claude answers JSON",
@@ -141,9 +152,9 @@ export const makeChecks = (settings = DEFAULT_SETTINGS) => [
 
 export const CHECKS = makeChecks();
 
-export async function runChecks(host, onResult = () => {}, settings = DEFAULT_SETTINGS) {
+export async function runChecks(host, onResult = () => {}, settings = DEFAULT_SETTINGS, root = ROOT) {
   const out = [];
-  for (const c of makeChecks(settings)) {
+  for (const c of makeChecks(settings, root)) {
     let r;
     try { r = { name: c.name, ok: true, detail: await c.run(host) }; }
     catch (e) { r = { name: c.name, ok: false, detail: String(e?.message ?? e), install: !!e?.install, ...(e?.neutral ? { neutral: true } : {}), ...(e?.start ? { start: e.start } : {}) }; }
@@ -168,13 +179,14 @@ export function probeRow(r) {
 // getStarters(): { comfy, stableAudio } — a check that finds the tool not running gets a Start now row.
 // onDone(results), when given, runs after each Probe (the app re-checks what depends on the settings).
 // choosePhotos(files), when given, adds a "Choose presenter photos…" row (saves them, then Probe runs again).
-export function mountProbe(host, button, list, getSettings = () => DEFAULT_SETTINGS, reload = null, getStarters = () => ({}), onDone = null, choosePhotos = null) {
+// getRoot(): the films folder once it is resolved (the B-roll library row reads its catalogue there).
+export function mountProbe(host, button, list, getSettings = () => DEFAULT_SETTINGS, reload = null, getStarters = () => ({}), onDone = null, choosePhotos = null, getRoot = () => null) {
   const run = async () => {
     button.disabled = true;
     list.replaceChildren();
     if (reload) { try { await reload(); } catch { /* keep the settings already loaded */ } }
     const settings = getSettings() ?? DEFAULT_SETTINGS;
-    const results = await runChecks(host, (r) => list.append(probeRow(r)), settings);
+    const results = await runChecks(host, (r) => list.append(probeRow(r)), settings, getRoot?.() || ROOT);
     // A missing or old join script can be put right from here: Studio carries the current copy.
     if (results.some((r) => r.install)) list.append(installRow(host, settings.autocueDir ?? DEFAULT_SETTINGS.autocueDir, run));
     const starters = getStarters?.() ?? {};

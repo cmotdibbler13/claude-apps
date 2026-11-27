@@ -9,6 +9,7 @@ import { audioModel, audioSections } from "./audio.js";
 import { mixModel, mixSection } from "./mix.js";
 import { onCameraModel, onCameraSection, costLabel, STALE_PORTRAIT, ON_CAMERA } from "./oncamera.js";
 import { clipLock, lineLengthS, clipSeconds, onCameraConflict, VOICEOVER_CHANGED } from "../presenter.js";
+import { part2Model, part2Bar } from "./part2.js";
 
 const busyTake = (t) => t.status === "queued" || t.status === "running";
 const isBusy = (a) => a.takes.some(busyTake);
@@ -165,7 +166,7 @@ function narrationSection(n, actions) {
 
 // lineScript/transcript: the film's parsed line script and last good join's transcript (On camera, clip locks).
 // onCamera: { estimates, photosOk, ui } for the On camera step (oncamera.onCameraModel).
-export function reviewModel({ film, state, layout = "script", making = false, listError = null, cardErrors = new Map(), pending = new Set(), noteFor = null, openError = null, prefError = null, i2v = null, removeFor = null, narration = null, playing = null, paused = false, audio, sa = null, audioUi = {}, mixUi = {}, lineScript = null, transcript = null, transcriptAt, onCamera = {} }) {
+export function reviewModel({ film, state, layout = "script", making = false, listError = null, cardErrors = new Map(), pending = new Set(), noteFor = null, openError = null, prefError = null, i2v = null, removeFor = null, narration = null, playing = null, paused = false, audio, sa = null, audioUi = {}, mixUi = {}, lineScript = null, transcript = null, transcriptAt, onCamera = {}, part2Ui = {} }) {
   if (openError) return { openFailed: true, dir: openError.dir, title: openError.title, message: `Couldn't open ${openError.title}: ${openError.message}` };
   if (!film) return { noFilm: true };
   const assets = state?.assets ?? [];
@@ -195,6 +196,7 @@ export function reviewModel({ film, state, layout = "script", making = false, li
     audio: audioModel(audio === undefined ? state?.audio : audio, { pending, cardErrors, noteFor, playing, sa, ...audioUi }),
     mix: mixModel({ state, narration, pending, cardErrors, noteFor, playing, settings: mixUi.settings ?? {}, jobs: mixUi.jobs ?? [], ui: mixUi.ui ?? {}, pacingUi: mixUi.pacing ?? {} }),
     summary: summarize(shots), // b-roll only: clips are counted in On camera
+    part2: part2Model({ state, ui: part2Ui }),
     noteFor,
     onCamera: onCam,
     cards: shots.map(cardFor),
@@ -342,9 +344,12 @@ export function render(el, model, actions) {
     return;
   }
   const s = model.summary;
-  const sum = h("div", { class: "sum" },
+  const p2 = model.part2;
+  // The steps or the opening message make the bar tall: it stops sticking then.
+  const sum = h("div", { class: `sum${p2 && (p2.steps || p2.done?.message) ? " tall" : ""}` },
     h("div", {}, h("div", { class: "big", text: `${s.approved} / ${s.total}` }), h("div", { class: "lbl", text: "Approved" })),
-    h("div", {}, h("div", { class: "big", text: String(s.regenerating) }), h("div", { class: "lbl", text: "Regenerating" })));
+    h("div", {}, h("div", { class: "big", text: String(s.regenerating) }), h("div", { class: "lbl", text: "Regenerating" })),
+    p2 ? part2Bar(p2, actions) : null);
   const toggle = h("div", { class: "toggle", role: "group", "aria-label": "Layout" },
     ["script", "grid"].map((v) => h("button", { type: "button", "aria-pressed": String(model.layout === v), onclick: () => actions.setLayout(v) }, v === "script" ? "Script order" : "Grid")));
   const body = model.layout === "grid"
