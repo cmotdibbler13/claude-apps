@@ -789,3 +789,9 @@ test("mix: the player is keyed on the file and the mix run, so a new run gets a 
   assert.equal(keepPlayer({ key: a, el }, b), false);
   assert.equal(keepPlayer({ key: a, el: null }, a), false);
 });
+
+test("mix: one Re-record line makes it Join anyway (1 not OK)", () => {
+  const j = step(mm(mstate(), { narration: narr([nrow("01.1", "rerecord"), nrow("01.2", "ok")]) }), "VOICEOVER");
+  assert.equal(j.run.label, "Join anyway (1 not OK)");
+  assert.equal(j.flagged, "Not OK: 01.1 rerecord");
+});

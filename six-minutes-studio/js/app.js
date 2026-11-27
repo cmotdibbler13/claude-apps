@@ -3,6 +3,7 @@ import { makeHost } from "./host.js";
 import { accessGate } from "./gate.js";
 import { resolveRoot, join } from "./paths.js";
 import { loadSettings } from "./settings.js";
+import { withRerecord, rerecordsToClear } from "./pacing.js";
 import { findLineScript, loadLineScript, refreshLineScript, narrationStatus } from "./narration.js";
 import { scanFilms } from "./films.js";
 import { makeFilmSession, readSavedJobs } from "./session.js";
@@ -294,7 +295,9 @@ async function refreshNarration() {
       r.lineScript = await loadLineScript(app.host, path);
     }
     const st = await narrationStatus(app.host, app.settings ?? {}, r.lineScript, app.store?.state?.narrationOk ?? {});
-    if (app.review === r) r.narration = st;
+    const stale = rerecordsToClear(st, app.store.state.mix?.pacing);
+    if (stale.length) await app.store.update((d) => { for (const id of stale) { const l = d.mix?.pacing?.lines?.[id]; if (l) l.rerecord = null; } });
+    if (app.review === r) r.narration = withRerecord(st, app.store.state.mix?.pacing);
   } catch (e) { console.error(e); }
 }
 let narrTimer = null;

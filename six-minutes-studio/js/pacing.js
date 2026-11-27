@@ -218,3 +218,25 @@ export async function placeFromNotes(host, store, { transcript, lineScript, take
   if (placed.length) await store.log(`Pauses placed for ${placed.join(", ")}`);
   return { placed, replies };
 }
+
+// ---- Re-record: a tick stays on a line until a newer take of it arrives ----
+const tickOf = (pacing, id) => pacing?.lines?.[id]?.rerecord?.at ?? null;
+
+export function withRerecord(narration, pacing) {
+  if (!narration?.rows) return narration;
+  let count = 0;
+  const rows = narration.rows.map((r) => {
+    const at = tickOf(pacing, r.id);
+    if (at == null || (r.takeS != null && at <= r.takeS * 1000)) return r;
+    count++;
+    return { ...r, status: "rerecord", checkedStatus: r.status, flags: [pacing.lines[r.id].note || "Marked to re-record"] };
+  });
+  return { ...narration, rows, counts: { ...narration.counts, rerecord: count } };
+}
+
+export function rerecordsToClear(narration, pacing) {
+  return (narration?.rows ?? []).filter((r) => {
+    const at = tickOf(pacing, r.id);
+    return at != null && r.takeS != null && r.takeS * 1000 > at;
+  }).map((r) => r.id);
+}

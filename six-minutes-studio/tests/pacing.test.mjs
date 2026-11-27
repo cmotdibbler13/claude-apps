@@ -280,3 +280,46 @@ test("placeFromNotes skips a Claude mark on Jon's key and places an end mark", a
   assert.equal(end.take, "t");
   assert.equal(ps.length, 2);
 });
+
+// ---- Re-record ----
+import { withRerecord, rerecordsToClear } from "../js/pacing.js";
+
+const rrNar = () => ({
+  project: "p",
+  rows: [
+    { id: "01.1", text: "a", status: "ok", flags: [], notes: [], file: "a.wav", takeS: 100 },
+    { id: "01.2", text: "b", status: "flagged", flags: ["x"], notes: [], file: "b.wav", takeS: 100 },
+    { id: "01.3", text: "c", status: "missing", flags: [], notes: [] },
+  ],
+  counts: { total: 3, recorded: 2, ok: 1, flagged: 1, jon: 0, unchecked: 0 },
+});
+
+test("withRerecord marks a line whose tick is newer than its take, with the note as the reason", () => {
+  const n = rrNar();
+  const out = withRerecord(n, { lines: { "01.1": { rerecord: { at: 100500 }, note: "too fast" }, "01.3": { rerecord: { at: 5 } } } });
+  assert.equal(out.rows[0].status, "rerecord");
+  assert.equal(out.rows[0].checkedStatus, "ok");
+  assert.deepEqual(out.rows[0].flags, ["too fast"]);
+  assert.equal(out.rows[2].status, "rerecord");
+  assert.deepEqual(out.rows[2].flags, ["Marked to re-record"]);
+  assert.equal(out.rows[1].status, "flagged");
+  assert.equal(out.counts.rerecord, 2);
+  assert.equal(n.rows[0].status, "ok");
+  assert.equal(n.counts.rerecord, undefined);
+});
+
+test("withRerecord leaves a line alone when the take is newer than the tick, and rerecordsToClear returns it", () => {
+  const p = { lines: { "01.1": { rerecord: { at: 99000 } }, "01.2": { rerecord: { at: 100500 } }, "01.3": { rerecord: null } } };
+  const out = withRerecord(rrNar(), p);
+  assert.equal(out.rows[0].status, "ok");
+  assert.equal(out.counts.rerecord, 1);
+  assert.deepEqual(rerecordsToClear(rrNar(), p), ["01.1"]);
+});
+
+test("withRerecord passes through null, missingScript and no pacing", () => {
+  assert.equal(withRerecord(null, {}), null);
+  const m = { missingScript: true };
+  assert.equal(withRerecord(m, { lines: {} }), m);
+  assert.equal(withRerecord(rrNar(), undefined).counts.rerecord, 0);
+  assert.deepEqual(rerecordsToClear(null, {}), []);
+});
