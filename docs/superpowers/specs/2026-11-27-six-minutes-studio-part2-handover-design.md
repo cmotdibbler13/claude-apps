@@ -110,6 +110,32 @@ At `<root>\B-roll library\` (`S:\Youtube video ideas\B-roll library\`), with its
 - The originals stay where they are; for Studio films that's `<film>\studio\media\` (the README's "each film's
   own `broll\` folder" is where older, pre-Studio films kept them).
 
+### From the catalogue itself (Jon pasted it, 2026-11-27)
+- `broll_catalogue.json` is one object whose single array property holds the entries (written by PowerShell
+  `ConvertTo-Json`; Studio finds the array property rather than assuming its name, keeps every other property, and
+  writes UTF-8 JSON with 2-space indents: same content, different spacing). The last id was BR-601.
+- An approved entry has, in this order: `id, film, shot, status, aspect, description, setting, period, tags, prompt,
+  job_id, notes, size_mb, source_path, library_path, in_library, duplicate_of, duration_s, width, height, fps`.
+  A rejected row has the same keys up to `duplicate_of` with `library_path: null`, `in_library: false`,
+  `size_mb` and `prompt` filled when known, and no duration/width/height/fps.
+- Values, as the newest films have them:
+  - `film`: the film's display name ("The Christmas Tree"); clips go in `clips\<slug>\` with `<slug>` the film's
+    existing slug if it has entries, else lowercase-underscored ("christmas_tree").
+  - `shot`: Studio's shot id (`HF-03`); `aspect` "16:9" (or "9:16"); `tags` 8–12 lower-case tags.
+  - `job_id`: `"higgsfield:<job id>"` for Higgsfield takes; `"local ComfyUI <workflow file> seed <n>"` for ComfyUI;
+    `"Blender: <script path>"` for Blender.
+  - `notes`: starts with the maker and format ("Higgsfield Kling 3.0 pro, 16:9, 1920x1080 24 fps, sound off.")
+    then any caveats from Jon's notes and the reuse caution ("Illustrative: never caption it as …") where it fits.
+  - `source_path` / `library_path`: relative to `S:\Youtube video ideas\` (`"<Film folder>\studio\media\HF-03_t2.mp4"`,
+    `"B-roll library\clips\<slug>\<slug>_HF-03.mp4"`); `size_mb` 1 decimal; `duration_s`, `width`, `height`, `fps`
+    from ffprobe; `in_library: true`, `duplicate_of: null`.
+  - Rejected rows: short `description`, `tags` ending "rejected", `notes` "Rejected: <Jon's redo note, or 'not chosen
+    in review'>", `setting`/`period` may be "".
+- Claude writes only `description, setting, period, tags, notes` (and the rejected rows' short description); Studio
+  fills every other field. A Claude answer with any other key, or a missing one, is refused.
+- `broll_catalogue.md`: Studio reads the last film table's header row and writes the new film's table (or rows) with
+  the same columns, mapping them from the JSON fields (ID, what it shows = description, period, tags, notes).
+
 ## Pressing it again / changes after approval
 - The state records `part2 = { approvedAt, handover, library: [BR ids] }`.
 - If anything is unapproved or changed after that, the summary shows "Changed since the Part 2 handover" and the button
