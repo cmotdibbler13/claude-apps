@@ -54,14 +54,20 @@ async function scanOne(host, root, e) {
     }
 
     let waiting = null;
+    let part1 = null;
     const raw = await readText(host, join(dir, "studio", "state.json"));
     if (raw !== null) {
       try {
-        const w = JSON.parse(raw)?.waiting;
+        const st = JSON.parse(raw);
+        const w = st?.waiting;
         if (typeof w === "string" && w) waiting = w;
+        const p1 = st?.part1;
+        if (p1 && typeof p1 === "object") part1 = Array.isArray(p1.drafts) && p1.drafts.length ? "draft" : "none";
       } catch { /* unreadable state: treat as nothing waiting */ }
     }
 
-    return { dir, title: e.name, number, parts: partStatus(done), waiting, hasStudio };
+    const parts = partStatus(done);
+    if (parts[1] === "now" && part1 !== null) waiting = part1 === "draft" ? "Script: waiting on you" : "Script: not written yet";
+    return { dir, title: e.name, number, parts, waiting, hasStudio, part1 };
   }
 }

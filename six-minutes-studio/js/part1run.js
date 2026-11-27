@@ -3,6 +3,9 @@
 import { writeClips, writeLists, redoClip } from "./part1claude.js";
 import { sameWords, scriptLines, clipList } from "./part1script.js";
 import { suggestLines } from "./presenter.js";
+import { prefixProblem } from "./part1setup.js";
+import { openFilm } from "./store.js";
+import { join } from "./paths.js";
 
 export const BUSY = "Wait for Claude to finish.";
 export const NO_REFERENCE = "No reference script found. Set referenceScripts in .studio-settings.json.";
@@ -214,4 +217,32 @@ export function setPicks(ctx, ids) {
     await ctx.store.update((s) => { s.part1.picks = picks; });
     return picks;
   });
+}
+
+// Starts a film: checks first (nothing is created on a failure), then makes the folder and the studio state.
+export async function createFilm(host, root, input, { taken = [] } = {}) {
+  const { folder, newFolder, brief, topic, prefix, runtime, episode } = input ?? {};
+  const name = typeof newFolder === "string" ? newFolder.trim() : "";
+  if (!!folder === !!name) throw new Error("Choose a folder.");
+  if (name) {
+    if (/[\\/:*?"<>|]/.test(name)) throw new Error("A folder name can't use \\ / : * ? \" < > |.");
+    if (await host.fs.exists(join(root, name))) throw new Error(`A folder called ${name} is already there.`);
+  }
+  if (!brief) throw new Error("Choose a brief.");
+  const t = String(topic ?? "").trim();
+  if (!t) throw new Error("Add a topic.");
+  const problem = prefixProblem(prefix, taken);
+  if (problem) throw new Error(problem);
+  const ep = String(episode ?? "").trim();
+  if (!/^\d{1,4}$/.test(ep)) throw new Error("The episode number is digits only, such as 008.");
+  const dir = name ? join(root, name) : folder;
+  if (name) await host.fs.mkdir(dir);
+  const store = await openFilm(host, dir);
+  await store.update((s) => {
+    s.part1 = {
+      setup: { folder: dir, brief, topic: t, prefix, episode: ep, runtime: String(runtime ?? "").trim() || "6:00–6:45", voice: "own" },
+      drafts: [], picks: [], pickNotes: [], approvedAt: null,
+    };
+  });
+  return dir;
 }

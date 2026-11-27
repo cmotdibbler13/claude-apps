@@ -165,3 +165,38 @@ test("no reference script, missing brief", async () => {
   await s.host.fs.trash(BRIEF);
   await assert.rejects(() => writeScript(s.ctx), { message: `Couldn't read the brief: ${BRIEF}` });
 });
+
+import { createFilm } from "../js/part1run.js";
+
+test("createFilm: a new folder gets studio state with the setup", async () => {
+  const host = new FakeHost();
+  const root = "S:\\Youtube video ideas";
+  await host.fs.mkdir(root);
+  const dir = await createFilm(host, root, { newFolder: "X", brief: `${root}\\b.md`, topic: " Storms ", prefix: "storms", episode: "009", runtime: "" }, { taken: [] });
+  assert.equal(dir, `${root}\\X`);
+  const st = JSON.parse(await host.fs.read(`${root}\\X\\studio\\state.json`, "utf8"));
+  assert.deepEqual(st.part1, { setup: { folder: dir, brief: `${root}\\b.md`, topic: "Storms", prefix: "storms", episode: "009", runtime: "6:00–6:45", voice: "own" }, drafts: [], picks: [], pickNotes: [], approvedAt: null });
+});
+
+test("createFilm: an existing folder is used as is", async () => {
+  const host = new FakeHost();
+  await host.fs.mkdir(DIR);
+  const dir = await createFilm(host, "S:\\Youtube video ideas", { folder: DIR, brief: BRIEF, topic: "T", prefix: "t", episode: "1", runtime: "5:00" }, { taken: [] });
+  assert.equal(dir, DIR);
+  assert.equal(JSON.parse(await host.fs.read(`${DIR}\\studio\\state.json`, "utf8")).part1.setup.runtime, "5:00");
+});
+
+test("createFilm: failed checks create nothing", async () => {
+  const host = new FakeHost();
+  const root = "S:\\Youtube video ideas";
+  await host.fs.mkdir(`${root}\\X`);
+  const base = { brief: `${root}\\b.md`, topic: "T", prefix: "t", episode: "1" };
+  await assert.rejects(createFilm(host, root, { ...base, newFolder: "X" }, { taken: [] }), /^Error: A folder called X is already there\.$/);
+  await assert.rejects(createFilm(host, root, { ...base, newFolder: "A:B" }, { taken: [] }), /can't use/);
+  await assert.rejects(createFilm(host, root, { ...base, newFolder: "Y", prefix: "Bad Prefix" }, { taken: [] }), /Use lower-case letters, digits and _ only\./);
+  await assert.rejects(createFilm(host, root, { ...base, newFolder: "Y", prefix: "taken" }, { taken: ["taken"] }), /Another film already uses taken\./);
+  await assert.rejects(createFilm(host, root, { ...base, newFolder: "Y", topic: "  " }, { taken: [] }), /Add a topic\./);
+  await assert.rejects(createFilm(host, root, { ...base, newFolder: "Y", episode: "12345" }, { taken: [] }), /episode/i);
+  await assert.rejects(createFilm(host, root, { ...base }, { taken: [] }), /Choose a folder/);
+  assert.equal(await host.fs.exists(`${root}\\Y`), false);
+});
