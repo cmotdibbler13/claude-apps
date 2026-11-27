@@ -297,7 +297,7 @@ test("startTake presenter: locked cases throw the lock copy and write nothing", 
 const VO_WAV = DIR + "\\Film A_voiceover.wav";
 const TRPATH = DIR + "\\studio\\voiceover_transcript.json";
 const tickN = async (n = 12) => { for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r)); };
-const until = async (fn, n = 300) => { for (let i = 0; i < n && !fn(); i++) await new Promise((r) => setImmediate(r)); };
+const until = async (fn, ms = 2000) => { const end = Date.now() + ms; while (!fn() && Date.now() < end) await new Promise((r) => setTimeout(r, 0)); };
 
 // content: map of clip audio file name -> bytes the fake ffmpeg "cuts"
 async function vsetup({ content = {}, transcript = TR, ready = true } = {}) {
