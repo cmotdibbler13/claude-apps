@@ -1,7 +1,9 @@
 // Part 1 drafts, to-camera picks and the runs that make them: write, revise, redo one clip, edit, restore.
 // State: state.part1 = { setup, drafts:[{n, at, why, note, script}], picks:[{id, text, from, why}], pickNotes:[], approvedAt }.
 import { writeClips, writeLists, redoClip } from "./part1claude.js";
-import { sameWords, scriptLines, clipList } from "./part1script.js";
+import { sameWords, scriptLines, clipList, scriptStats, scriptWarnings, readingScriptText, lineScriptText } from "./part1script.js";
+import { renderPart1Handover, decisionsFrom, appendPronunciations } from "./part1handover.js";
+import { moveAside, writeSafely } from "./libraryio.js";
 import { suggestLines } from "./presenter.js";
 import { prefixProblem } from "./part1setup.js";
 import { openFilm } from "./store.js";
@@ -251,4 +253,72 @@ export async function createFilm(host, root, input, { taken = [] } = {}) {
     };
   });
   return dir;
+}
+
+// ---------- approve ----------
+
+// Moves an existing file aside (stamped name), then writes the new one.
+async function writeNew(host, path, text) {
+  await moveAside(host, path, host.now());
+  await writeSafely(host, path, text);
+}
+
+export function approvePart1(ctx) {
+  return single(ctx, async () => {
+    const { host, store, settings = {}, root } = ctx;
+    const p = part1Of(store);
+    const draft = needDraft(p);
+    const setup = p.setup;
+    if (!String(setup.episode ?? "").trim()) throw new Error("Add the episode number first.");
+    const { prefix } = setup;
+    const dir = setup.folder;
+    const script = draft.script;
+    const stats = scriptStats(script, settings);
+    const warnings = scriptWarnings(stats, setup.runtime);
+    const picks = p.picks ?? [];
+
+    const narration = join(dir, "narration");
+    const handoverDir = join(dir, "handover");
+    for (const d of [narration, handoverDir]) if (!(await host.fs.exists(d))) await host.fs.mkdir(d);
+
+    const readingPath = join(dir, `${prefix}_script.md`);
+    const linePath = join(narration, `${prefix}_line_script.txt`);
+    const handoverPath = join(handoverDir, "part1_handover.md");
+    const lineText = lineScriptText(script, { prefix, picks: picks.map((x) => x.id) });
+
+    await writeNew(host, readingPath, readingScriptText(script, { prefix, runtimeTarget: setup.runtime, stats }));
+    await writeNew(host, linePath, lineText);
+
+    const openItems = [...warnings, ...(p.pickNotes ?? [])];
+    let autocueCopy = null;
+    if (settings.autocueDir) {
+      const target = join(settings.autocueDir, `${prefix}_line_script.txt`);
+      try {
+        if (!(await host.fs.exists(settings.autocueDir))) throw new Error("folder missing");
+        await writeNew(host, target, lineText);
+        autocueCopy = target;
+      } catch {
+        openItems.push(`Copy the line script to Autocue Studio's folder by hand: ${target}`);
+      }
+    }
+
+    if (settings.pronunciationsFile) {
+      const old = await readOptional(host, settings.pronunciationsFile);
+      const next = appendPronunciations(old, setup.topic, script.pronunciations ?? []);
+      if (next !== null) await writeSafely(host, settings.pronunciationsFile, next);
+    }
+
+    const approvedAt = host.now();
+    const text = renderPart1Handover({
+      topic: setup.topic, prefix, episode: setup.episode, dir, root, brief: setup.brief,
+      files: { script: readingPath, lineScript: linePath, autocueCopy },
+      recordings: join(settings.autocueRecordings ?? "", prefix),
+      picks, pronunciations: script.pronunciations ?? [], sfx: script.sfx ?? [],
+      decisions: decisionsFrom(p.drafts, setup), openItems, approvedAt,
+    });
+    await writeNew(host, handoverPath, text);
+    await store.update((s) => { s.part1.approvedAt = approvedAt; });
+    await store.log(`Part 1 approved (draft ${draft.n})`);
+    return { handover: handoverPath, openItems };
+  });
 }

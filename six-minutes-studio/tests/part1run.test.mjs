@@ -5,7 +5,7 @@ import { openFilm } from "../js/store.js";
 import { CLIPS_INSTRUCTIONS, LISTS_INSTRUCTIONS, CLIP_INSTRUCTIONS } from "../js/part1claude.js";
 import { LINES_INSTRUCTIONS } from "../js/presenter.js";
 import { scriptLines } from "../js/part1script.js";
-import { writeScript, redoOne, editClip, editLists, restoreDraft, setPicks, currentDraft, part1Busy } from "../js/part1run.js";
+import { writeScript, redoOne, editClip, editLists, restoreDraft, setPicks, currentDraft, part1Busy, approvePart1, BUSY } from "../js/part1run.js";
 
 const DIR = "S:\\Youtube video ideas\\Film A";
 const BRIEF = `${DIR}\\brief.md`;
@@ -216,4 +216,16 @@ test("createFilm: refuses a missing folder and one with a script already started
   const st = JSON.parse(await host.fs.read(`${DIR}\\studio\\state.json`, "utf8"));
   assert.deepEqual(st.part1.drafts, [{ n: 1 }]);
   assert.equal(st.part1.approvedAt, "x");
+});
+
+test("approve is refused while another Part 1 run is going", async () => {
+  const { ctx } = await setup();
+  await writeScript(ctx);
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  ctx.host.claudeScript(async () => { await gate; throw new Error("stop"); });
+  const running = writeScript(ctx, { note: "again" }).catch(() => {});
+  await assert.rejects(() => approvePart1(ctx), new RegExp(BUSY));
+  release();
+  await running;
 });
