@@ -18,9 +18,11 @@ const mmss = (s) => {
   return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`;
 };
 
-export function prompterBar(m, actions) {
+// index: the line the previous bar showed (a repaint builds a new bar; it starts on the same line, so the caret
+// paint puts back finds its note box and a note being typed is not swapped away).
+export function prompterBar(m, actions, { index = 0 } = {}) {
   const lines = m?.lines ?? [];
-  let audio = null, idx = 0, pendingSwap = false;
+  let audio = null, idx = Math.min(Math.max(0, index | 0), Math.max(0, lines.length - 1)), pendingSwap = false;
   const slot = h("div", { class: "pbline" });
   const time = h("span", { class: "pbtime" });
   const play = h("button", { type: "button", class: "pplay" });
@@ -29,6 +31,7 @@ export function prompterBar(m, actions) {
   const el = h("div", { class: "prompter", role: "region", "aria-label": "Prompter" },
     h("div", { class: "pbctl" }, prev, play, next, time), slot);
   el.hidden = true;
+  showLine(); // before attach, so a repaint's caret restore finds the note box
 
   const seek = (t) => {
     if (!audio || t == null) return;
@@ -64,10 +67,10 @@ export function prompterBar(m, actions) {
     slot.replaceChildren(l ? lineEl(l, actions, { prefix: "pace-bar" }) : h("span", { class: "hist", text: "No lines yet." }));
     pendingSwap = false;
   }
-  // Typing in the bar's note box: the line stays until Jon leaves the box.
+  // Typing in the bar's note box: the line stays until Jon leaves the box (a focused button doesn't count).
   const typing = () => {
     const a = globalThis.document?.activeElement;
-    return !!a && a !== slot && !!slot.contains?.(a);
+    return !!a && String(a.tagName ?? a.tag ?? "").toLowerCase() === "textarea" && !!slot.contains?.(a);
   };
   function update() {
     const t = Number(audio?.currentTime) || 0;
@@ -91,10 +94,9 @@ export function prompterBar(m, actions) {
       el.hidden = !audio || !lines.length;
       if (!audio) return;
       for (const k of EVENTS) audio.addEventListener(k, update);
-      idx = lineAt(lines, Number(audio.currentTime) || 0);
-      showLine();
       update();
     },
     update,
+    index: () => idx,
   };
 }

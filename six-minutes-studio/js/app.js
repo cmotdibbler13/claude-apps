@@ -811,7 +811,12 @@ const reviewActions = {
   // Pacing review
   reviewPlayer: (file, key, label) => audioEl("review", file, key, label),
   // A new bar per paint (the old one is dropped with the old DOM); attachFollow binds it to the review's player.
-  prompter(m) { app.review.bar?.attach(null); app.review.bar = prompterBar(m, reviewActions); return app.review.bar.el; },
+  prompter(m) {
+    const old = app.review.bar;
+    old?.attach(null);
+    app.review.bar = prompterBar(m, reviewActions, { index: old?.index() ?? 0 });
+    return app.review.bar.el;
+  },
   seekReview,
   markWord(id, i) {
     if (newTake(id)) return;

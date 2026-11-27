@@ -150,3 +150,36 @@ test("attach(null) hides the bar; the same element twice binds once", () => with
   assert.equal(bar.el.hidden, true);
   assert.equal(a.listeners.timeupdate.length, 0);
 }));
+
+test("a repaint while typing in the bar keeps the line and the draft, and the note saves on blur", () => withDom(async () => {
+  const { prompterBar } = await import("../js/ui/prompter.js");
+  const calls = [];
+  const a = acts(calls);
+  const au = audio(4);
+  const bar1 = prompterBar(M, a); bar1.attach(au); fire(au, "timeupdate");
+  const ta1 = all(bar1.el, (e) => e.tag === "textarea")[0];
+  ta1.value = "needs a breath"; fire(ta1, "input");
+  // repaint: a new bar is built from the old one's line, before it is attached
+  const bar2 = prompterBar(M, a, { index: bar1.index() });
+  bar1.attach(null);
+  const ta2 = all(bar2.el, (e) => e.tag === "textarea")[0];
+  assert.ok(ta2, "the new bar shows its line's note box before attach");
+  assert.equal(ta2.value, "needs a breath");
+  globalThis.document.activeElement = ta2;      // paint put the caret back
+  au.currentTime = 8;
+  bar2.attach(au);
+  assert.equal(all(bar2.el, (e) => e.tag === "textarea")[0], ta2); // line not swapped while typing
+  globalThis.document.activeElement = null;
+  fire(ta2, "blur");
+  assert.deepEqual(calls.at(-1), ["note", "01.2", "needs a breath"]);
+}));
+
+test("a focused button in the bar (the line id) doesn't stop the bar following", () => withDom(async () => {
+  const { prompterBar } = await import("../js/ui/prompter.js");
+  const bar = prompterBar(M, acts());
+  const au = audio(4); bar.attach(au); fire(au, "timeupdate");
+  globalThis.document.activeElement = all(bar.el, (e) => hasClass(e, "pid"))[0];
+  au.currentTime = 8; fire(au, "timeupdate");
+  assert.match(textOf(bar.el), /02\.1/);
+  globalThis.document.activeElement = null;
+}));
