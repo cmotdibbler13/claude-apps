@@ -133,8 +133,13 @@ At `<root>\B-roll library\` (`S:\Youtube video ideas\B-roll library\`), with its
     in review'>", `setting`/`period` may be "".
 - Claude writes only `description, setting, period, tags, notes` (and the rejected rows' short description); Studio
   fills every other field. A Claude answer with any other key, or a missing one, is refused.
-- `broll_catalogue.md`: Studio reads the last film table's header row and writes the new film's table (or rows) with
-  the same columns, mapping them from the JSON fields (ID, what it shows = description, period, tags, notes).
+- `broll_catalogue.md` (UTF-8; Jon pasted its tail): each film table has 8 columns, in this order:
+  `| BR-596 | PS03 | used | 5.0 s | <description> | 1970s | tag, tag, tag | <notes> |`, i.e. id, shot, status,
+  duration (`5.0 s`, one decimal), description, period, tags joined with ", ", notes. Rejected rows read
+  `| BR-597 | PS03 | rejected (not copied) | – | <description> | – | tag, rejected | <notes> |` (en dash `–` for no
+  duration and for the period). A `|` inside a value is written `\|`. Studio still reads the last table's header
+  row (the column names) and copies it for a new film's table under a heading with the film's name, as the existing
+  tables have.
 
 ## Pressing it again / changes after approval
 - The state records `part2 = { approvedAt, handover, library: [BR ids] }`.
