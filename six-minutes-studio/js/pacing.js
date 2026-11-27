@@ -44,6 +44,7 @@ function put(pauses, mark) {
 // Pass `words` (lineWords) so a mark after the last word becomes the gap mark.
 export function addMark(line, { after, word, nth, size = "medium", by, take, words } = {}) {
   const l = line || {};
+  if (after !== "end" && word == null) return line;
   const end = after === "end" || (word != null && isLast(words, word, nth));
   const mark = end
     ? { key: "end", word: null, nth: null, size, by, take: take ?? l.take ?? null }
@@ -73,7 +74,7 @@ export function markState(mark, words, line, sig) {
   const found = (words || []).some((w) => norm(w.word) === norm(mark.word) && w.nth === mark.nth);
   if (!found) return "not-found";
   const made = mark.take ?? line?.take ?? null;
-  return made !== (sig ?? null) ? "take-changed" : "ok";
+  return made != null && made !== (sig ?? null) ? "take-changed" : "ok";
 }
 
 // Position in the audio as it is now (pauses included) to the line's own audio without pauses.
@@ -99,11 +100,11 @@ export function buildPauses(pacing, transcript, applied, takeSigs) {
       const state = markState(m, words, line, takeSigs?.[id]);
       if (state !== "ok") { skipped.push({ id, key: m.key, reason: state }); continue; }
       const add = PAUSE_S[m.size] ?? PAUSE_S.medium;
-      if (m.key === "end") { file.after[id] = add; continue; }
+      if (m.key === "end") { file.after[id] = Math.max(file.after[id] ?? 0, add); continue; }
       const w = words.find((x) => norm(x.word) === norm(m.word) && x.nth === m.nth);
       const next = words[w.i + 1];
-      const mid = next ? (w.end + next.start) / 2 : w.end;
-      const at = toUnpaused(mid - (sentence?.start ?? 0), applied?.[id]);
+      if (!next) { file.after[id] = Math.max(file.after[id] ?? 0, add); continue; }
+      const at = toUnpaused((w.end + next.start) / 2 - (sentence?.start ?? 0), applied?.[id]);
       (file.inside[id] ||= []).push({ at_s: at, add_s: add });
     }
     if (file.inside[id]) file.inside[id].sort((a, b) => a.at_s - b.at_s);
@@ -116,7 +117,10 @@ export function marksSig(pacing, takeSigs) {
   const out = [];
   for (const id of Object.keys(pacing?.lines || {}).sort()) {
     const marks = (pacing.lines[id].pauses || [])
-      .filter((m) => m.key === "end" || (m.take ?? pacing.lines[id].take ?? null) === (takeSigs?.[id] ?? null))
+      .filter((m) => {
+        const made = m.take ?? pacing.lines[id].take ?? null;
+        return m.key === "end" || made == null || made === (takeSigs?.[id] ?? null);
+      })
       .map((m) => [m.key, m.size])
       .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
     if (marks.length) out.push([id, marks]);

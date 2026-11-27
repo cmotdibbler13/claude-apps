@@ -145,3 +145,30 @@ test("marksSig ignores notes and skipped marks; changes with size", () => {
   const gapOnly = { lines: { "02.1": { pauses: [mk("end", null, null, "short")] } } };
   assert.equal(marksSig(staleIn, sigs), marksSig(gapOnly, sigs));
 });
+
+test("toUnpaused inside an inserted pause lands on its start", () => {
+  assert.equal(toUnpaused(2.71, [{ at_s: 2.41, add_s: 0.6 }]), 2.41);
+});
+
+test("a mark with no stored take is never take-changed", () => {
+  const words = lineWords(TR, "02.1");
+  assert.equal(markState(mk("in#1", "in", 1), words, {}, "b"), "ok");
+  const p = pacingOf([mk("in#1", "in", 1)]);
+  assert.equal(marksSig(p, { "02.1": "b" }), marksSig(p, { "02.1": "c" }));
+  assert.equal(buildPauses(p, TR, {}, { "02.1": "b" }).skipped.length, 0);
+});
+
+test("addMark without a word is ignored", () => {
+  const l = { pauses: [] };
+  assert.equal(addMark(l, { after: true, by: "jon" }), l);
+});
+
+test("an inside mark on the last word is sent as the gap, keeping the larger", () => {
+  let r = buildPauses(pacingOf([mk("he#1", "he", 1, "long")]), TR, {}, {});
+  assert.equal(r.file.after["02.1"], 1.0);
+  assert.deepEqual(r.file.inside, {});
+  r = buildPauses(pacingOf([mk("he#1", "he", 1, "short"), mk("end", null, null, "medium")]), TR, {}, {});
+  assert.equal(r.file.after["02.1"], 0.6);
+  r = buildPauses(pacingOf([mk("end", null, null, "short"), mk("he#1", "he", 1, "medium")]), TR, {}, {});
+  assert.equal(r.file.after["02.1"], 0.6);
+});
