@@ -338,3 +338,11 @@ test("withRerecord passes through null, missingScript and no pacing", () => {
   assert.equal(withRerecord(rrNar(), undefined).counts.rerecord, 0);
   assert.deepEqual(rerecordsToClear(null, {}), []);
 });
+
+test("alignScript: exact words anchor; unheard words point back; nothing before the first anchor → null", async () => {
+  const { alignScript } = await import("../js/pacing.js");
+  const ws = (...a) => a.map((word) => ({ word }));
+  assert.deepEqual(alignScript("Hello there world", ws("hello", "world")).map((x) => x.i), [0, 0, 1]);
+  assert.deepEqual(alignScript("Oh hello", ws("hello")).map((x) => x.i), [null, 0]);
+  assert.deepEqual(alignScript("", ws("a")), []);
+});

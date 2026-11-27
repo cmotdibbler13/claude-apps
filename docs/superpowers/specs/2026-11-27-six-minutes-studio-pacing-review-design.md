@@ -180,6 +180,10 @@ checked as any new take is. While a line is marked Re-record, Join counts it as 
 
 ## Constraints
 
+- **The words are always the agreed script's (Jon, 2026-11-27).** The review, the prompter bar and, later, the
+  subtitles show the line script's text exactly as it stands in the Narration list. The recogniser's transcript
+  is used only for timing (where each word starts and ends); it never replaces a word on screen or in a subtitle.
+
 - Studio is the existing Claude artifact (desktop capability); the join runs Autocue Studio's Python on
   the PC through the GPU lane like now. No new connectors, no paid generation.
 - Never delete or overwrite takes or Jon's exports; earlier outputs are moved aside as now.

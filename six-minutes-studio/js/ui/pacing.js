@@ -2,7 +2,7 @@
 // and a Re-record tick per line, Place pauses and Apply pauses. pacingModel is pure; pacingSection builds the DOM;
 // followPlayer lights the line being spoken without a re-render.
 import { h, btn, playerKey } from "./dom.js";
-import { lineWords, takeSig, markState, norm, toUnpaused, notesToPlace, newTakeIds } from "../pacing.js";
+import { lineWords, takeSig, markState, norm, toUnpaused, notesToPlace, newTakeIds, alignScript } from "../pacing.js";
 import { goodFrame } from "../mixplan.js";
 
 const SIZES = [["short", "Short"], ["medium", "Medium"], ["long", "Long"]];
@@ -23,13 +23,6 @@ const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 export function countsText(marks, rerecords) {
   const head = marks ? `${plural(marks, "pause", "pauses")} marked` : "No pauses marked";
   return rerecords ? `${head} · ${plural(rerecords, "line", "lines")} to re-record` : head;
-}
-
-// Script words as Jon wrote them, when they line up one for one with the transcript's words.
-function labels(text, words) {
-  const toks = String(text ?? "").split(/\s+/).filter(Boolean);
-  if (toks.length !== words.length) return words.map((w) => w.word);
-  return toks.every((t, i) => norm(t) === norm(words[i].word)) ? toks : words.map((w) => w.word);
 }
 
 // Tight: the last good join (frame) reported the quietest spot near the at_s sent for this mark was still loud.
@@ -79,13 +72,25 @@ export function pacingModel({ state, transcript = null, narration = null, lineSc
     };
     const pauses = line.pauses ?? [];
     const byKey = new Map(pauses.map((m) => [m.key, m]));
-    const shown = labels(sl.text, words);
-    const ws = words.map((w, i) => {
-      const key = keyOf(w.word, w.nth);
-      const m = byKey.get(key);
-      return { i, word: shown[i], key, mark: m ? markOf(m) : null, first: i === 0, last: i === words.length - 1 };
+    // Jon sees the agreed script; each word points at the recogniser word its pause goes after.
+    const toks = words.length && String(sl.text ?? "").trim() ? alignScript(sl.text, words) : words.map((w, i) => ({ word: w.word, i }));
+    const ws = toks.map((t, j) => ({ i: t.i, word: t.word, key: t.i != null ? keyOf(words[t.i].word, words[t.i].nth) : null, mark: null,
+      first: t.i == null || t.i === 0, last: j === toks.length - 1 }));
+    const wordKeys = new Set();
+    words.forEach((w, ti) => {
+      const k = keyOf(w.word, w.nth);
+      const m = byKey.get(k);
+      if (!m || !ws.length) return;
+      // after the last script word pointing at it, else the last one pointing before it, else the first
+      let at = -1;
+      ws.forEach((x, j) => { if (x.i === ti) at = j; });
+      if (at < 0) ws.forEach((x, j) => { if (x.i != null && x.i < ti) at = j; });
+      if (at < 0) at = 0;
+      if (ws[at].mark) return; // two marks on one script word: the other shows as a loose mark
+      ws[at].mark = markOf(m);
+      ws[at].markKey = k;
+      wordKeys.add(k);
     });
-    const wordKeys = new Set(ws.map((w) => w.key));
     const end = byKey.get("end");
     const lost = pauses.filter((m) => m.key !== "end" && !wordKeys.has(m.key)).map(markOf);
     if (line.rerecord) rerecords++;
@@ -163,7 +168,7 @@ export function lineEl(l, actions, { prefix = "pace" } = {}) {
   const text = [];
   if (l.words.length) {
     for (const w of l.words) {
-      text.push(h("button", { type: "button", class: "pword", title: l.newTake ? COPY.newTake : "Add a pause after this word", disabled: l.newTake,
+      text.push(h("button", { type: "button", class: "pword", title: l.newTake ? COPY.newTake : w.i == null ? "Nothing heard before this word yet" : "Add a pause after this word", disabled: l.newTake || w.i == null,
         onclick: () => actions.markWord(l.id, w.i) }, w.word));
       if (w.mark) {
         text.push(markButton(l.id, w.mark, `Pause after “${w.word}”`, actions));

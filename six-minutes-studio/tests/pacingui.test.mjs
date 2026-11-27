@@ -364,3 +364,34 @@ test("while Apply pauses runs, the Join, Fit and Mix buttons are held", () => {
   assert.equal(held[1].canUseExport, false);
   assert.equal(held[2].canApprove, false);
 });
+
+// The words shown are always the agreed script's; the recogniser's words are only used for timing.
+const MISHEARD = {
+  sentences: [{ sentence: "01.1", start: 0, end: 4 }],
+  words: [W("01.1", "Scara", 0, 0.3), W("01.1", "Bray", 0.35, 0.6), W("01.1", "is", 0.65, 0.7), W("01.1", "a", 0.72, 0.75),
+    W("01.1", "Pictish", 0.8, 1.2), W("01.1", "village", 1.25, 1.6), W("01.1", "four", 1.7, 1.9), W("01.1", "thousand", 1.95, 2.3), W("01.1", "years", 2.35, 2.7), W("01.1", "old.", 2.75, 3.1)],
+};
+const SCRIPT1 = { lines: [{ id: "01.1", text: "Skara Brae is a Pictish village 4,000 years old." }] };
+
+test("the lines show the agreed script, not the recogniser's words", () => {
+  const m = pacingModel({ state: film(), transcript: MISHEARD, narration: { rows: [row("01.1")] }, lineScript: SCRIPT1, sig: null });
+  assert.deepEqual(m.lines[0].words.map((w) => w.word), ["Skara", "Brae", "is", "a", "Pictish", "village", "4,000", "years", "old."]);
+});
+
+test("each script word points at the right recogniser word for its pause", () => {
+  const m = pacingModel({ state: film(), transcript: MISHEARD, narration: { rows: [row("01.1")] }, lineScript: SCRIPT1, sig: null });
+  const at = Object.fromEntries(m.lines[0].words.map((w) => [w.word, w.i]));
+  assert.equal(at.Skara, 0);      // misheard "Scara"
+  assert.equal(at.Brae, 1);       // misheard "Bray"
+  assert.equal(at.Pictish, 4);
+  assert.equal(at["4,000"], 7);   // "four thousand": the pause goes after "thousand"
+  assert.equal(at.years, 8);
+});
+
+test("a mark on a recogniser word shows after the script word that points at it", () => {
+  const pacing = { lines: { "01.1": { take: SIG("01.1"), pauses: [{ key: "thousand#1", word: "thousand", nth: 1, size: "long", by: "jon", take: SIG("01.1") }] } } };
+  const m = pacingModel({ state: film({ pacing }), transcript: MISHEARD, narration: { rows: [row("01.1")] }, lineScript: SCRIPT1, sig: null });
+  const marked = m.lines[0].words.filter((w) => w.mark).map((w) => w.word);
+  assert.deepEqual(marked, ["4,000"]);
+  assert.equal(m.lines[0].lost.length, 0);
+});

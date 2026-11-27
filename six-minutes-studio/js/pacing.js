@@ -261,3 +261,40 @@ export function rerecordsToClear(narration, pacing) {
     return at != null && r.takeS != null && r.takeS * 1000 > at;
   }).map((r) => r.id);
 }
+
+
+// The agreed script's words, each pointing at the recogniser word its pause goes after (or null: nothing before it).
+// The script is what Jon sees; the recogniser's words are used only for timing. Words that match (by norm) are
+// anchors; between anchors, the script words share out the recogniser words in that stretch in order, each taking
+// the end of its share ("4,000" against "four thousand" points at "thousand"). With nothing heard in a stretch,
+// its script words point at the last anchor before them.
+export function alignScript(text, words) {
+  const toks = String(text ?? "").split(/\s+/).filter(Boolean);
+  const a = toks.map(norm), b = (words ?? []).map((w) => norm(w.word));
+  const n = a.length, m = b.length;
+  const L = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) {
+    L[i][j] = a[i] && a[i] === b[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  }
+  const match = new Array(n).fill(null);
+  for (let i = 0, j = 0; i < n && j < m;) {
+    if (a[i] && a[i] === b[j]) { match[i] = j; i++; j++; }
+    else if (L[i + 1][j] >= L[i][j + 1]) i++;
+    else j++;
+  }
+  const out = toks.map((word, i) => ({ word, i: match[i] }));
+  let prevTok = -1, prevW = -1;
+  const fill = (from, to, wFrom, wTo) => { // script tokens [from, to) share recogniser words [wFrom, wTo)
+    const cnt = to - from, have = wTo - wFrom;
+    for (let k = 0; k < cnt; k++) {
+      out[from + k].i = have > 0 ? wFrom + Math.max(0, Math.ceil(((k + 1) * have) / cnt) - 1) : (prevW >= 0 ? prevW : null);
+    }
+  };
+  for (let i = 0; i <= n; i++) {
+    if (i < n && match[i] == null) continue;
+    const wNext = i < n ? match[i] : m;
+    if (i - prevTok > 1) fill(prevTok + 1, i, prevW + 1, wNext);
+    if (i < n) { prevTok = i; prevW = match[i]; }
+  }
+  return out;
+}
