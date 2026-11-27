@@ -300,10 +300,10 @@ test("withRerecord marks a line whose tick is newer than its take, with the note
   assert.equal(out.rows[0].status, "rerecord");
   assert.equal(out.rows[0].checkedStatus, "ok");
   assert.deepEqual(out.rows[0].flags, ["too fast"]);
-  assert.equal(out.rows[2].status, "rerecord");
-  assert.deepEqual(out.rows[2].flags, ["Marked to re-record"]);
+  assert.equal(out.rows[2].status, "missing");
+  assert.deepEqual(out.rows[2].flags, []);
   assert.equal(out.rows[1].status, "flagged");
-  assert.equal(out.counts.rerecord, 2);
+  assert.equal(out.counts.rerecord, 1);
   assert.equal(n.rows[0].status, "ok");
   assert.equal(n.counts.rerecord, undefined);
 });

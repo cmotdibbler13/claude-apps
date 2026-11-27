@@ -227,7 +227,7 @@ export function withRerecord(narration, pacing) {
   let count = 0;
   const rows = narration.rows.map((r) => {
     const at = tickOf(pacing, r.id);
-    if (at == null || (r.takeS != null && at <= r.takeS * 1000)) return r;
+    if (at == null || r.status === "missing" || !r.file || (r.takeS != null && at <= r.takeS * 1000)) return r;
     count++;
     return { ...r, status: "rerecord", checkedStatus: r.status, flags: [pacing.lines[r.id].note || "Marked to re-record"] };
   });

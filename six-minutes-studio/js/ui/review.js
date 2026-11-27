@@ -77,7 +77,7 @@ export function narrationModel(n, playing = null) {
     rows: n.rows.map((r) => ({ id: r.id, text: snip(r.text), full: r.text, status: r.status, chip: STATUS_LABEL[r.status], flag: r.flags.join("; "), notes: r.notes.join("; "), file: r.file ?? null, playing: !!r.file && r.file === playing,
       takeS: r.takeS ?? null,
       // Jon listened and it's fine: offered on any recorded take that isn't already OK.
-      canOk: !!r.file && !["ok", "jon", "missing"].includes(r.status),
+      canOk: !!r.file && !["ok", "jon", "missing", "rerecord"].includes(r.status),
       canUndoOk: r.status === "jon" })),
   };
 }

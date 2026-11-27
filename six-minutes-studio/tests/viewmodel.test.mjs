@@ -795,3 +795,10 @@ test("mix: one Re-record line makes it Join anyway (1 not OK)", () => {
   assert.equal(j.run.label, "Join anyway (1 not OK)");
   assert.equal(j.flagged, "Not OK: 01.1 rerecord");
 });
+
+test("mix: a ticked missing line still locks Join", async () => {
+  const { withRerecord } = await import("../js/pacing.js");
+  const n = withRerecord(narr([nrow("01.1", "missing"), nrow("01.2", "ok")]), { lines: { "01.1": { rerecord: { at: 5 } } } });
+  const j = step(mm(mstate(), { narration: n }), "VOICEOVER");
+  assert.match(j.lock, /^Record these first: 01\.1/);
+});

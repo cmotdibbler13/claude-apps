@@ -246,3 +246,9 @@ test("Re-record shows in the counts, the chip and the reason", async () => {
   assert.equal(m.chip, "Re-record");
   assert.equal(m.flag, "too fast");
 });
+
+test("a Re-record row does not offer Sounds OK", async () => {
+  const { narrationModel } = await import("../js/ui/review.js");
+  const n = { counts: { total: 1, recorded: 1 }, rows: [{ id: "a", text: "x", status: "rerecord", flags: ["n"], notes: [], file: "f.wav", takeS: 1 }] };
+  assert.equal(narrationModel(n).rows[0].canOk, false);
+});
