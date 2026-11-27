@@ -1,6 +1,6 @@
 # Six Minutes Studio: pacing review in the mix preview
 
-Status: draft for Jon's approval. Date: 2026-11-27.
+Status: draft for Jon's approval (builder check done). Date: 2026-11-27.
 
 ## Why
 
@@ -59,7 +59,8 @@ the player:
 
 ## Anti-goals
 
-- A pause that clips the end of a word or starts mid-breath: worse than no pause.
+- A pause that clips the end of a word without telling Jon. (Where words run together it may, so it is
+  flagged for him to hear.)
 - Claude changing the audio from a note Jon hasn't seen placed.
 - Losing Jon's marks or notes on a rejoin, a re-record, or a Studio restart.
 - Overwriting Jon's own Stem Remixer export without asking.
@@ -140,8 +141,12 @@ A new optional argument `--pauses <file.json>`:
 ```
 
 - Inside: after trimming and stall tightening, the line's part has `add_s` of digital silence inserted at
-  `at_s`, moved to the quietest 10 ms within ±0.15 s of it (never into a word), with the same short
-  crossfades the stall tightening uses so there is no click.
+  `at_s`, moved to the quietest 10 ms within ±0.15 s of it, with the same short crossfades the stall
+  tightening uses so there is no click.
+- **Words run together (Jon's decision).** When there is no real silence there (the quietest 10 ms is
+  still above the line's voice threshold), the pause goes in anyway at that quietest point, and the join
+  reports it: `"tight": [{"id": "02.1", "at_s": …}]` in its done line. Studio shows that mark with
+  "Tight cut: have a listen" so Jon checks it, and he can remove it or tick Re-record.
 - After: `add_s` is added to whatever gap follows that line (sentence, clip, section or title hold).
 - The timings CSV and transcript are written from the result as now, so every later step (SFX starts,
   fit targets, the rolling lines) sees the new times.
