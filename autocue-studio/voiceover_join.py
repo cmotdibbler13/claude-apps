@@ -30,7 +30,7 @@ Take files are named <project>_<id>.wav, where project is the line script's
 The command (main) joins a film's takes:
 
   python voiceover_join.py --script <line script> --takes <dir> --out <dir>
-      [--allow-flagged] [--model medium.en] [--device auto]
+      [--allow-flagged] [--pauses <json>] [--model medium.en] [--device auto]
 
 It prints one JSON object per line: {"progress": 0..1, "text": ...} while it
 works, then {"done": true, ...} or {"error": ...}. Exit codes: 0 done, 2
@@ -332,18 +332,79 @@ def limit(x, rate=RATE, ceiling=LIMIT, attack_ms=LIMIT_ATTACK_MS,
     return x * np.minimum(smooth, need)
 
 
-def build_clip(parts, rate=RATE):
-    """Join a clip's sentence parts: each at -13.5 dB RMS, 0.55 s of silence
-    between them, then the limiter."""
+PAUSE_SEARCH_S = 0.15   # how far from the asked time a pause may move to a quiet spot
+PAUSE_WINDOW_S = 0.010
+
+
+def insert_pauses(x, pauses, rate=RATE):
+    """Add silence inside a part. pauses = [{at_s, add_s}], at_s in the part's
+    time before any insertion. Each pause moves to the quietest 10 ms window
+    centred within 0.15 s of at_s (the nearest one on a tie), the part is
+    split there (the left side fades out and the right side in over 5 ms,
+    equal power) and add_s of zeros goes between. Returns (y, tight) where
+    tight lists the at_s (before insertion) of the pauses whose quietest spot
+    is still voice, so the cut lands in speech."""
+    x = _as_float(x)
+    pauses = sorted(pauses or [], key=lambda p: p["at_s"])
+    if not pauses or not len(x):
+        return x, []
+    win = max(1, int(round(PAUSE_WINDOW_S * rate)))
+    half = win // 2
+    xfade = int(round(STALL_XFADE_S * rate))
+    sums = np.concatenate([[0.0], np.cumsum(x ** 2)])
+    threshold = max(VOICE_MIN_DBFS, _noise_dbfs(x, rate) + VOICE_OVER_NOISE_DB)
+    step = max(1, int(round(0.001 * rate)))
+    reach = int(round(PAUSE_SEARCH_S * rate))
+    cuts, tight = [], []
+    for p in pauses:
+        want = int(round(float(p["at_s"]) * rate))
+        lo = min(max(want - reach, half), max(len(x) - (win - half), half))
+        hi = max(min(want + reach, len(x) - (win - half)), lo)
+        centres = np.arange(lo, hi + 1, step)
+        power = (sums[centres + (win - half)] - sums[centres - half]) / win
+        order = np.lexsort((np.abs(centres - want), power))
+        best = int(centres[order[0]])
+        if 10 * math.log10(max(float(power[order[0]]), 1e-20)) >= threshold:
+            tight.append(float(p["at_s"]))
+        cuts.append((best, int(round(float(p["add_s"]) * rate))))
+    theta = np.linspace(0.0, np.pi / 2, xfade) if xfade else np.zeros(0)
+    x = x.copy()
+    pieces, pos = [], 0
+    for best, add in cuts:
+        best = max(best, pos)
+        left = x[pos:best]
+        k = min(xfade, len(left))
+        if k:
+            left[len(left) - k:] *= np.cos(theta[:k])
+        pieces += [left, np.zeros(add)]
+        pos = best
+        k = min(xfade, len(x) - best)
+        if k:
+            x[best:best + k] *= np.sin(theta[:k])
+    pieces.append(x[pos:])
+    return np.concatenate(pieces), tight
+
+
+def build_clip(parts, rate=RATE, inside=None, after=None):
+    """Join a clip's sentence parts: each at -13.5 dB RMS, then its inside
+    pauses (inside[i], a list of {at_s, add_s}), then 0.55 s of silence plus
+    after[i] before the next part, then the limiter. Returns the audio, or
+    (audio, tight) when inside is given, with tight[i] the at_s list of the
+    pauses of part i that cut into speech."""
     if not parts:
-        return np.zeros(0)
-    gap = np.zeros(int(round(SENTENCE_GAP_S * rate)))
-    pieces = []
+        return (np.zeros(0), []) if inside is not None else np.zeros(0)
+    pieces, tight = [], []
     for i, p in enumerate(parts):
         if i:
-            pieces.append(gap)
-        pieces.append(set_rms(p, PART_RMS_DB))
-    return limit(np.concatenate(pieces), rate)
+            extra = after[i - 1] if after and after[i - 1] else 0.0
+            pieces.append(np.zeros(int(round((SENTENCE_GAP_S + extra) * rate))))
+        p = set_rms(p, PART_RMS_DB)
+        if inside is not None:
+            p, t = insert_pauses(p, inside[i], rate)
+            tight.append(t)
+        pieces.append(p)
+    y = limit(np.concatenate(pieces), rate)
+    return (y, tight) if inside is not None else y
 
 
 def level_clip(x, rate=RATE, target_db=CLIP_RMS_DB):
@@ -365,14 +426,14 @@ def level_clip(x, rate=RATE, target_db=CLIP_RMS_DB):
 
 # ----------------------------------------------------------------- assembly ----
 
-def assemble(clips, sections, project="", rate=RATE, title_hold_s=None):
+def assemble(clips, sections, project="", rate=RATE, title_hold_s=None, after=None):
     """Lay clips end to end in script order. clips = [(clip_id, audio)],
     sections = the section of each clip. 0.6 s between clips in a section,
     1.2 s across a section change, and a 0.5 s tail. With title_hold_s, the
     first section change (the end of the cold open, where the title card
     sits) gets that gap instead of 1.2 s. Returns (x, timings)
     with timings = [{clip, section, name, start_s, end_s}], where name is
-    <project>_<clip>."""
+    <project>_<clip>. after[i] seconds are added to the gap after clip i."""
     if len(clips) != len(sections):
         raise ValueError("one section per clip")
     pieces, timings, pos, changes = [], [], 0, 0
@@ -382,6 +443,8 @@ def assemble(clips, sections, project="", rate=RATE, title_hold_s=None):
             if section != sections[i - 1]:
                 changes += 1
                 gap = title_hold_s if (changes == 1 and title_hold_s is not None) else SECTION_GAP_S
+            if after and after[i - 1]:
+                gap += after[i - 1]
             g = int(round(gap * rate))
             pieces.append(np.zeros(g))
             pos += g
@@ -687,6 +750,9 @@ def _parser():
                    help="join takes with no speech found instead of refusing")
     p.add_argument("--title-hold", type=float, default=TITLE_HOLD_S,
                    help="seconds of silence after the cold open for the title card (default 6)")
+    p.add_argument("--pauses", default=None,
+                   help="a JSON file of extra silence: {\"inside\": {id: [{at_s, add_s}]}, "
+                        "\"after\": {id: seconds}}")
     p.add_argument("--model", default=None,
                    help="speech model (default: autocue_settings.json, else medium.en)")
     p.add_argument("--device", default=None,
@@ -698,6 +764,28 @@ def _make_transcriber(args):
     settings = take_checks.load_settings(os.path.dirname(os.path.abspath(__file__)))
     return take_checks.WhisperTranscriber(args.model or settings["check_model"],
                                           args.device or settings["check_device"])
+
+
+def _read_pauses(path):
+    """(inside, after) from a --pauses file: {id: [{at_s, add_s}]} and
+    {id: seconds}; missing keys mean none, non-positive pauses are dropped."""
+    if not path:
+        return {}, {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            raise ValueError("not an object")
+        inside = {str(k): [{"at_s": max(0.0, float(p["at_s"])), "add_s": float(p["add_s"])}
+                           for p in v if float(p["add_s"]) > 0]
+                  for k, v in (data.get("inside") or {}).items()}
+        after = {str(k): float(v) for k, v in (data.get("after") or {}).items()
+                 if float(v) > 0}
+    except OSError as e:
+        raise Refused(f"Could not read the pauses file: {e}") from None
+    except (ValueError, TypeError, KeyError, AttributeError) as e:
+        raise Refused(f"The pauses file is not valid: {e}") from None
+    return ({k: v for k, v in inside.items() if v}, after)
 
 
 def join(args, transcriber=None):
@@ -712,6 +800,7 @@ def join(args, transcriber=None):
     if not os.path.isdir(args.takes):
         raise Refused(f"Takes folder not found: {args.takes}")
 
+    inside_map, after_map = _read_pauses(args.pauses)
     plan = plan_join((project, lines), _take_files(args.takes, args.out), project=project)
     if plan["missing"]:
         raise Refused("Missing takes: " + ", ".join(plan["missing"]))
@@ -738,21 +827,34 @@ def join(args, transcriber=None):
     if silent and not args.allow_flagged:
         raise Refused("No speech found in takes: " + ", ".join(silent), silent=silent)
 
-    clips = [(c["clip"], level_clip(build_clip([parts[i] for i in c["ids"]])))
-             for c in plan["clips"]]
+    clips, tight, clip_after = [], [], []
+    n_inside = n_after = 0
+    for c in plan["clips"]:
+        ins = [list(inside_map.get(i, [])) for i in c["ids"]]
+        aft = [after_map.get(i, 0.0) for i in c["ids"]]
+        audio, found = build_clip([parts[i] for i in c["ids"]], inside=ins, after=aft[:-1])
+        clips.append((c["clip"], level_clip(audio)))
+        clip_after.append(aft[-1])
+        n_inside += sum(len(p) for p in ins)
+        n_after += sum(1 for a in aft if a)
+        for line_id, at_list in zip(c["ids"], found):
+            tight += [{"id": line_id, "at_s": round(a, 3)} for a in at_list]
     x, timings = assemble(clips, [c["section"] for c in plan["clips"]], project=project,
-                          title_hold_s=args.title_hold)
+                          title_hold_s=args.title_hold, after=clip_after)
 
     # Where each sentence part sits in the voiceover (build_clip and
-    # level_clip keep lengths, so the offsets follow from the part lengths).
-    gap = int(round(SENTENCE_GAP_S * RATE))
+    # level_clip keep lengths, so the offsets follow from the part lengths,
+    # the silence inserted inside them and the gaps after them).
     placed = []
     for c, t in zip(plan["clips"], timings):
         pos = int(round(t["start_s"] * RATE))
-        for line_id in c["ids"]:
-            m = len(parts[line_id])
+        for k, line_id in enumerate(c["ids"]):
+            added = sum(int(round(float(p["add_s"]) * RATE))
+                        for p in inside_map.get(line_id, []))
+            m = len(parts[line_id]) + added
             placed.append((line_id, x[pos:pos + m], pos / RATE))
-            pos += m + gap
+            extra = after_map.get(line_id, 0.0) if k < len(c["ids"]) - 1 else 0.0
+            pos += m + int(round((SENTENCE_GAP_S + extra) * RATE))
 
     if transcriber is None:
         transcriber = _make_transcriber(args)
@@ -766,7 +868,8 @@ def join(args, transcriber=None):
     done = {"done": True, "wav": paths["wav"], "csv": paths["csv"],
             "transcript": paths["transcript"], "length_s": round(len(x) / RATE, 3),
             "tightened": tightened, "extra": plan["extra"], "clips": len(clips),
-            "silent": silent, "duplicates": plan["duplicates"], "moved_aside": moved}
+            "silent": silent, "duplicates": plan["duplicates"], "moved_aside": moved,
+            "tight": tight, "pauses": {"inside": n_inside, "after": n_after}}
     used = getattr(transcriber, "device_used", None)
     if used:
         done["transcribed_on"] = used

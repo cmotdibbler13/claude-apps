@@ -679,6 +679,64 @@ class JoinCommandTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("error", json.loads(buf.getvalue().splitlines()[-1]))
 
+    def pauses_file(self, data):
+        path = os.path.join(self.dir, "pauses.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        return path
+
+    def test_no_pauses_is_unchanged(self):
+        code, lines = self.run_join()
+        self.assertEqual(code, 0)
+        done0 = lines[-1]
+        with open(done0["wav"], "rb") as fh:
+            wav0 = fh.read()
+        with open(done0["csv"], encoding="utf-8") as fh:
+            csv0 = fh.read()
+        self.assertEqual(done0["tight"], [])
+        self.assertEqual(done0["pauses"], {"inside": 0, "after": 0})
+        code, lines = self.run_join("--pauses", self.pauses_file({}))
+        self.assertEqual(code, 0)
+        with open(lines[-1]["wav"], "rb") as fh:
+            self.assertEqual(fh.read(), wav0)
+        with open(lines[-1]["csv"], encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), csv0)
+        self.assertEqual(lines[-1]["pauses"], {"inside": 0, "after": 0})
+
+    def test_done_line_reports_tight_and_counts(self):
+        path = self.pauses_file({"inside": {"01.1": [{"at_s": 0.3, "add_s": 0.4}]},
+                                 "after": {"01.2": 0.7}})
+        code, lines = self.run_join("--pauses", path)
+        self.assertEqual(code, 0, lines[-1])
+        done = lines[-1]
+        self.assertEqual(done["pauses"], {"inside": 1, "after": 1})
+        self.assertIsInstance(done["tight"], list)
+        self.assertEqual([t["id"] for t in done["tight"]], ["01.1"])   # a steady tone: no gap
+        _, base = self.run_join()
+        self.assertAlmostEqual(done["length_s"] - base[-1]["length_s"], 1.1, delta=0.002)
+
+    def test_transcript_offsets_follow_inside_and_after_gaps(self):
+        _, base = self.run_join()
+        with open(base[-1]["transcript"], encoding="utf-8") as fh:
+            t0 = json.load(fh)["sentences"]
+        path = self.pauses_file({"inside": {"01.1": [{"at_s": 0.3, "add_s": 0.4}]},
+                                 "after": {"01.1": 0.25}})
+        code, lines = self.run_join("--pauses", path)
+        self.assertEqual(code, 0, lines[-1])
+        with open(lines[-1]["transcript"], encoding="utf-8") as fh:
+            t1 = json.load(fh)["sentences"]
+        self.assertAlmostEqual(t1[0]["end"] - t0[0]["end"], 0.4, delta=0.002)
+        self.assertAlmostEqual(t1[1]["start"] - t0[1]["start"], 0.65, delta=0.002)
+        self.assertAlmostEqual(t1[1]["end"] - t0[1]["end"], 0.65, delta=0.002)
+
+    def test_a_broken_pauses_file_is_refused(self):
+        path = os.path.join(self.dir, "bad.json")
+        with open(path, "w") as fh:
+            fh.write("[1, 2")
+        code, lines = self.run_join("--pauses", path)
+        self.assertEqual(code, 2)
+        self.assertIn("error", lines[-1])
+
 
 class TranscriptForTest(unittest.TestCase):
     def test_each_part_is_offset_to_its_place(self):
@@ -707,6 +765,73 @@ class TimecodeTest(unittest.TestCase):
         self.assertEqual(vj.timecode(65.456), "01:05.46")
         self.assertEqual(vj.timecode(59.999), "01:00.00")
         self.assertEqual(vj.timecode(6125.5), "102:05.50")
+
+
+def _gap_part():
+    return np.concatenate([tone(0.5), silence(0.08), tone(0.5)])
+
+
+def _first_silent_run_start(y, floor_db=-60.0, after_s=0.45):
+    """Start (s) of the first run of 1 ms frames below floor_db after after_s."""
+    n = RATE // 1000
+    db = take_checks._frame_db(take_checks._frames(np.asarray(y), n))
+    quiet = np.flatnonzero(db < floor_db)
+    return quiet[quiet >= int(after_s * 1000)][0] / 1000.0
+
+
+class TestPauses(unittest.TestCase):
+    def test_inside_pause_adds_silence_at_the_gap(self):
+        x = _gap_part()
+        y, tight = vj.insert_pauses(x, [{"at_s": 0.54, "add_s": 0.6}], RATE)
+        self.assertEqual(len(y), len(x) + round(0.6 * RATE))
+        mid = y[int(0.5 * RATE):int(1.18 * RATE)]
+        self.assertLess(vj.rms_db(mid), -60.0)
+        self.assertLess(np.max(np.abs(mid)), 10 ** (-60 / 20))
+        self.assertEqual(tight, [])
+
+    def test_inside_pause_moves_to_the_quietest_point(self):
+        x = _gap_part()
+        y, tight = vj.insert_pauses(x, [{"at_s": 0.40, "add_s": 0.6}], RATE)
+        self.assertEqual(len(y), len(x) + round(0.6 * RATE))
+        start = _first_silent_run_start(y)
+        self.assertGreaterEqual(start, 0.5 - 0.002)
+        self.assertLessEqual(start, 0.58)
+        self.assertEqual(tight, [])
+
+    def test_words_run_together_still_get_the_pause_flagged(self):
+        x = np.concatenate([noise(0.1), tone(1.2), noise(0.1)])
+        y, tight = vj.insert_pauses(x, [{"at_s": 0.7, "add_s": 0.6}], RATE)
+        self.assertEqual(len(y), len(x) + round(0.6 * RATE))
+        self.assertEqual(len(tight), 1)
+        self.assertAlmostEqual(tight[0], 0.7, delta=0.15)
+
+    def test_several_pauses_shift_by_the_silence_already_inserted(self):
+        x = np.concatenate([tone(0.5), silence(0.08), tone(0.5), silence(0.08), tone(0.5)])
+        y, tight = vj.insert_pauses(x, [{"at_s": 1.12, "add_s": 0.3},
+                                        {"at_s": 0.54, "add_s": 0.2}], RATE)
+        self.assertEqual(len(y), len(x) + round(0.5 * RATE))
+        self.assertEqual(tight, [])
+        db = take_checks._frame_db(take_checks._frames(y, RATE // 1000))
+        runs = [(a, b) for a, b in take_checks._runs(db < -60.0) if b - a > 150]
+        self.assertEqual(len(runs), 2)
+        self.assertGreater(runs[0][1] - runs[0][0], 270)    # 0.08 + 0.2
+        self.assertGreater(runs[1][1] - runs[1][0], 370)    # 0.08 + 0.3
+
+    def test_after_gap_adds_to_sentence_and_clip_gaps(self):
+        a, b = tone(0.5), tone(0.4)
+        base = vj.build_clip([a, b])
+        longer = vj.build_clip([a, b], after=[0.3, 0.0])
+        self.assertEqual(len(longer) - len(base), round(0.3 * RATE))
+        clips = [("01", np.ones(RATE)), ("02", np.ones(RATE))]
+        _, t0 = vj.assemble(clips, ["A", "A"], rate=RATE)
+        _, t1 = vj.assemble(clips, ["A", "A"], rate=RATE, after=[0.5, 0])
+        self.assertAlmostEqual(t1[1]["start_s"] - t0[1]["start_s"], 0.5, places=6)
+        self.assertAlmostEqual(t1[0]["start_s"], t0[0]["start_s"], places=6)
+
+    def test_build_clip_without_inside_keeps_its_single_return(self):
+        self.assertIsInstance(vj.build_clip([tone(0.3)]), np.ndarray)
+        y, tight = vj.build_clip([tone(0.3)], inside=[[]])
+        self.assertEqual(tight, [[]])
 
 
 if __name__ == "__main__":
