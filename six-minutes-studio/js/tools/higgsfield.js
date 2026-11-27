@@ -126,7 +126,7 @@ export function makeHiggsfieldRunner({ settings = DEFAULT_SETTINGS, sleep = real
           try { audioSig = await audioSigOf(host, clipAudioFile(out), end - start); } catch { audioSig = undefined; }
           return { ...r, meta: { hfId: jobId, ...(audioSig ? { audioSig } : {}) } };
         }
-        return r;
+        return { ...r, meta: { hfId: jobId } };
       }
       // Every job has ended but none succeeded: say so now instead of polling to the 30 min cap.
       if (p?.all_terminal === true) throw new Error(`Higgsfield job ${status || "ended"} without a result${error ? `: ${error}` : ""}`);

@@ -373,3 +373,15 @@ test("presenter: ffmpeg exits 0 but writes no file: fails before upload and gene
   await assert.rejects(t.runner.start(pjob(), t.ctx), /ffmpeg/);
   assert.ok(!t.calls.some((c) => c.t === "media_upload" || c.t === "generate_video"));
 });
+
+test("b-roll and line art results carry hfId, including on resume", async () => {
+  for (const kind of ["broll", "lineart"]) {
+    const ext = kind === "broll" ? ".mp4" : ".png";
+    const { runner, ctx } = setup({ mcp: (t) => t === "jobs_wait" ? { status: "completed", url: "https://x.test/a" + ext } : { job_id: UUID } });
+    const r = await runner.start(job(kind), ctx);
+    assert.deepEqual(r.meta, { hfId: UUID }, kind);
+    const s2 = setup({ mcp: () => ({ status: "completed", url: "https://x.test/a" + ext }) });
+    const r2 = await s2.runner.resume(job(kind, { jobRef: UUID }), s2.ctx);
+    assert.deepEqual(r2.meta, { hfId: UUID }, kind + " resume");
+  }
+});
