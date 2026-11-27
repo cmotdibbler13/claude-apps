@@ -324,7 +324,7 @@ const setSig = (store, id, sig) => store.update((d) => { d.assets.find((x) => x.
 const mkTake = (store, id, status, extra = {}) => store.update((d) => {
   const a = d.assets.find((x) => x.id === id); a.takes = [{ n: 1, status, ...extra }]; a.chosen = 1;
 });
-const CHK = (id) => `check_${id}_audio.wav`;
+const CHK = (id) => `check_${id}_audio.mp3`;
 
 test("checkClipAudio: unchanged audio sets no flag", async () => {
   const { ctx, store, sigOf, host } = await vsetup({ content: { [CHK("TC-01")]: "AAA" } });
@@ -332,7 +332,7 @@ test("checkClipAudio: unchanged audio sets no flag", async () => {
   await checkClipAudio(ctx);
   assert.equal(store.state.assets[0].voiceoverChanged, undefined);
   assert.equal(host.cuts.length, 1);
-  assert.ok(host.cuts[0].some((a) => a.endsWith("\\studio\\presenter\\check_TC-01_audio.wav")));
+  assert.ok(host.cuts[0].some((a) => a.endsWith("\\studio\\presenter\\check_TC-01_audio.mp3")));
 });
 
 test("checkClipAudio: changed audio flags the clip, rewrites waiting; a later match clears it", async () => {

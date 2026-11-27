@@ -337,9 +337,9 @@ test("presenter: cuts audio with ffmpeg, uploads, generate_video with exact para
   const t = setup({ mcp: pmcp(), spawn: ffmpegSpawn() });
   const r = await t.runner.start(pjob(), t.ctx);
   const ff = t.spawns.find((s) => s.cmd === "ffmpeg");
-  assert.deepEqual(ff.args, ["-y", "-i", "C:\\v\\vo.wav", "-ss", "1.5", "-to", "8.7", "-af", "apad=whole_dur=8", "-ar", "48000", PRES + "_audio.wav"]);
+  assert.deepEqual(ff.args, ["-y", "-ss", "1.5", "-to", "8.7", "-i", "C:\\v\\vo.wav", "-af", "apad=whole_dur=8", "-ar", "48000", "-c:a", "libmp3lame", "-b:a", "192k", PRES + "_audio.mp3"]);
   const up = t.calls.find((c) => c.t === "media_upload");
-  assert.deepEqual(up.i, { files: [{ filename: "TC-01_t1_audio.wav", content_type: "audio/wav" }] });
+  assert.deepEqual(up.i, { files: [{ filename: "TC-01_t1_audio.mp3", content_type: "audio/mpeg" }] });
   const gen = t.calls.find((c) => c.t === "generate_video");
   assert.deepEqual(gen.i, { params: { model: "wan2_7", resolution: "1080p", aspect_ratio: "16:9", duration: 8, prompt: "PROMPT", medias: [{ value: "hf-p", role: "start_image" }, { value: "aud1", role: "audio_references" }], use_unlim: false } });
   assert.ok(t.calls.findIndex((c) => c.t === "generate_video") > t.calls.findIndex((c) => c.t === "media_confirm"));
@@ -359,7 +359,7 @@ test("presenter: an upload failure fails before generate_video; so does an ffmpe
 
 test("clipAudioArgs and audioSigOf", async () => {
   const { clipAudioArgs, audioSigOf } = await import("../js/tools/clipaudio.js");
-  assert.deepEqual(clipAudioArgs({ wav: "a.wav", start: 1, end: 2, seconds: 2, out: "o" }), ["-y", "-i", "a.wav", "-ss", "1", "-to", "2", "-af", "apad=whole_dur=2", "-ar", "48000", "o_audio.wav"]);
+  assert.deepEqual(clipAudioArgs({ wav: "a.wav", start: 1, end: 2, seconds: 2, out: "o" }), ["-y", "-ss", "1", "-to", "2", "-i", "a.wav", "-af", "apad=whole_dur=2", "-ar", "48000", "-c:a", "libmp3lame", "-b:a", "192k", "o_audio.mp3"]);
   const host = new FakeHost();
   await host.fs.mkdir("C:\\x");
   await host.fs.write("C:\\x\\a.wav", "abc");

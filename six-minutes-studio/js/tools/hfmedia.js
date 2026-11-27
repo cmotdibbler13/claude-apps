@@ -22,9 +22,12 @@ export async function uploadMedia(host, file, type) {
   if (/["`$!^'\s]/.test(url)) throw new Error("Upload to Higgsfield failed: the upload URL has characters that are unsafe to pass to curl; refusing to use it.");
   const mediaId = up.media_id ?? up.id ?? url.split(/[?#]/)[0].match(UUID_RE)?.[0];
   if (!mediaId) throw new Error("Upload to Higgsfield failed: no media id was returned.");
+  // The URL is signed for the type Higgsfield stores (it keeps audio as MP3 and signs audio/mpeg whatever was
+  // asked for); any other Content-Type gets a 403 SignatureDoesNotMatch.
+  const signedType = typeof up.content_type === "string" && up.content_type ? up.content_type : contentType;
   let r;
   try {
-    r = await runProcess(host, "curl", ["-sS", "--fail", "-X", "PUT", "-T", file, "-H", `Content-Type: ${contentType}`, "-H", "If-None-Match: *", url], { timeout: UPLOAD_MS });
+    r = await runProcess(host, "curl", ["-sS", "--fail", "-X", "PUT", "-T", file, "-H", `Content-Type: ${signedType}`, "-H", "If-None-Match: *", url], { timeout: UPLOAD_MS });
   } catch (e) { throw new Error(`Upload to Higgsfield failed: ${msg(e)}`); }
   if (r.code !== 0) throw new Error(`Upload to Higgsfield failed (curl exit ${r.code}): ${String(r.stderr ?? "").trim().slice(0, 200)}`);
   await call(host, "media_confirm", { media_id: String(mediaId), type });

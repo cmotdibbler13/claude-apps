@@ -33,6 +33,15 @@ test("media id from media_id, then id; JSON text replies are parsed", async () =
   assert.deepEqual(s.calls[1].i, { media_id: "i1", type: "audio" });
 });
 
+test("the PUT uses the content type Higgsfield signed, not the one asked for (audio is stored as MP3)", async () => {
+  const s = setup({ reply: { uploads: [{ upload_url: URL_, media_id: "m1", content_type: "audio/mpeg" }] } });
+  await uploadMedia(s.host, "C:\\x\\TC-01_t1_audio.mp3", "audio");
+  assert.ok(s.spawns[0].includes("Content-Type: audio/mpeg"));
+  const w = setup({ reply: { uploads: [{ upload_url: URL_, media_id: "m1", content_type: "audio/mpeg" }] } });
+  await uploadMedia(w.host, "a.wav", "audio");
+  assert.ok(w.spawns[0].includes("Content-Type: audio/mpeg"), "a WAV asked as audio/wav is still PUT as Higgsfield signed it");
+});
+
 test("content types by extension", async () => {
   for (const [f, t] of [["a.png", "image/png"], ["a.JPEG", "image/jpeg"], ["a.webp", "image/webp"], ["a.mp3", "audio/mpeg"]]) {
     const s = setup();
