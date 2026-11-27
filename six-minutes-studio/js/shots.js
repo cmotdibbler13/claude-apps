@@ -41,7 +41,7 @@ export function onCameraConflict(asset, state) {
 export function deriveWaiting(all = []) {
   const state = { assets: all };
   const assets = all.filter((a) => !onCameraConflict(a, state));
-  if (!assets.length) return "Shot list not made yet";
+  if (!all.length) return "Shot list not made yet";
   const chosen = (a) => a.takes?.find((t) => t.n === a.chosen) ?? null;
   const busy = (a) => (a.takes ?? []).some((t) => t.status === "queued" || t.status === "running");
   const review = assets.filter((a) => !a.approved && chosen(a)?.status === "done").length;

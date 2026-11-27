@@ -120,9 +120,12 @@ test("instructions carry the to-camera sentence and data has cameraLines", async
   const { SHOT_INSTRUCTIONS } = await import("../js/shots.js");
   assert.ok(SHOT_INSTRUCTIONS.includes("Plan no shot on these to-camera lines: Jon is on camera for the whole line."));
   const { h, store } = await mk([shot({})]);
+  let sent = null;
+  h.claudeScript((kind, text) => { sent = text; return [shot({})]; });
   const cameraLines = [{ id: "L3", text: CAM }];
   await buildShotList(h, store, { ...input, cameraLines });
-  assert.deepEqual(h.claudeCalls?.[0]?.data?.cameraLines ?? cameraLines, cameraLines);
+  const data = JSON.parse(sent.split("DATA (JSON):\n")[1].split("\n\nAnswer with JSON only.")[0]);
+  assert.deepEqual(data.cameraLines, cameraLines);
 });
 
 test("validator refuses a shot on a camera line, naming the id", async () => {
