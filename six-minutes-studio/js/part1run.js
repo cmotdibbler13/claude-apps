@@ -303,16 +303,21 @@ export function approvePart1(ctx) {
     }
 
     if (settings.pronunciationsFile) {
-      const old = await readOptional(host, settings.pronunciationsFile);
-      const next = appendPronunciations(old, setup.topic, script.pronunciations ?? []);
-      if (next !== null) await writeSafely(host, settings.pronunciationsFile, next);
+      const file = settings.pronunciationsFile;
+      try {
+        const old = (await host.fs.exists(file)) ? await host.fs.read(file, "utf8") : null;
+        const next = appendPronunciations(old, setup.topic, script.pronunciations ?? []);
+        if (next !== null) await writeSafely(host, file, next);
+      } catch (e) {
+        openItems.push(`Couldn't add the approved pronunciations to ${file}: ${e?.message ?? e}`);
+      }
     }
 
     const approvedAt = host.now();
     const text = renderPart1Handover({
       topic: setup.topic, prefix, episode: setup.episode, dir, root, brief: setup.brief,
       files: { script: readingPath, lineScript: linePath, autocueCopy },
-      recordings: join(settings.autocueRecordings ?? "", prefix),
+      recordings: settings.autocueRecordings ? join(settings.autocueRecordings, prefix) : "not set (set autocueRecordings in .studio-settings.json)",
       picks, pronunciations: script.pronunciations ?? [], sfx: script.sfx ?? [],
       decisions: decisionsFrom(p.drafts, setup), openItems, approvedAt,
     });

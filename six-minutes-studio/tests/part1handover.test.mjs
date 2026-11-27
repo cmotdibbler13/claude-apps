@@ -138,3 +138,37 @@ test("decisionsFrom and renderPart1Handover basics", () => {
   assert.match(t, /^# Part 1 handover — Six minutes on… T\n\nEpisode: 001\n/);
   assert.match(t, /## Open items\n\n- None\./);
 });
+
+test("unreadable pronunciations file is left alone and becomes an open item", async () => {
+  const { host, ctx } = await setup();
+  await host.fs.write(PRON, "KEEP");
+  const read = host.fs.read;
+  host.fs.read = async (p, e) => { if (p === PRON) throw new Error("locked"); return read(p, e); };
+  const r = await approvePart1(ctx);
+  host.fs.read = read;
+  assert.equal(await host.fs.read(PRON, "utf8"), "KEEP");
+  const item = `Couldn't add the approved pronunciations to ${PRON}: locked`;
+  assert.ok(r.openItems.includes(item));
+  assert.ok((await host.fs.read(r.handover, "utf8")).includes(item));
+});
+
+test("repeat press moves the autocue copy and the handover aside", async () => {
+  const { host, ctx } = await setup();
+  await approvePart1(ctx);
+  await host.fs.write(`${AUTOCUE}\\china_clay_line_script.txt`, "OLDCOPY");
+  await host.fs.write(`${DIR}\\handover\\part1_handover.md`, "OLDHANDOVER");
+  host.t += 120000;
+  await approvePart1(ctx);
+  const a = (await host.fs.list(AUTOCUE)).map((e) => e.name).find((n) => /^china_clay_line_script_\d{4}-.*\.txt$/.test(n));
+  const h = (await host.fs.list(`${DIR}\\handover`)).map((e) => e.name).find((n) => /^part1_handover_\d{4}-.*\.md$/.test(n));
+  assert.ok(a && h);
+  assert.equal(await host.fs.read(`${AUTOCUE}\\${a}`, "utf8"), "OLDCOPY");
+  assert.equal(await host.fs.read(`${DIR}\\handover\\${h}`, "utf8"), "OLDHANDOVER");
+  assert.match(await host.fs.read(`${DIR}\\handover\\part1_handover.md`, "utf8"), /^Episode: 008$/m);
+});
+
+test("empty autocueRecordings gives a clear line, not a bogus path", async () => {
+  const { host, ctx } = await setup({ settings: { autocueRecordings: "" } });
+  const r = await approvePart1(ctx);
+  assert.match(await host.fs.read(r.handover, "utf8"), /- Recordings folder: not set \(set autocueRecordings in \.studio-settings\.json\)/);
+});
