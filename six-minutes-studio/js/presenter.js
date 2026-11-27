@@ -5,7 +5,7 @@ import { deriveWaiting } from "./shots.js";
 import { scanFilms } from "./films.js";
 import { join, filmKey } from "./paths.js";
 import { runProcess } from "./proc.js";
-import { clipAudioArgs, audioSigOf } from "./tools/clipaudio.js";
+import { clipAudioArgs, clipAudioFile, audioSigOf } from "./tools/clipaudio.js";
 export { sameLine, onCameraConflict } from "./shots.js";
 
 export const MAX_CLIP_S = 15;
@@ -304,7 +304,7 @@ export async function checkClipAudio(ctx) {
     if (!s || len == null) continue;
     const out = join(store.dir, "studio", "presenter", `check_${a.id}`);
     const r = await runProcess(host, "ffmpeg", clipAudioArgs({ wav: vo.wav, start: s.start, end: s.end, seconds: clipSeconds(len), out }), { timeout: CHECK_MS });
-    const file = `${out}_audio.wav`;
+    const file = clipAudioFile(out);
     if (r.code !== 0 || !(await host.fs.exists(file))) continue;
     results.set(a.id, { take: t.n, sig: await audioSigOf(host, file, s.end - s.start) });
   }

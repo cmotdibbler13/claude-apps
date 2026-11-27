@@ -3,7 +3,7 @@
 import { DEFAULT_SETTINGS } from "../settings.js";
 import { runProcess } from "../proc.js";
 import { uploadMedia } from "./hfmedia.js";
-import { clipAudioArgs, audioSigOf } from "./clipaudio.js";
+import { clipAudioArgs, clipAudioFile, audioSigOf } from "./clipaudio.js";
 import { portraitParams, clipParams } from "../presenter.js";
 
 const FFMPEG_MS = 5 * 60 * 1000;
@@ -123,10 +123,10 @@ export function makeHiggsfieldRunner({ settings = DEFAULT_SETTINGS, sleep = real
           // The cut audio is on disk beside the take, so a resumed job gets its signature too.
           const { start, end, out } = job.input;
           let audioSig;
-          try { audioSig = await audioSigOf(host, `${out}_audio.wav`, end - start); } catch { audioSig = undefined; }
+          try { audioSig = await audioSigOf(host, clipAudioFile(out), end - start); } catch { audioSig = undefined; }
           return { ...r, meta: { hfId: jobId, ...(audioSig ? { audioSig } : {}) } };
         }
-        return r;
+        return { ...r, meta: { hfId: jobId } };
       }
       // Every job has ended but none succeeded: say so now instead of polling to the 30 min cap.
       if (p?.all_terminal === true) throw new Error(`Higgsfield job ${status || "ended"} without a result${error ? `: ${error}` : ""}`);
@@ -156,7 +156,7 @@ export function makeHiggsfieldRunner({ settings = DEFAULT_SETTINGS, sleep = real
     const { host } = ctx;
     const { voiceover, start, end, seconds, hfId, prompt, out } = job.input;
     const r = await runProcess(host, "ffmpeg", clipAudioArgs({ wav: voiceover, start, end, seconds, out }), { timeout: FFMPEG_MS });
-    const audio = `${out}_audio.wav`;
+    const audio = clipAudioFile(out);
     if (r.code !== 0 || !(await host.fs.exists(audio))) {
       throw new Error(`ffmpeg couldn't cut this line's audio (code ${r.code}): ${String(r.stderr ?? "").trim().split(/\r?\n/).slice(-3).join(" ")}; not generating.`);
     }

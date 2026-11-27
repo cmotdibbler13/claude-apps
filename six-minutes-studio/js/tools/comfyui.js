@@ -252,7 +252,8 @@ export function makeComfyRunner({ settings = DEFAULT_SETTINGS, sleep = realSleep
       const promptId = parsed?.prompt_id;
       if (typeof promptId !== "string" || !promptId) throw new Error(`ComfyUI did not return a prompt id. Response: ${excerpt(resp)}`);
       ctx.setRef(promptId);
-      return wait(job, ctx, promptId);
+      const done = await wait(job, ctx, promptId);
+      return { ...done, meta: { ...(done?.meta ?? {}), workflow: c.workflow, seed } };
     },
 
     async resume(job, ctx) {

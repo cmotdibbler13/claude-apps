@@ -297,7 +297,7 @@ test("startTake presenter: locked cases throw the lock copy and write nothing", 
 const VO_WAV = DIR + "\\Film A_voiceover.wav";
 const TRPATH = DIR + "\\studio\\voiceover_transcript.json";
 const tickN = async (n = 12) => { for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r)); };
-const until = async (fn, n = 300) => { for (let i = 0; i < n && !fn(); i++) await new Promise((r) => setImmediate(r)); };
+const until = async (fn, ms = 2000) => { const end = Date.now() + ms; while (!fn() && Date.now() < end) await new Promise((r) => setTimeout(r, 0)); };
 
 // content: map of clip audio file name -> bytes the fake ffmpeg "cuts"
 async function vsetup({ content = {}, transcript = TR, ready = true } = {}) {
@@ -324,7 +324,7 @@ const setSig = (store, id, sig) => store.update((d) => { d.assets.find((x) => x.
 const mkTake = (store, id, status, extra = {}) => store.update((d) => {
   const a = d.assets.find((x) => x.id === id); a.takes = [{ n: 1, status, ...extra }]; a.chosen = 1;
 });
-const CHK = (id) => `check_${id}_audio.wav`;
+const CHK = (id) => `check_${id}_audio.mp3`;
 
 test("checkClipAudio: unchanged audio sets no flag", async () => {
   const { ctx, store, sigOf, host } = await vsetup({ content: { [CHK("TC-01")]: "AAA" } });
@@ -332,7 +332,7 @@ test("checkClipAudio: unchanged audio sets no flag", async () => {
   await checkClipAudio(ctx);
   assert.equal(store.state.assets[0].voiceoverChanged, undefined);
   assert.equal(host.cuts.length, 1);
-  assert.ok(host.cuts[0].some((a) => a.endsWith("\\studio\\presenter\\check_TC-01_audio.wav")));
+  assert.ok(host.cuts[0].some((a) => a.endsWith("\\studio\\presenter\\check_TC-01_audio.mp3")));
 });
 
 test("checkClipAudio: changed audio flags the clip, rewrites waiting; a later match clears it", async () => {

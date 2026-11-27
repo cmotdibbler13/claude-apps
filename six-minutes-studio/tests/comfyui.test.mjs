@@ -117,7 +117,9 @@ test("setRef before the first poll", async () => {
 test("running then done; progress carries an eta", async () => {
   const t = setup({ history: ["{}", hist()] });
   const r = await t.runner.start(job(), t.ctx);
-  assert.deepEqual(r, { file: OUT });
+  assert.equal(r.file, OUT);
+  assert.equal(r.meta.seed, 1073741824);
+  assert.equal(typeof r.meta.workflow, "string");
   assert.deepEqual(t.sleeps, [5000, 5000]);
   assert.equal(t.progress[0][0], null);
   assert.match(t.progress[0][1], /about \d+ min left/);
