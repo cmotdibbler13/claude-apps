@@ -47,6 +47,7 @@ Open **Probe**, press **Run checks**. All should pass:
 ## Known limits in this version
 - Pressing **Check again** many times quickly asks Higgsfield for the job's status each time (free, but more often than every 20 seconds).
 - Blender runs Python that Claude writes, with full access to the PC.
+- Pauses only ever add time; they never shorten anything. A whole-film gap change (every gap a bit shorter or longer) is a later one-number change.
 
 ## ComfyUI b-roll (version 2)
 Have ComfyUI Desktop running, with `S:\Youtube video ideas\ComfyUI workflows\broll_ltx.json` in place. Nothing here spends credits.
@@ -103,3 +104,46 @@ Before you start:
 8. Re-record one line in Autocue Studio: Join, Fit and Mix all show **Out of date: run again**, and Approve is off until you re-run them.
 9. Close Studio while Stem Remixer is open: tell me if Stem Remixer closes too.
 10. With the timings CSV open in Excel, press **Join again**: it should say to close the file, and your earlier voiceover is still there.
+
+## Pacing review (version 17)
+Before you start: Probe → **Install join script** (the join script now takes pauses; Probe's "Autocue join" should pass afterwards). Placing pauses is one quick Claude call and costs nothing. You need a film with a joined voiceover and a mix.
+1. **Install.** Open Probe and press **Install join script**. It says it's installed and "Autocue join" passes.
+2. **The lines.** Under the Mix preview player, the script appears as rolling lines. Press play: the line being spoken is highlighted and the list follows it. Click a line's id (at its left): the player jumps there and plays from that line.
+3. **Mark a pause by clicking.** Click a word in a line: a ‖ appears after it (Medium). Click the ‖: a small box opens with **Short / Medium / Long / ◀ / ▶ / Remove**. Try Long, then ◀ and ▶ (they move the mark one word), then **Remove**.
+4. **Pause after a line.** Press the ＋ after a line: it adds a pause to the gap after that line. Click it to change or remove it.
+5. **Notes.** Type a note in a line's **Note** box, for example "needs a breath after Pictish". Tick **Re-record** on a different line. The counts under the lines say how many pauses are marked and how many lines to re-record.
+6. **Place pauses.** Press **Place pauses**. It reads only the new notes (one quick Claude call, free) and puts ‖ marks where they belong, or replies in plain words, for example "This sounds like a delivery change: tick Re-record". Your own marks are never moved.
+7. **The real test, at about 2:00.** The line reads "Pictish village in Orkney. Pictish he was out…". Click the word after the second "Pictish" to put a pause there (Medium to start). Press **Apply pauses**. Live jobs shows the voiceover joining, then the score fitting, then the mix being made. When it finishes, play from that line: the second "Pictish" should now have a breath after it.
+8. **Too tight?** If a mark sits where two words ran together in the recording, it shows **Tight cut: have a listen**. Listen. If it clicks, move it with ◀ / ▶ or make it Short and Apply again.
+9. **Marks changed.** Change any mark after Apply. The Join voiceover step says **Pause marks changed: press Apply pauses.** Press it and it goes away.
+10. **Sound effects.** Sound effects whose **Starts at** time you typed yourself move with the pauses, so they still land on the same word. Ones you never touched are re-timed from the new voiceover as before.
+11. **Re-record clears itself.** The ticked line shows **Re-record** in the Review → Narration list. Record a new take in Autocue Studio: the tick and the **Re-record** label clear on their own once the newer take arrives.
+12. **Stem Remixer export.** If the current score is a **Use this export** from Stem Remixer, press **Apply pauses**: it joins the voiceover, then stops and says it hasn't replaced your export. Open in Stem Remixer again to fit the longer voiceover. Your export is never overwritten.
+13. **Nothing wasted.** With no marks changed and nothing out of date, Apply pauses says why it's off instead of re-running.
+14. **Prompter bar (version 18).** Once a voiceover is joined, a bar sits at the top of the Review with ⏮ ❚❚ ⏭, the time, and the line being spoken. Scroll right down to B-roll: the bar stays. Pause, click a word in the bar (a ‖ appears there and in the list), type a note in the bar's box, then ▶ to carry on.
+15. **Fold sections (version 18).** Each section heading (Narration, Score, Sound effects, Voiceover and mix, B-roll) has ▾. Press it: the section folds to its heading (▸). Close and reopen Studio: it stays folded. The bar still plays with Voiceover and mix folded.
+
+## Tools start with Studio (version 20)
+1. Close ComfyUI and Stable Audio (in Pinokio). Exit Studio from the tray and open it again.
+2. The Films page shows **ComfyUI: Starting… · Stable Audio: Starting…** and, after a minute or two, **Ready** for both. The tray tooltip shows the same.
+3. Run Probe: ComfyUI and Stable Audio pass without you opening them.
+4. Exit Studio from the tray: ComfyUI and Stable Audio close (they were started by Studio). In Task Manager, no python.exe from ComfyUI or Pinokio is left behind. Open ComfyUI yourself, then open Studio: it says Ready and, on Exit, leaves your ComfyUI open.
+5. If it says **ComfyUI: Not found**, add `"comfy": { "exe": "<path to ComfyUI.exe>" }` to `.studio-settings.json` (Probe then has **Start ComfyUI now**).
+6. To stop either starting with Studio: `"autostart": { "comfy": false }` (or `"stableAudio": false`) in `.studio-settings.json`.
+
+## Drawings that move (version 23)
+Nothing here spends credits: Blender and ComfyUI run on the PC.
+1. **Allow pictures.** The first time a 3D take runs, Studio asks to send pictures to Claude: allow it. (If you said no, the take fails with "Claude can't see pictures in this view yet. Allow pictures for Six Minutes Studio (reopen Studio, or its Permissions menu), then press Run again." A no stands until Studio is reopened, so press Run again only after allowing pictures. If it says "Claude couldn't take the drawing (…): it may be too large", save the drawing smaller and press Run again.)
+2. **Make 3D on HF-01 (the stone dresser).** Approve HF-01, press **Make 3D in Blender**, then **Make first take** on the new card. Jobs shows **Modelling**, then **Check 1 of 3** (up to **Check 3 of 3**), then the render.
+3. **The take.** When it's done, the card shows a small check still and a short list of notes ("Check 1 (fixed): …", "Check 2 (matched): …"; "(blank)" for an empty still, and "Check 3 (not applied): …" when the last check asked for a change the render didn't get) saying what each check changed. The MP4 opens on the drawing's view, then the dresser turns about 70° on its own centre so the far upright comes forward. The camera stays still; amber hand-drawn lines on black, no flat picture cards and no dots.
+4. **Redo with a note.** Press **Redo…**, write e.g. "make the top slab thicker", **Redo with note**: a new take runs the same steps, starting from the last one.
+5. **Remove this version.** On the 3D card press **Remove this version**: the card asks "Remove HF-nn from the review? Its takes stay on disk." Press **Remove**: the card goes, and HF-01 has **Make 3D in Blender** again. The take files are still in the film's media folder. (While a take runs, Remove is greyed out.)
+6. **Animate with ComfyUI (set up once).** Until this is done the button is greyed out, and hovering it says "Set up the image-to-video workflow (see Probe)"; Probe's **Animate workflow** row says "Not set up (only needed for Animate with ComfyUI)" and what's missing.
+   1. In ComfyUI open the templates (**Workflow → Browse Templates**) and pick the **LTX Video image-to-video** template. Load the models it asks for.
+   2. **Workflow → Export (API)** and save it as `S:\Youtube video ideas\ComfyUI workflows\animate_i2v.json`.
+   3. Open that JSON in Notepad and note the node ids (the `"12": {` numbers) of: the **LoadImage** node (its input `"image"`), the **positive prompt** text node (input `"text"`), and the **video save** node (input `"filename_prefix"`).
+   4. Add them to `.studio-settings.json`, merged with what's already in `"comfy"`:
+      `"comfy": { "i2v": { "nodes": { "image": ["<id>", "image"], "prompt": ["<id>", "text"], "output": ["<id>", "filename_prefix"], "seed": ["<id>", "seed"] } } }`
+      Also add the **seed**: the sampler node's `"seed"` input (or `"noise_seed"` on a RandomNoise / SamplerCustomAdvanced template, e.g. `"seed": ["<id>", "noise_seed"]`). Without it every take re-uses the seed saved in the template, so Redo gives the same video; with it each take gets a fresh seed.
+      If the template has **width**, **height** and **length** inputs (often on the image-to-video or empty-latent node, e.g. `"width": ["<id>", "width"], "height": ["<id>", "height"], "length": ["<id>", "length"]`), add those too: Studio then sets 1920×1088 (cropped to 1080p) and the clip length itself. Without them the template's own size is used and the take may not be 1080p. The LTX template counts length in frames, so with a length node also add `"lengthUnit": "frames"` beside `"nodes"` in `"i2v"`.
+   5. Run Probe: **Animate workflow** says ready. Open the film's Review again: **Animate with ComfyUI** on HF-01 is live. Press it: an animated card appears after the drawing; **Make first take** renders it in ComfyUI. **Remove this version** works the same as for 3D.

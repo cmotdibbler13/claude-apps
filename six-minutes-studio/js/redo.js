@@ -1,6 +1,5 @@
 // Takes: start a first take or a redo with a note, mirror job progress onto takes, approvals.
 import { askJson } from "./claude.js";
-import { writeBlenderScript } from "./tools/blender.js";
 import { join, filmKey } from "./paths.js";
 import { deriveWaiting } from "./shots.js";
 import { mixHolders, mixJobDone, syncMixHolder, MIX_IDS, runLabel } from "./mixplan.js";
@@ -15,42 +14,81 @@ const find = (state, id) => state.assets.find((a) => a.id === id);
 // Everything that has takes: b-roll shots, then the score, then the sound-effect cues, then the
 // voiceover join, score fit and mix preview (VOICEOVER, FIT, MIX: one take per run).
 export const holders = (d) => [...d.assets ?? [], ...(d.audio?.score ? [d.audio.score] : []), ...(d.audio?.sfx ?? []), ...mixHolders(d)];
-const META = ["lengthS", "peakDb", "meanDb", "quiet"];
+const META = ["lengthS", "peakDb", "meanDb", "quiet", "checks", "script"];
 const nameOf = (id) => (id === "SCORE" ? "Score" : id);
 const takeName = (id, n) => (MIX_IDS.has(id) ? `${runLabel(id)} run ${n}` : `${nameOf(id)} take ${n}`);
 // Every change to the shots also rewrites what the film is waiting on Jon for, in the same update.
 const save = (store, fn) => store.update((d) => { fn(d); d.waiting = deriveWaiting(d.assets); });
 
 export function canStart(asset, assets) {
-  if (asset.tool !== "blender") return true;
+  if (asset.tool !== "blender" && asset.kind !== "animated") return true;
   const src = assets.find((a) => a.id === asset.sourceId);
   return !!src && !!src.approved;
 }
 
-export const has3d = (assets, lineartId) => assets.some((a) => a.kind === "blender" && a.sourceId === lineartId);
+export const hasDerived = (assets, lineartId, kind) => assets.some((a) => a.kind === kind && a.sourceId === lineartId);
+export const has3d = (assets, lineartId) => hasDerived(assets, lineartId, "blender");
 
-// Add a Blender shot that uses a line drawing as its source. It sits beside the source (same line)
-// and stays locked until the source is approved.
-export async function addBlender3d(ctx, lineartId) {
+// The next free HF number counts removed assets too, so a re-made version never reuses an id.
+const nextId = (d) => {
+  const top = [...d.assets, ...(d.removed ?? [])].reduce((m, a) => Math.max(m, Number(/^HF-(\d+)$/.exec(a.id)?.[1] ?? 0)), 0);
+  return `HF-${String(top + 1).padStart(2, "0")}`;
+};
+
+// Add a derived shot that uses a line drawing as its source. It sits beside the source (same line)
+// and stays locked until the source is approved. One live version of each kind per drawing.
+async function addDerived(ctx, lineartId, kind, label, make) {
   const { store } = ctx;
   const src = find(store.state, lineartId);
   if (!src) throw new Error(`Unknown shot ${lineartId}`);
   if (src.kind !== "lineart") throw new Error(`${lineartId} is not line art.`);
-  if (has3d(store.state.assets, lineartId)) throw new Error(`${lineartId} already has a Blender version.`);
+  const refuse = () => new Error(`${lineartId} already has ${label} version.`);
+  if (hasDerived(store.state.assets, lineartId, kind)) throw refuse();
   let id;
   await save(store, (d) => {
-    if (has3d(d.assets, lineartId)) throw new Error(`${lineartId} already has a Blender version.`);
-    const top = d.assets.reduce((m, a) => Math.max(m, Number(/^HF-(\d+)$/.exec(a.id)?.[1] ?? 0)), 0);
-    id = `HF-${String(top + 1).padStart(2, "0")}`;
+    if (hasDerived(d.assets, lineartId, kind)) throw refuse();
+    id = nextId(d);
     const desc = src.desc ? src.desc[0].toLowerCase() + src.desc.slice(1) : lineartId;
     d.assets.push({
-      id, kind: "blender", tool: "blender", sourceId: lineartId, line: src.line, lineIndex: src.lineIndex,
-      desc: `3D line-art version of ${desc}`, draftPrompt: `3D line-art version of ${lineartId} in Blender`,
-      takes: [], chosen: 0, approved: false,
+      id, kind, tool: kind === "animated" ? "comfyui" : "blender", sourceId: lineartId, line: src.line, lineIndex: src.lineIndex,
+      ...make(desc), takes: [], chosen: 0, approved: false,
     });
   });
-  await store.log(`${id} added: 3D version of ${lineartId} in Blender`);
   return id;
+}
+
+export async function addBlender3d(ctx, lineartId) {
+  const id = await addDerived(ctx, lineartId, "blender", "a Blender", (desc) => ({
+    desc: `3D line-art version of ${desc}`, draftPrompt: `3D line-art version of ${lineartId} in Blender`,
+  }));
+  await ctx.store.log(`${id} added: 3D version of ${lineartId} in Blender`);
+  return id;
+}
+
+export async function addAnimated(ctx, lineartId) {
+  const id = await addDerived(ctx, lineartId, "animated", "an animated", (desc) => ({
+    desc: `Animated version of ${desc}`,
+    draftPrompt: `${desc}; slow orbit around it, keep the hand-drawn amber line-art style on black, no new colours`,
+  }));
+  await ctx.store.log(`${id} added: animated version of ${lineartId}`);
+  return id;
+}
+
+// Take a 3D or animated version out of the review. Its takes stay on disk.
+export async function removeVersion(ctx, id) {
+  const { store } = ctx;
+  const a = find(store.state, id);
+  if (!a) throw new Error(`Unknown shot ${id}`);
+  if (a.kind !== "blender" && a.kind !== "animated") throw new Error(`${id} is not a 3D or animated version.`);
+  const inProgress = () => busy(a) || starting(store, id);
+  if (inProgress()) throw new Error(`${id} has a take in progress.`);
+  await save(store, (d) => {
+    const x = find(d, id);
+    if (busy(x) || starting(store, id)) throw new Error(`${id} has a take in progress.`);
+    d.assets = d.assets.filter((y) => y.id !== id);
+    (d.removed ??= []).push({ ...x, removedAt: ctx.host.now() });
+  });
+  await store.log(`${id} removed from the review (takes kept on disk)`);
 }
 
 function previousTake(asset) {
@@ -70,20 +108,7 @@ export async function startTake(ctx, assetId, { note } = {}) {
   const prev = previousTake(asset);
   const base = join(store.dir, "studio", "media", `${asset.id}_t${n}`);
   let take, input;
-
-  // All Claude work happens before any write.
-  if (asset.tool === "blender") {
-    let previous;
-    if (prev?.script) { try { previous = await host.fs.read(prev.script, "utf8"); } catch { /* no earlier script to show */ } }
-    let frames;
-    const script = await writeBlenderScript(host, store, asset, n, {
-      note: hasNote ? note : undefined, previous, onFrames: (f) => { frames = f; },
-    });
-    const src = find(store.state, asset.sourceId);
-    const sourceFile = src.takes.find((t) => t.n === src.chosen)?.file;
-    take = { n, script };
-    input = { kind: "blender", script, sourceFile, out: base + ".mp4", frames };
-  } else {
+  const nextPrompt = async () => {
     let prompt = asset.draftPrompt;
     if (hasNote || prev) {
       const r = await askJson(host, {
@@ -98,6 +123,45 @@ export async function startTake(ctx, assetId, { note } = {}) {
       });
       prompt = r.prompt;
     }
+    return prompt;
+  };
+
+  // All Claude work happens before any write. A Blender take does its Claude work inside the job
+  // (script, check stills, render), so it only needs the drawing and the previous take here.
+  if (asset.kind === "animated") {
+    // Like a ComfyUI b-roll take, but it starts from the drawing's chosen take.
+    const src = find(store.state, asset.sourceId);
+    const sourceFile = src.takes.find((t) => t.n === src.chosen)?.file;
+    const prompt = await nextPrompt();
+    take = { n, prompt };
+    input = { kind: "animated", prompt, out: base + ".mp4", sourceFile };
+  } else if (asset.tool === "blender") {
+    const src = find(store.state, asset.sourceId);
+    const sourceFile = src.takes.find((t) => t.n === src.chosen)?.file;
+    take = { n };
+    input = {
+      kind: "blender", asset: { id: asset.id, desc: asset.desc, line: asset.line }, take: n,
+      sourceFile, base: join(store.dir, "studio", "blender", `${asset.id}_t${n}`), out: base + ".mp4",
+    };
+    if (hasNote) input.note = note;
+    // The previous take's files on disk, not its record: a failed take (say, blank twice) never got
+    // script or checks from the job, and that is exactly when Jon redoes it with a note.
+    if (prev) {
+      const pb = join(store.dir, "studio", "blender", `${asset.id}_t${prev.n}`);
+      // The newest round script; the final script is a copy of it. The still sent with it must be
+      // that same round's: a round whose still never came (Blender crashed) sends none.
+      let round = 0;
+      for (let k = 3; k >= 1 && !round; k--) if (await host.fs.exists(`${pb}_r${k}.py`)) round = k;
+      let previousScript;
+      if (await host.fs.exists(pb + ".py")) previousScript = pb + ".py";
+      else if (round) previousScript = `${pb}_r${round}.py`;
+      else if (prev.script && (await host.fs.exists(prev.script))) previousScript = prev.script;
+      if (previousScript) input.previousScript = previousScript;
+      const previousStill = round ? `${pb}_check${round}.png` : null;
+      if (previousScript && previousStill && (await host.fs.exists(previousStill))) input.previousStill = previousStill;
+    }
+  } else {
+    const prompt = await nextPrompt();
     take = { n, prompt };
     input = { kind: asset.kind, prompt, out: asset.tool === "comfyui" ? base + ".mp4" : base };
   }
@@ -112,7 +176,7 @@ export async function startTake(ctx, assetId, { note } = {}) {
   try {
     await save(store, (d) => {
       const a = find(d, assetId);
-      if (a.takes.length !== n - 1) throw new Error(`${asset.id} changed while the take was being prepared.`);
+      if (!a || a.takes.length !== n - 1) throw new Error(`${asset.id} changed while the take was being prepared.`);
       a.takes.push(take);
       a.chosen = n;
       a.approved = false;
@@ -142,6 +206,28 @@ export async function startTake(ctx, assetId, { note } = {}) {
   });
   await store.log(`${asset.id} take ${n} started${hasNote ? `: ${note}` : ""}`);
   return structuredClone(store.state.assets.find((a) => a.id === assetId).takes.find((t) => t.n === n));
+}
+
+// A job whose shot was removed from the film's review (in state.removed: a 3D or animated version): running or
+// checking it again would do the whole job and throw the result away. Unknown state is never refused.
+export const removedText = (id) => `${id} was removed from the review.`;
+export function jobGone(state, job) {
+  if (!state || job?.assetId === undefined || job?.assetId === null) return false;
+  // Only shots taken out with Remove this version: other jobs without a holder (the score measure) run as before.
+  const removed = (state.removed ?? []).some((a) => a?.id === job.assetId);
+  return removed && !holders(state).some((h) => h.id === job.assetId);
+}
+
+// The refusal text for a Jobs-panel Retry or Check, or null to go ahead. The open film's state is
+// used when the job is for it; any other film's is read from disk (unreadable: not refused).
+export async function jobRemoved(host, job, store) {
+  if (job?.assetId === undefined || job?.assetId === null) return null;
+  let state = null;
+  if (store && filmKey(store.dir) === filmKey(job.film)) state = store.state;
+  else {
+    try { state = JSON.parse(await host.fs.read(join(job.film, "studio", "state.json"), "utf8")); } catch { state = null; }
+  }
+  return jobGone(state, job) ? removedText(job.assetId) : null;
 }
 
 // Mirror job status onto takes. Each sync reconciles against the current job list and writes

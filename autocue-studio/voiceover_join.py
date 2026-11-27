@@ -30,7 +30,7 @@ Take files are named <project>_<id>.wav, where project is the line script's
 The command (main) joins a film's takes:
 
   python voiceover_join.py --script <line script> --takes <dir> --out <dir>
-      [--allow-flagged] [--model medium.en] [--device auto]
+      [--allow-flagged] [--pauses <json>] [--model medium.en] [--device auto]
 
 It prints one JSON object per line: {"progress": 0..1, "text": ...} while it
 works, then {"done": true, ...} or {"error": ...}. Exit codes: 0 done, 2
@@ -74,6 +74,7 @@ SENTENCE_GAP_S = 0.55
 CLIP_GAP_S = 0.6
 SECTION_GAP_S = 1.2
 TAIL_S = 0.5
+TITLE_HOLD_S = 6.0   # the title card at the end of the cold open (the first section)
 LIMIT = 0.84
 LIMIT_ATTACK_MS = 2.0
 LIMIT_RELEASE_MS = 50.0
@@ -123,39 +124,71 @@ def _as_float(x):
 
 # ----------------------------------------------------------------- trimming ----
 
+def _voice_mask(x, rate, db):
+    """10 ms frames that are the voice (or a soft consonant): above
+    max(-45 dBFS, the room's noise + 12 dB), take_checks' voice rule."""
+    return db > max(VOICE_MIN_DBFS, _noise_dbfs(x, rate) + VOICE_OVER_NOISE_DB)
+
+
+CLICK_GAP_S = 0.10   # a key click stands apart from the speech by at least this
+
+
+def _voice_span(x, rate):
+    """(first, last) 10 ms frame indexes (last exclusive) of the voice, or
+    None. Every sound above the voice threshold counts, however soft or
+    short, so quiet last words and the gaps between words never shorten it.
+    The only thing left out is a key click: a burst under 40 ms at either end
+    that is not voiced (broadband) and stands at least 0.1 s clear of the
+    rest."""
+    n, db, loud, voiced = _voiced(x, rate)
+    runs = _runs(_voice_mask(x, rate, db))
+    if not runs:
+        return None
+    max_click = int(round(TRANSIENT_MAX_S / FRAME_S))
+    min_gap = int(round(CLICK_GAP_S / FRAME_S))
+
+    def click(run, gap):
+        # Under 40 ms is too short for any word, voiced or not.
+        a, b = run
+        return b - a < max_click and gap >= min_gap
+
+    for _ in range(2):   # a press and a release
+        if len(runs) > 1 and click(runs[-1], runs[-1][0] - runs[-2][1]):
+            runs.pop()
+        if len(runs) > 1 and click(runs[0], runs[1][0] - runs[0][1]):
+            runs.pop(0)
+    first, last = runs[0][0], runs[-1][1]
+    # A click pressed while the last sound was still dying away: a loud,
+    # unvoiced burst under 40 ms at the very end, at least 10 dB above the
+    # 100 ms before it. The voice ends where the burst starts.
+    a = last
+    while a > first and last - a < max_click and loud[a - 1] and not voiced[a - 1]:
+        a -= 1
+    if a < last and a - first >= min_gap:
+        before = db[max(first, a - min_gap):a]
+        if len(before) and db[a:last].max() >= np.median(before) + 10.0:
+            last = a
+    return first, last
+
+
 def trim_take(x, rate=RATE):
     """Trim a take's head and tail. Returns (y, info) with
     info = {head_s, tail_s, speech}: the seconds cut from the start and the
     end, and whether any voiced frame was found. A take with no voiced frame
     comes back unchanged.
 
-    The head walks back from the first voiced frame over contiguous frames
-    above -40 dBFS (a soft first consonant), then keeps 0.05 s more. The
-    tail walks forward from the end of speech over contiguous frames above
-    max(-45 dBFS, noise + 12 dB) (a soft last consonant), stopping short of
-    a trailing broadband transient under 40 ms, then keeps 0.15 s more."""
+    The voice runs from the first to the last 10 ms frame above
+    max(-45 dBFS, noise + 12 dB) (take_checks' voice rule), leaving out only
+    a key click (see _voice_span). The head keeps 0.05 s before it with a
+    5 ms fade-in; the tail keeps 0.15 s after it with a 30 ms fade-out.
+    Cutting is cautious on purpose: a little room tone is cheap, a lost word
+    is not."""
     x = _as_float(x)
     n, db, loud, voiced = _voiced(x, rate)
-    end_idx = _speech_end(voiced, loud, FRAME_S) if voiced.any() else None
-    if end_idx is None:
+    span = _voice_span(x, rate) if voiced.any() else None
+    if span is None:
         return x, {"head_s": 0.0, "tail_s": 0.0, "speech": False}
-
-    first = int(np.argmax(voiced))
-    while first > 0 and db[first - 1] > HEAD_WALK_DBFS:
-        first -= 1
-
-    voice = db > max(VOICE_MIN_DBFS, _noise_dbfs(x, rate) + VOICE_OVER_NOISE_DB)
-    last = end_idx
-    while last < len(voice) and voice[last]:
-        last += 1
-    # A click right after the soft tail: a short loud, unvoiced run at the
-    # end of the walked stretch, after softer frames, is not the voice.
-    if last > end_idx and loud[last - 1] and not voiced[last - 1]:
-        run = last
-        while run > end_idx and loud[run - 1] and not voiced[run - 1]:
-            run -= 1
-        if run > end_idx and (last - run) * FRAME_S < TRANSIENT_MAX_S:
-            last = run
+    first, last = span
 
     start = max(0, first * n - int(round(HEAD_KEEP_S * rate)))
     stop = min(len(x), last * n + int(round(TAIL_KEEP_S * rate)))
@@ -163,7 +196,7 @@ def trim_take(x, rate=RATE):
     fade_in = min(len(y), int(round(FADE_IN_S * rate))) if start > 0 else 0
     if fade_in:
         y[:fade_in] *= np.linspace(0.0, 1.0, fade_in)
-    fade = min(len(y), int(round(FADE_OUT_S * rate)))
+    fade = min(len(y), int(round(FADE_OUT_S * rate))) if stop < len(x) else 0
     if fade:
         y[len(y) - fade:] *= np.linspace(1.0, 0.0, fade)
     return y, {"head_s": start / rate, "tail_s": (len(x) - stop) / rate,
@@ -171,18 +204,21 @@ def trim_take(x, rate=RATE):
 
 
 def tighten_stalls(x, rate=RATE):
-    """Shorten every gap quieter than -30 dBFS and longer than 0.6 s, between
-    the first voiced frame and the end of speech, to 0.3 s (a 5 ms
+    """Shorten every gap of true silence (quieter than -30 dBFS and below the
+    voice threshold) longer than 0.6 s, inside the voice, to 0.3 s (a 5 ms
     equal-power crossfade inside the gap hides the splice). Returns
     (y, stalls) with stalls = [{at_s, from_s, to_s}]; at_s is where the gap
     starts in the input."""
     x = _as_float(x)
     n, db, loud, voiced = _voiced(x, rate)
-    end_idx = _speech_end(voiced, loud, FRAME_S) if voiced.any() else None
-    if end_idx is None:
+    span = _voice_span(x, rate) if voiced.any() else None
+    if span is None:
         return x, []
-    first = int(np.argmax(voiced))
-    quiet = db < PAUSE_DBFS
+    first, end_idx = span
+    # Only true silence: quieter than -30 dBFS AND below the voice threshold,
+    # so a softly spoken word inside a long pause is never taken for one.
+    floor = min(PAUSE_DBFS, max(VOICE_MIN_DBFS, _noise_dbfs(x, rate) + VOICE_OVER_NOISE_DB))
+    quiet = db < floor
     quiet[:first] = False
     quiet[end_idx:] = False
 
@@ -195,9 +231,9 @@ def tighten_stalls(x, rate=RATE):
             continue
         s0, s1 = a * n, b * n
         # The 10 ms grid can miss up to a frame of quiet at each edge.
-        while s0 - ms >= (a - 1) * n and _rms_dbfs(x[s0 - ms:s0]) < PAUSE_DBFS:
+        while s0 - ms >= (a - 1) * n and _rms_dbfs(x[s0 - ms:s0]) < floor:
             s0 -= ms
-        while s1 + ms <= (b + 1) * n and _rms_dbfs(x[s1:s1 + ms]) < PAUSE_DBFS:
+        while s1 + ms <= (b + 1) * n and _rms_dbfs(x[s1:s1 + ms]) < floor:
             s1 += ms
         if (s1 - s0) / rate > PAUSE_MIN_S + 1e-9 and s1 - s0 >= keep + xfade:
             cuts.append((s0, s1))
@@ -296,51 +332,125 @@ def limit(x, rate=RATE, ceiling=LIMIT, attack_ms=LIMIT_ATTACK_MS,
     return x * np.minimum(smooth, need)
 
 
-def build_clip(parts, rate=RATE):
-    """Join a clip's sentence parts: each at -13.5 dB RMS, 0.55 s of silence
-    between them, then the limiter."""
+PAUSE_SEARCH_S = 0.15   # how far from the asked time a pause may move to a quiet spot
+PAUSE_WINDOW_S = 0.010
+
+
+def insert_pauses(x, pauses, rate=RATE):
+    """Add silence inside a part. pauses = [{at_s, add_s}], at_s in the part's
+    time before any insertion. Each pause moves to the quietest 10 ms window
+    centred within 0.15 s of at_s (the nearest one on a tie), the part is
+    split there (the left side fades out and the right side in over 5 ms,
+    equal power) and add_s of zeros goes between. Returns (y, tight) where
+    tight lists the at_s (before insertion) of the pauses whose quietest spot
+    is still voice, so the cut lands in speech."""
+    x = _as_float(x)
+    pauses = sorted(pauses or [], key=lambda p: p["at_s"])
+    if not pauses or not len(x):
+        return x, []
+    win = max(1, int(round(PAUSE_WINDOW_S * rate)))
+    half = win // 2
+    xfade = int(round(STALL_XFADE_S * rate))
+    sums = np.concatenate([[0.0], np.cumsum(x ** 2)])
+    threshold = max(VOICE_MIN_DBFS, _noise_dbfs(x, rate) + VOICE_OVER_NOISE_DB)
+    step = max(1, int(round(0.001 * rate)))
+    reach = int(round(PAUSE_SEARCH_S * rate))
+    cuts, tight = [], []
+    for p in pauses:
+        want = int(round(float(p["at_s"]) * rate))
+        lo = min(max(want - reach, half), max(len(x) - (win - half), half))
+        hi = max(min(want + reach, len(x) - (win - half)), lo)
+        centres = np.arange(lo, hi + 1, step)
+        power = (sums[centres + (win - half)] - sums[centres - half]) / win
+        order = np.lexsort((np.abs(centres - want), power))
+        best = int(centres[order[0]])
+        if 10 * math.log10(max(float(power[order[0]]), 1e-20)) >= threshold:
+            tight.append(float(p["at_s"]))
+        cuts.append((best, int(round(float(p["add_s"]) * rate))))
+    theta = np.linspace(0.0, np.pi / 2, xfade) if xfade else np.zeros(0)
+    x = x.copy()
+    pieces, pos = [], 0
+    for best, add in cuts:
+        best = max(best, pos)
+        left = x[pos:best]
+        k = min(xfade, len(left))
+        if k:
+            left[len(left) - k:] *= np.cos(theta[:k])
+        pieces += [left, np.zeros(add)]
+        pos = best
+        k = min(xfade, len(x) - best)
+        if k:
+            x[best:best + k] *= np.sin(theta[:k])
+    pieces.append(x[pos:])
+    return np.concatenate(pieces), tight
+
+
+def build_clip(parts, rate=RATE, inside=None, after=None):
+    """Join a clip's sentence parts: each at -13.5 dB RMS, then its inside
+    pauses (inside[i], a list of {at_s, add_s}), then 0.55 s of silence plus
+    after[i] before the next part, then the limiter. Returns the audio, or
+    (audio, tight) when inside is given, with tight[i] the at_s list of the
+    pauses of part i that cut into speech."""
     if not parts:
-        return np.zeros(0)
-    gap = np.zeros(int(round(SENTENCE_GAP_S * rate)))
-    pieces = []
+        return (np.zeros(0), []) if inside is not None else np.zeros(0)
+    pieces, tight = [], []
     for i, p in enumerate(parts):
         if i:
-            pieces.append(gap)
-        pieces.append(set_rms(p, PART_RMS_DB))
-    return limit(np.concatenate(pieces), rate)
+            extra = after[i - 1] if after and after[i - 1] else 0.0
+            pieces.append(np.zeros(int(round((SENTENCE_GAP_S + extra) * rate))))
+        p = set_rms(p, PART_RMS_DB)
+        if inside is not None:
+            p, t = insert_pauses(p, inside[i], rate)
+            tight.append(t)
+        pieces.append(p)
+    y = limit(np.concatenate(pieces), rate)
+    return (y, tight) if inside is not None else y
 
 
-def level_clip(x, rate=RATE, target_db=CLIP_RMS_DB):
+def level_clip(x, rate=RATE, target_db=CLIP_RMS_DB, ref=None):
     """Gain plus the same limiter, repeated until the clip's RMS is within
-    0.5 dB (aiming for 0.05 dB) of -13.8 dB."""
+    0.5 dB (aiming for 0.05 dB) of -13.8 dB. With ref (the same clip without
+    its inserted pauses), the gain is found on ref and then applied, with the
+    limiter, to x: the silence a pause adds never raises the voice's level."""
     x = _as_float(x)
-    if rms_db(x) <= FLOOR_DBFS:
+    r = x if ref is None else _as_float(ref)
+    level = rms_db(r)
+    if level <= FLOOR_DBFS:
         return x
     aim = target_db
-    y = limit(set_rms(x, aim), rate)
+    y = limit(r * 10 ** ((aim - level) / 20.0), rate)
     for _ in range(8):
         err = target_db - rms_db(y)
         if abs(err) < 0.05:
             break
         aim += err
-        y = limit(set_rms(x, aim), rate)
-    return y
+        y = limit(r * 10 ** ((aim - level) / 20.0), rate)
+    if ref is None:
+        return y
+    return limit(x * 10 ** ((aim - level) / 20.0), rate)
 
 
 # ----------------------------------------------------------------- assembly ----
 
-def assemble(clips, sections, project="", rate=RATE):
+def assemble(clips, sections, project="", rate=RATE, title_hold_s=None, after=None):
     """Lay clips end to end in script order. clips = [(clip_id, audio)],
     sections = the section of each clip. 0.6 s between clips in a section,
-    1.2 s across a section change, and a 0.5 s tail. Returns (x, timings)
+    1.2 s across a section change, and a 0.5 s tail. With title_hold_s, the
+    first section change (the end of the cold open, where the title card
+    sits) gets that gap instead of 1.2 s. Returns (x, timings)
     with timings = [{clip, section, name, start_s, end_s}], where name is
-    <project>_<clip>."""
+    <project>_<clip>. after[i] seconds are added to the gap after clip i."""
     if len(clips) != len(sections):
         raise ValueError("one section per clip")
-    pieces, timings, pos = [], [], 0
+    pieces, timings, pos, changes = [], [], 0, 0
     for i, ((clip, audio), section) in enumerate(zip(clips, sections)):
         if i:
-            gap = SECTION_GAP_S if section != sections[i - 1] else CLIP_GAP_S
+            gap = CLIP_GAP_S
+            if section != sections[i - 1]:
+                changes += 1
+                gap = title_hold_s if (changes == 1 and title_hold_s is not None) else SECTION_GAP_S
+            if after and after[i - 1]:
+                gap += after[i - 1]
             g = int(round(gap * rate))
             pieces.append(np.zeros(g))
             pos += g
@@ -644,6 +754,11 @@ def _parser():
     p.add_argument("--out", required=True, help="the folder for the voiceover files")
     p.add_argument("--allow-flagged", action="store_true",
                    help="join takes with no speech found instead of refusing")
+    p.add_argument("--title-hold", type=float, default=TITLE_HOLD_S,
+                   help="seconds of silence after the cold open for the title card (default 6)")
+    p.add_argument("--pauses", default=None,
+                   help="a JSON file of extra silence: {\"inside\": {id: [{at_s, add_s}]}, "
+                        "\"after\": {id: seconds}}")
     p.add_argument("--model", default=None,
                    help="speech model (default: autocue_settings.json, else medium.en)")
     p.add_argument("--device", default=None,
@@ -655,6 +770,31 @@ def _make_transcriber(args):
     settings = take_checks.load_settings(os.path.dirname(os.path.abspath(__file__)))
     return take_checks.WhisperTranscriber(args.model or settings["check_model"],
                                           args.device or settings["check_device"])
+
+
+def _read_pauses(path):
+    """(inside, after) from a --pauses file: {id: [{at_s, add_s}]} and
+    {id: seconds}; missing keys mean none, non-positive pauses are dropped."""
+    if not path:
+        return {}, {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            raise ValueError("not an object")
+        def good(v):
+            return math.isfinite(v) and v > 0
+        inside = {str(k): [{"at_s": max(0.0, float(p["at_s"])), "add_s": float(p["add_s"])}
+                           for p in v
+                           if math.isfinite(float(p["at_s"])) and good(float(p["add_s"]))]
+                  for k, v in (data.get("inside") or {}).items()}
+        after = {str(k): float(v) for k, v in (data.get("after") or {}).items()
+                 if good(float(v))}
+    except OSError as e:
+        raise Refused(f"Could not read the pauses file: {e}") from None
+    except (ValueError, TypeError, KeyError, AttributeError) as e:
+        raise Refused(f"The pauses file is not valid: {e}") from None
+    return ({k: v for k, v in inside.items() if v}, after)
 
 
 def join(args, transcriber=None):
@@ -669,6 +809,7 @@ def join(args, transcriber=None):
     if not os.path.isdir(args.takes):
         raise Refused(f"Takes folder not found: {args.takes}")
 
+    inside_map, after_map = _read_pauses(args.pauses)
     plan = plan_join((project, lines), _take_files(args.takes, args.out), project=project)
     if plan["missing"]:
         raise Refused("Missing takes: " + ", ".join(plan["missing"]))
@@ -695,20 +836,40 @@ def join(args, transcriber=None):
     if silent and not args.allow_flagged:
         raise Refused("No speech found in takes: " + ", ".join(silent), silent=silent)
 
-    clips = [(c["clip"], level_clip(build_clip([parts[i] for i in c["ids"]])))
-             for c in plan["clips"]]
-    x, timings = assemble(clips, [c["section"] for c in plan["clips"]], project=project)
+    clips, tight, clip_after = [], [], []
+    n_inside = n_after = 0
+    for c in plan["clips"]:
+        ins = [list(inside_map.get(i, [])) for i in c["ids"]]
+        aft = [after_map.get(i, 0.0) for i in c["ids"]]
+        audio, found = build_clip([parts[i] for i in c["ids"]], inside=ins, after=aft[:-1])
+        # The level is set on the clip as it is without its pauses (see level_clip).
+        ref = None
+        if any(ins) or any(aft[:-1]):
+            ref = build_clip([parts[i] for i in c["ids"]])
+        clips.append((c["clip"], level_clip(audio, ref=ref)))
+        clip_after.append(aft[-1])
+        n_inside += sum(len(p) for p in ins)
+        # an after on the film's last line is never applied (no gap follows it)
+        last_clip = c is plan["clips"][-1]
+        n_after += sum(1 for a in (aft[:-1] if last_clip else aft) if a)
+        for line_id, at_list in zip(c["ids"], found):
+            tight += [{"id": line_id, "at_s": round(a, 3)} for a in at_list]
+    x, timings = assemble(clips, [c["section"] for c in plan["clips"]], project=project,
+                          title_hold_s=args.title_hold, after=clip_after)
 
     # Where each sentence part sits in the voiceover (build_clip and
-    # level_clip keep lengths, so the offsets follow from the part lengths).
-    gap = int(round(SENTENCE_GAP_S * RATE))
+    # level_clip keep lengths, so the offsets follow from the part lengths,
+    # the silence inserted inside them and the gaps after them).
     placed = []
     for c, t in zip(plan["clips"], timings):
         pos = int(round(t["start_s"] * RATE))
-        for line_id in c["ids"]:
-            m = len(parts[line_id])
+        for k, line_id in enumerate(c["ids"]):
+            added = sum(int(round(float(p["add_s"]) * RATE))
+                        for p in inside_map.get(line_id, []))
+            m = len(parts[line_id]) + added
             placed.append((line_id, x[pos:pos + m], pos / RATE))
-            pos += m + gap
+            extra = after_map.get(line_id, 0.0) if k < len(c["ids"]) - 1 else 0.0
+            pos += m + int(round((SENTENCE_GAP_S + extra) * RATE))
 
     if transcriber is None:
         transcriber = _make_transcriber(args)
@@ -722,7 +883,8 @@ def join(args, transcriber=None):
     done = {"done": True, "wav": paths["wav"], "csv": paths["csv"],
             "transcript": paths["transcript"], "length_s": round(len(x) / RATE, 3),
             "tightened": tightened, "extra": plan["extra"], "clips": len(clips),
-            "silent": silent, "duplicates": plan["duplicates"], "moved_aside": moved}
+            "silent": silent, "duplicates": plan["duplicates"], "moved_aside": moved,
+            "tight": tight, "pauses": {"inside": n_inside, "after": n_after}}
     used = getattr(transcriber, "device_used", None)
     if used:
         done["transcribed_on"] = used

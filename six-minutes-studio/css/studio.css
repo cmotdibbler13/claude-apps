@@ -32,6 +32,7 @@ h2{font-weight:500;font-size:13px;letter-spacing:.2em;text-transform:uppercase;c
 .checks .pass .st{color:var(--tide)}
 .checks .fail{border-color:var(--eng)}
 .checks .fail .st{color:var(--eng)}
+.checks .neutral .st{color:var(--mut)}
 .checks .detail{grid-column:2;font-size:13px;color:var(--mut);white-space:pre-wrap;overflow-wrap:anywhere}
 .nav .cnt{color:var(--tide);margin-left:6px}
 .banner{background:var(--s1);border:1px solid var(--brass);color:var(--brass);padding:12px 16px;margin:0 0 18px;font-size:14px}
@@ -102,6 +103,15 @@ h2{font-weight:500;font-size:13px;letter-spacing:.2em;text-transform:uppercase;c
 .src .media .ph{font-size:10px;padding:2px}
 .hist{font-size:12px;color:var(--fnt);overflow-wrap:anywhere}
 .hist q{color:var(--mut)}
+.checks3d{display:flex;align-items:flex-start;gap:10px;font-size:12px;color:var(--mut);min-width:0}
+.checks3d .media{position:relative;width:96px;aspect-ratio:16/9;background:var(--s0);flex:none}
+.checks3d .media img{width:100%;height:100%;object-fit:contain}
+.checks3d .media .ph{font-size:10px;padding:2px}
+.checks3d ul{list-style:none;margin:0;padding:0;display:grid;gap:2px;min-width:0}
+.checks3d li{overflow-wrap:anywhere}
+.checks3d b{font-weight:500;color:var(--ink)}
+.row.confirm{margin-top:0;flex-wrap:wrap;align-items:center;gap:8px;font-size:13px;color:var(--ink)}
+.row.confirm span{flex:1 1 100%}
 .row{display:flex;flex-wrap:wrap;gap:8px;margin-top:auto}
 .takes{display:flex;gap:4px}
 .takes button{background:none;border:1px solid var(--rule);width:30px;height:30px;font-size:12px}
@@ -216,3 +226,60 @@ textarea{width:100%;background:var(--s0);color:var(--ink);border:1px solid var(-
 .mfile{background:none;border:0;border-bottom:1px dotted var(--rs);padding:0;color:var(--mut);font-size:12px;text-align:left;overflow-wrap:anywhere}
 .mrow{display:flex;flex-wrap:wrap;gap:8px;align-self:stretch;align-items:center}
 .mother{flex:1 1 16em;background:var(--s0);color:var(--ink);border:1px solid var(--rule);font:13px Inter,"Helvetica Neue",Arial,sans-serif;padding:6px 8px}
+.checks li.install{grid-template-columns:auto minmax(0,1fr);align-items:center;border-color:var(--brass, #d5a867)}
+/* pacing review, under the mix player */
+.pacing{display:flex;flex-direction:column;gap:8px;align-self:stretch}
+.pace{list-style:none;margin:0;padding:0;display:grid;gap:2px;max-height:min(60vh,34em);overflow-y:auto;overscroll-behavior:contain}
+.pline{display:grid;grid-template-columns:3.4em minmax(0,1fr) minmax(15em,20em);gap:4px 12px;align-items:start;background:var(--s1);border:1px solid var(--rule);border-left:3px solid var(--rule);padding:6px 10px;font-size:14px}
+.pline.now{border-left-color:var(--brass);background:var(--s3)}
+.pline.rr{border-left-color:var(--eng)}
+.pid{background:none;border:0;padding:2px 0;text-align:left;color:var(--mut);font-size:13px;font-variant-numeric:tabular-nums}
+.pid:hover:not([disabled]),.pline.now .pid{color:var(--brass)}
+.pid[disabled]{cursor:default;color:var(--fnt)}
+.ptext{line-height:1.9;overflow-wrap:anywhere}
+.pword{background:none;border:0;padding:0 2px;margin:0;color:var(--ink);font-size:14px;border-radius:2px}
+.pword:hover{background:var(--s2);color:var(--tide)}
+.psilent{color:var(--mut);padding:0 2px}
+.pmark{background:none;border:1px dashed var(--brass);color:var(--brass);padding:0 4px;margin:0 2px;font-size:13px;line-height:1.4}
+.pmark::after{font-size:9px;letter-spacing:.06em;margin-left:2px;vertical-align:1px}
+.pmark.ps-short::after{content:"S"}
+.pmark.ps-medium::after{content:"M"}
+.pmark.ps-long::after{content:"L"}
+.pmark.applied{border-style:solid}
+.pmark.by-claude{color:var(--tide);border-color:var(--tide)}
+.pmark.tight{border-color:var(--eng)}
+.pmark.off{color:var(--fnt);border-color:var(--fnt);opacity:.7}
+.pmark[aria-expanded=true]{background:var(--s2)}
+.pgap{background:none;border:1px dashed var(--rule);color:var(--fnt);padding:0 6px;margin-left:6px;font-size:12px;line-height:1.4}
+.pgap:hover{border-color:var(--tide);color:var(--tide)}
+.pmenu{display:inline-flex;flex-wrap:wrap;gap:4px;vertical-align:middle;background:var(--s0);border:1px solid var(--rule);padding:3px;margin:0 4px}
+.pop{background:none;border:1px solid var(--rule);color:var(--ink);font-size:12px;padding:1px 8px;line-height:1.5}
+.pop.on{border-color:var(--brass);color:var(--brass)}
+.pop.rm{color:var(--eng)}
+.pop[disabled]{opacity:.4;cursor:default}
+.pside{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:start}
+.mstep .pside textarea.pnote{width:100%;min-width:0;min-height:2.3em;resize:vertical;padding:5px 8px}
+.prr{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--mut);white-space:nowrap;padding-top:5px}
+.pinfo{grid-column:2/-1;display:grid;gap:2px}
+.pwarn{font-size:12px;color:var(--brass)}
+.pwarn.tight{color:var(--eng)}
+.preply{font-size:12px;color:var(--tide)}
+.pfoot{align-items:center}
+.pcounts{font-size:13px;color:var(--mut);margin-right:auto}
+@media(max-width:700px){.pline{grid-template-columns:3em minmax(0,1fr)}.pside{grid-column:1/-1}.pinfo{grid-column:1/-1}}
+/* Prompter bar: sticks under the header while Jon scrolls the Review */
+.prompter{position:sticky;top:var(--toph,0px);z-index:3;display:flex;flex-direction:column;gap:6px;background:var(--s2,var(--s1));border:1px solid var(--rule);border-left:3px solid var(--brass);padding:8px 10px;margin:8px 0;box-shadow:0 6px 14px rgba(0,0,0,.25)}
+.prompter[hidden]{display:none}
+.prompter:not([hidden]) ~ .sum{position:static}
+.pbctl{display:flex;align-items:center;gap:8px}
+.pbnav,.pplay{min-width:34px;height:30px;padding:0 8px;background:none;border:1px solid var(--rule);color:var(--ink);cursor:pointer;font-size:13px;line-height:1}
+.pplay{border-color:var(--brass);color:var(--brass)}
+.pbnav:hover,.pplay:hover{border-color:var(--brass)}
+.pbtime{margin-left:auto;color:var(--mut);font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.pbline .pline{border:0;padding:0;background:none;font-size:15px}
+.pbline .pid{color:var(--brass)}
+@media(max-width:700px){.pbline .ptext{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}}
+.pbline .pnote{min-height:0;height:2.4em;resize:vertical}
+/* Fold a Review section */
+.fold{margin-left:auto;min-width:30px;height:28px;padding:0 8px;background:none;border:1px solid var(--rule);color:var(--mut);cursor:pointer;font-size:14px;line-height:1}
+.fold:hover{border-color:var(--brass);color:var(--brass)}

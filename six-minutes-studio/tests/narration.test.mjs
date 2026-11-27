@@ -234,3 +234,21 @@ test("Sounds OK is offered on recorded takes that aren't already OK", async () =
   assert.deepEqual(m.map((r) => r.canUndoOk), [false, false, false, true, false]);
   assert.deepEqual(m.map((r) => r.chip), ["OK", "Flagged", "Old check", "OK by Jon", "Missing"]);
 });
+
+test("Re-record shows in the counts, the chip and the reason", async () => {
+  const { narrationModel } = await import("../js/ui/review.js");
+  const { STATUS_LABEL } = await import("../js/narration.js");
+  assert.equal(STATUS_LABEL.rerecord, "Re-record");
+  const n = { counts: { total: 2, recorded: 2, ok: 1, flagged: 0, rerecord: 1 },
+    rows: [{ id: "a", text: "x", status: "ok", flags: [], notes: [] }, { id: "b", text: "x", status: "rerecord", flags: ["too fast"], notes: [], file: "f.wav", takeS: 1 }] };
+  assert.match(countsLine(n.counts), /1 ok · 1 to re-record/);
+  const m = narrationModel(n).rows[1];
+  assert.equal(m.chip, "Re-record");
+  assert.equal(m.flag, "too fast");
+});
+
+test("a Re-record row does not offer Sounds OK", async () => {
+  const { narrationModel } = await import("../js/ui/review.js");
+  const n = { counts: { total: 1, recorded: 1 }, rows: [{ id: "a", text: "x", status: "rerecord", flags: ["n"], notes: [], file: "f.wav", takeS: 1 }] };
+  assert.equal(narrationModel(n).rows[0].canOk, false);
+});

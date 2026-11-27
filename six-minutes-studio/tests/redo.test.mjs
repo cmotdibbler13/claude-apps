@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { FakeHost } from "./fake-host.mjs";
 import { openFilm } from "../js/store.js";
 import { makeJobs } from "../js/jobs.js";
-import { startTake, watchJobs, approve, unapprove, choose, canStart, setTool, setPreferComfy, addBlender3d, has3d } from "../js/redo.js";
+import { startTake, watchJobs, approve, unapprove, choose, canStart, setTool, setPreferComfy, addBlender3d, has3d, hasDerived, addAnimated, removeVersion, jobGone, removedText, jobRemoved } from "../js/redo.js";
 
 const DIR = "S:\\Youtube video ideas\\Film A";
 const hf = (o = {}) => ({ id: "HF-01", kind: "lineart", line: "L", lineIndex: 0, desc: "A lighthouse", tool: "higgsfield", draftPrompt: "draft prompt", takes: [], chosen: 0, approved: false, ...o });
@@ -74,12 +74,62 @@ test("blender shot cannot start until source line art is approved", async () => 
   await assert.rejects(() => startTake(ctx, "HF-02"), /approved/);
   await approve(ctx, "HF-01");
   assert.equal(canStart(store.state.assets[1], store.state.assets), true);
-  host.claudeScript(() => ({ script: "print(1)", frames: 48 }));
+  let asked = 0;
+  host.claudeScript(() => { asked++; });
   const t = await startTake(ctx, "HF-02");
-  assert.equal(t.script, DIR + "\\studio\\blender\\HF-02_t1.py");
+  assert.equal(asked, 0);
+  assert.equal(t.n, 1);
+  assert.equal(t.script, undefined);
   assert.deepEqual(jobs.list()[0].input, {
-    kind: "blender", script: t.script, sourceFile: "S:\\a.png", out: DIR + "\\studio\\media\\HF-02_t1.mp4", frames: 48,
+    kind: "blender", asset: { id: "HF-02", desc: "3D lighthouse", line: "L2" }, take: 1, sourceFile: "S:\\a.png",
+    base: DIR + "\\studio\\blender\\HF-02_t1", out: DIR + "\\studio\\media\\HF-02_t1.mp4",
   });
+});
+
+test("blender redo passes the note, previous script and last check still; done copies script and checks", async () => {
+  const src = hf({ takes: [{ n: 1, prompt: "p", status: "done", file: "S:\\a.png", at: 1 }], chosen: 1, approved: true });
+  const pb = DIR + "\\studio\\blender\\HF-02_t1";
+  const prev = { n: 1, status: "done", file: "S:\\t1.mp4", script: pb + ".py", at: 1 };
+  const meta = { script: DIR + "\\studio\\blender\\HF-02_t2.py", checks: [{ round: 1, still: "S:\\n1.png", verdict: "matches", note: "ok" }] };
+  const runners = { blender: { lane: "gpu", start: async (j) => ({ file: j.input.out, meta }) } };
+  const { ctx, host, store, jobs } = await setup([src, bl({ takes: [prev], chosen: 1 })], runners);
+  await host.fs.mkdir(DIR + "\\studio\\blender");
+  for (const f of ["_r1.py", "_r2.py", ".py", "_check1.png", "_check2.png", "_check3.png"]) host.files.set(pb + f, "x");
+  watchJobs(ctx);
+  await startTake(ctx, "HF-02", { note: "turn left" });
+  const input = jobs.list()[0].input;
+  assert.equal(input.note, "turn left");
+  assert.equal(input.previousScript, pb + ".py");
+  // The final script is round 2's (no _r3.py), so round 2's still goes with it, not a stray _check3.png.
+  assert.equal(input.previousStill, pb + "_check2.png");
+  assert.equal(input.base, DIR + "\\studio\\blender\\HF-02_t2");
+  await tick(); await tick();
+  const t = store.state.assets[1].takes[1];
+  assert.equal(t.status, "done");
+  assert.equal(t.script, meta.script);
+  assert.deepEqual(t.checks, meta.checks);
+});
+
+test("blender redo after a failed take finds its last round script and still on disk", async () => {
+  const src = hf({ takes: [{ n: 1, prompt: "p", status: "done", file: "S:\\a.png", at: 1 }], chosen: 1, approved: true });
+  const pb = DIR + "\\studio\\blender\\HF-02_t1";
+  const prev = { n: 1, status: "failed", error: "The 3D render came out blank. Redo with a note.", at: 1 };
+  const { ctx, host, jobs } = await setup([src, bl({ takes: [prev], chosen: 1 })], idle);
+  await host.fs.mkdir(DIR + "\\studio\\blender");
+  for (const f of ["_r1.py", "_r2.py", "_check1.png", "_check2.png"]) host.files.set(pb + f, "x");
+  await startTake(ctx, "HF-02", { note: "camera further back" });
+  const input = jobs.list()[0].input;
+  assert.equal(input.previousScript, pb + "_r2.py");
+  assert.equal(input.previousStill, pb + "_check2.png");
+});
+
+test("blender redo with nothing on disk from the previous take sends no previous script or still", async () => {
+  const src = hf({ takes: [{ n: 1, prompt: "p", status: "done", file: "S:\\a.png", at: 1 }], chosen: 1, approved: true });
+  const { ctx, jobs } = await setup([src, bl({ takes: [{ n: 1, status: "failed", at: 1 }], chosen: 1 })], idle);
+  await startTake(ctx, "HF-02", { note: "n" });
+  const input = jobs.list()[0].input;
+  assert.equal(input.previousScript, undefined);
+  assert.equal(input.previousStill, undefined);
 });
 
 test("refuses a second take while one is running", async () => {
@@ -170,14 +220,19 @@ test("a 200-frame Blender render writes state.json and the jobs file only a few 
   const writes = { state: 0, jobs: 0 };
   const w = host.fs.write;
   host.fs.write = async (p, x) => { if (/state\.json\.tmp$/i.test(p)) writes.state++; if (/studio-jobs\.json\.tmp$/i.test(p)) writes.jobs++; return w(p, x); };
+  host.limitsScript(() => ({ images: { max: 5 } }));
+  host.files.set("S:\\a.png", "DRAWING");
+  let asks = 0;
+  host.claudeScript(() => (asks++ === 0 ? { script: "import bpy\n", frames: 200 } : { verdict: "matches", note: "ok" }));
   host.spawnScript((cmd, args, o, ctl) => {
+    if (args.includes("--still")) { host.files.set(args.at(-1), "png"); return ctl.exit(0); }
     for (let i = 1; i <= 200; i++) ctl.out(`Fra:${i} Mem:1M | Rendering\nFra:${i} Mem:1M | Sample 1/64\n`);
     host.files.set(args.at(-1), "x");
     ctl.exit(0);
   });
   const jobs = makeJobs(host, { runners: { blender: makeBlenderRunner() }, file: "S:\\Youtube video ideas\\.studio-jobs.json" });
   watchJobs({ host, store, jobs });
-  jobs.add({ film: DIR, assetId: "HF-02", take: 1, tool: "blender", input: { script: "s.py", sourceFile: "a.png", out: DIR + "\\studio\\media\\HF-02_t1.mp4", frames: 200 } });
+  jobs.add({ film: DIR, assetId: "HF-02", take: 1, tool: "blender", input: { kind: "blender", asset: { id: "HF-02", desc: "d", line: "l" }, take: 1, sourceFile: "S:\\a.png", base: DIR + "\\studio\\blender\\HF-02_t1", out: DIR + "\\studio\\media\\HF-02_t1.mp4" } });
   await new Promise((r) => setTimeout(r, 100)); await jobs.flush(); await tick();
   assert.equal(store.state.assets[0].takes[0].status, "done");
   assert.ok(writes.state <= 10, `state.json written ${writes.state} times`);
@@ -391,4 +446,138 @@ test("a busy score take with no job is marked lost", async () => {
   assert.equal(t.status, "interrupted");
   assert.equal(t.error, "Lost track of this job");
   stop();
+});
+
+const lineart2 = () => hf({ id: "HF-02", lineIndex: 3, line: "L3", desc: "A Lighthouse at dusk", approved: true });
+
+test("addAnimated adds a ComfyUI animated version beside its drawing, once", async () => {
+  const { ctx, store } = await setup([lineart2(), hf({ id: "HF-07", kind: "broll", lineIndex: 5 })]);
+  const id = await addAnimated(ctx, "HF-02");
+  assert.equal(id, "HF-08");
+  assert.deepEqual(store.state.assets.find((a) => a.id === id), {
+    id: "HF-08", kind: "animated", tool: "comfyui", sourceId: "HF-02", line: "L3", lineIndex: 3,
+    desc: "Animated version of a Lighthouse at dusk",
+    draftPrompt: "a Lighthouse at dusk; slow orbit around it, keep the hand-drawn amber line-art style on black, no new colours",
+    takes: [], chosen: 0, approved: false,
+  });
+  assert.equal(hasDerived(store.state.assets, "HF-02", "animated"), true);
+  assert.equal(has3d(store.state.assets, "HF-02"), false);
+  await assert.rejects(() => addAnimated(ctx, "HF-02"), /HF-02 already has an animated version\./);
+  await assert.rejects(() => addAnimated(ctx, "HF-07"), /HF-07 is not line art\./);
+  assert.equal(canStart(store.state.assets.find((a) => a.id === id), store.state.assets), true);
+});
+
+test("addAnimated waits for the drawing to be approved", async () => {
+  const { ctx, store } = await setup([hf()]);
+  const id = await addAnimated(ctx, "HF-01");
+  assert.equal(canStart(store.state.assets.find((a) => a.id === id), store.state.assets), false);
+  await assert.rejects(() => startTake(ctx, id), /needs its source line art approved/);
+});
+
+test("removeVersion moves a derived version to removed, and a re-made one gets a new id", async () => {
+  const { ctx, store, host } = await setup([lineart2()]);
+  const id = await addBlender3d(ctx, "HF-02");
+  assert.equal(id, "HF-03");
+  await removeVersion(ctx, id);
+  assert.equal(store.state.assets.some((a) => a.id === id), false);
+  assert.equal(store.state.removed.length, 1);
+  assert.equal(store.state.removed[0].id, id);
+  assert.equal(store.state.removed[0].removedAt, host.now());
+  assert.equal(has3d(store.state.assets, "HF-02"), false);
+  const again = await addBlender3d(ctx, "HF-02");
+  assert.equal(again, "HF-04");
+  const anim = await addAnimated(ctx, "HF-02");
+  assert.equal(anim, "HF-05");
+  await removeVersion(ctx, anim);
+  assert.equal(await addAnimated(ctx, "HF-02"), "HF-06");
+});
+
+test("removeVersion refuses while a take runs or is starting, and for line art or b-roll", async () => {
+  const { ctx, store } = await setup([lineart2(), hf({ id: "HF-09", kind: "broll" })], idle);
+  const id = await addAnimated(ctx, "HF-02");
+  await store.update((d) => { d.assets.find((a) => a.id === id).takes = [{ n: 1, status: "running" }]; });
+  await assert.rejects(() => removeVersion(ctx, id), new RegExp(`${id} has a take in progress\\.`));
+  await store.update((d) => { d.assets.find((a) => a.id === id).takes = [{ n: 1, status: "done", file: "x.mp4" }]; });
+  store.pending.add(`${id}#2`);
+  await assert.rejects(() => removeVersion(ctx, id), /has a take in progress\./);
+  store.pending.delete(`${id}#2`);
+  await assert.rejects(() => removeVersion(ctx, "HF-02"), /HF-02 is not a 3D or animated version\./);
+  await assert.rejects(() => removeVersion(ctx, "HF-09"), /HF-09 is not a 3D or animated version\./);
+  await assert.rejects(() => removeVersion(ctx, "HF-99"), /Unknown shot HF-99/);
+  await removeVersion(ctx, id);
+  assert.equal(store.state.removed[0].takes[0].file, "x.mp4");
+});
+
+test("startTake for an animated asset sends a ComfyUI video input from the drawing's chosen take", async () => {
+  const src = lineart2();
+  src.takes = [{ n: 1, status: "done", file: "a.png" }, { n: 2, status: "done", file: "b.png" }];
+  src.chosen = 2;
+  const { ctx, store, jobs } = await setup([src], { comfyui: { start: () => new Promise(() => {}) } });
+  const id = await addAnimated(ctx, "HF-02");
+  const t = await startTake(ctx, id);
+  assert.equal(t.prompt, "a Lighthouse at dusk; slow orbit around it, keep the hand-drawn amber line-art style on black, no new colours");
+  const [j] = jobs.list();
+  assert.equal(j.tool, "comfyui");
+  assert.deepEqual(j.input, { kind: "animated", prompt: t.prompt, out: DIR + `\\studio\\media\\${id}_t1.mp4`, sourceFile: "b.png" });
+  assert.equal(store.state.assets.find((a) => a.id === id).takes[0].tool, "comfyui");
+});
+
+test("startTake fails cleanly when the version is removed during the prompt rewrite", async () => {
+  const src = lineart2();
+  const { ctx, host, store } = await setup([src], idle);
+  const id = await addAnimated(ctx, "HF-02");
+  await store.update((d) => { d.assets.find((a) => a.id === id).takes = [{ n: 1, status: "failed", prompt: "old", at: 1 }]; });
+  host.claudeScript(async () => {
+    await store.update((d) => { d.removed = [d.assets.find((a) => a.id === id)]; d.assets = d.assets.filter((a) => a.id !== id); });
+    return { prompt: "new" };
+  });
+  await assert.rejects(() => startTake(ctx, id, { note: "n" }), new RegExp(`${id} changed while the take was being prepared\\.`));
+});
+
+test("blender redo: the previous still is the chosen script's round, none when that round crashed", async () => {
+  const src = hf({ takes: [{ n: 1, prompt: "p", status: "done", file: "S:\\a.png", at: 1 }], chosen: 1, approved: true });
+  const pb = DIR + "\\studio\\blender\\HF-02_t1";
+  const prev = { n: 1, status: "failed", error: "Blender stopped", at: 1 };
+  const { ctx, host, jobs } = await setup([src, bl({ takes: [prev], chosen: 1 })], idle);
+  await host.fs.mkdir(DIR + "\\studio\\blender");
+  // Round 2's script was written by round 1's fix, but its still never came (crash): no still at all.
+  for (const f of ["_r1.py", "_r2.py", "_check1.png"]) host.files.set(pb + f, "x");
+  await startTake(ctx, "HF-02", { note: "n" });
+  const input = jobs.list()[0].input;
+  assert.equal(input.previousScript, pb + "_r2.py");
+  assert.equal(input.previousStill, undefined);
+});
+
+test("jobGone: a job whose shot was removed from the review", () => {
+  const state = { assets: [bl()], removed: [{ id: "HF-07", kind: "blender", takes: [] }], audio: { score: { id: "SCORE", takes: [] }, sfx: [{ id: "SFX-01", takes: [] }] } };
+  assert.equal(jobGone(state, { assetId: "HF-02" }), false);
+  assert.equal(jobGone(state, { assetId: "SCORE" }), false);
+  assert.equal(jobGone(state, { assetId: "SFX-01" }), false);
+  assert.equal(jobGone(state, { assetId: "HF-07" }), true);
+  assert.equal(jobGone(state, {}), false, "a job without a shot is never gone");
+  // Jobs that have no holder (the score measure) are not removed shots: Retry works as before.
+  assert.equal(jobGone(state, { assetId: "MEASURE" }), false);
+  assert.equal(jobGone(state, { assetId: "HF-99" }), false, "only ids in state.removed are refused");
+  assert.equal(jobGone(null, { assetId: "HF-07" }), false, "unknown state: not refused");
+  assert.equal(removedText("HF-07"), "HF-07 was removed from the review.");
+});
+
+test("jobRemoved: Retry and Check refuse a job whose shot was removed, for the open film or one on disk", async () => {
+  const { ctx, host, store } = await setup([hf({ approved: true }), bl()], idle);
+  await removeVersion(ctx, "HF-02");
+  const job = { id: "j", film: DIR, assetId: "HF-02", take: 1, tool: "blender" };
+  assert.equal(await jobRemoved(host, job, store), "HF-02 was removed from the review.");
+  assert.equal(await jobRemoved(host, { ...job, assetId: "HF-01" }, store), null);
+  // Not the open film: its state is read from disk.
+  assert.equal(await jobRemoved(host, job, null), "HF-02 was removed from the review.");
+  // A film whose state can't be read is not refused.
+  assert.equal(await jobRemoved(host, { ...job, film: "S:\\Youtube video ideas\\Nope" }, null), null);
+});
+
+test("jobRemoved: a failed score-measure job is not refused", async () => {
+  const { ctx, host, store } = await setup([hf({ approved: true }), bl()], idle);
+  await removeVersion(ctx, "HF-02");
+  const measure = { id: "m", film: DIR, assetId: "MEASURE", take: 1, tool: "ffmpeg" };
+  assert.equal(await jobRemoved(host, measure, store), null);
+  assert.equal(await jobRemoved(host, measure, null), null);
 });

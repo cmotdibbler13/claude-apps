@@ -2,7 +2,7 @@
 // Plan steps are in score time: [{from_s, to_s, tempo, xfade_s}]. The fitted score's t=0 is film t=0.
 import { askJson } from "./claude.js";
 
-const HOLD_S = 6;
+const HOLD_S = 0; // the title hold is in the voiceover itself: film time = voiceover time
 const TAIL_S = 0.5;
 const TEMPO = [0.9, 1.1];
 const XFADES = [0.03, 2.5];

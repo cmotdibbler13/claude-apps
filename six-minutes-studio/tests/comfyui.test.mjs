@@ -279,3 +279,63 @@ test("fillWorkflow throws on a bad node map entry and accepts the node.input str
 });
 
 test("lane is gpu", () => assert.equal(makeComfyRunner({ settings: mkSettings() }).lane, "gpu"));
+
+// ---- image to video ----
+import { i2vReady } from "../js/tools/comfyui.js";
+const I2V_WF = "S:\\Youtube video ideas\\ComfyUI workflows\\animate_i2v.json";
+const i2vWf = () => ({ 1: { inputs: { image: "" } }, 2: { inputs: { text: "" } }, 3: { inputs: { noise_seed: 0 } }, 4: { inputs: { filename_prefix: "x" } } });
+const i2vSettings = (i2v = {}) => mkSettings({ i2v: { workflow: I2V_WF, nodes: { image: ["1", "image"], prompt: ["2", "text"], seed: ["3", "noise_seed"], output: ["4", "filename_prefix"] }, ...i2v } });
+const ajob = () => job({ input: { kind: "animated", prompt: "it turns", out: OUT, sourceFile: "S:\\Film A\\my drawing.png" } });
+const animSetup = (post) => {
+  const t = setup({ settings: i2vSettings(), history: [hist({ outputs: { 4: { images: [{ filename: "clip_00001_.mp4", subfolder: "broll" }] } } })] });
+  t.host.files.set(I2V_WF, JSON.stringify(i2vWf()));
+  return t;
+};
+
+test("animated: uploads the drawing and fills the image node with the returned name", async () => {
+  const t = animSetup();
+  const calls = [];
+  t.host.spawnScript(async (cmd, args, o, p) => {
+    calls.push([cmd, ...args]);
+    if (cmd === "curl" && args.includes("overwrite=true")) { p.out(JSON.stringify({ name: "my drawing.png", subfolder: "sub", type: "input" })); return p.exit(0); }
+    if (cmd === "curl" && args.includes("POST")) {
+      t.bodies.push(await t.host.fs.read(args[args.indexOf("--data-binary") + 1].slice(1), "utf8"));
+      p.out(JSON.stringify({ prompt_id: "P1" }) + "\n200"); return p.exit(0);
+    }
+    if (cmd === "curl" && args.at(-1).endsWith("/queue")) { p.out(inQueue); return p.exit(0); }
+    if (cmd === "curl") { p.out(hist({ outputs: { 4: { images: [{ filename: "clip_00001_.mp4", subfolder: "broll" }] } } })); return p.exit(0); }
+    if (cmd === "ffmpeg") { await t.host.fs.write(args[args.length - 1], "CROPPED"); return p.exit(0); }
+    p.exit(0);
+  });
+  const r = await t.runner.start(ajob(), t.ctx);
+  assert.equal(r.file, OUT);
+  assert.deepEqual(calls[0], ["curl", "-sS", "--fail", "-F", "image=@S:\\Film A\\my drawing.png", "-F", "overwrite=true", "http://127.0.0.1:8188/upload/image"]);
+  const sent = JSON.parse(t.bodies[0]).prompt;
+  assert.equal(sent[1].inputs.image, "sub/my drawing.png");
+  assert.equal(sent[2].inputs.text, "it turns");
+  assert.match(sent[4].inputs.filename_prefix, /^broll\/sixmin_/);
+});
+
+test("animated: an upload failure says so", async () => {
+  const t = animSetup();
+  t.host.spawnScript(async (cmd, args, o, p) => { p.err("curl: (22) bad"); p.exit(22); });
+  await assert.rejects(t.runner.start(ajob(), t.ctx), /^Error: Couldn't send the drawing to ComfyUI: curl: \(22\) bad/);
+});
+
+test("animated: refuses when the workflow or image node is missing", async () => {
+  const t = setup({ settings: i2vSettings() }); // no animate_i2v.json on disk
+  await assert.rejects(t.runner.start(ajob(), t.ctx), /^Error: Set up the image-to-video workflow \(see Probe\): animate_i2v.json isn't in ComfyUI workflows/);
+  assert.equal(t.spawns.length, 0);
+  const t2 = setup({ settings: i2vSettings({ nodes: { prompt: ["2", "text"], output: ["4", "filename_prefix"] } }) });
+  t2.host.files.set(I2V_WF, "{}");
+  await assert.rejects(t2.runner.start(ajob(), t2.ctx), /Set up the image-to-video workflow \(see Probe\): comfy\.i2v\.nodes needs image, prompt and output/);
+});
+
+test("i2vReady", async () => {
+  const host = new FakeHost();
+  const c = mkSettings().comfy;
+  assert.equal((await i2vReady(host, { ...c, i2v: { workflow: I2V_WF, nodes: {} } })).ok, false);
+  host.files.set(I2V_WF, "{}");
+  const ok = await i2vReady(host, i2vSettings().comfy);
+  assert.deepEqual(ok, { ok: true, why: "" });
+});

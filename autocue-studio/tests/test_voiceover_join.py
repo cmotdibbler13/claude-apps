@@ -114,6 +114,35 @@ class TrimTakeTest(unittest.TestCase):
         hiss_end = 0.5 + 1.0 + 0.25
         self.assertAlmostEqual(len(x) / RATE - info["tail_s"], hiss_end + 0.15, delta=0.005)
 
+    # Jon's 01.1 (27 Nov): "...made of stone" spoken softly at the end of the
+    # line was cut off whole. Soft last words, with short dips between them,
+    # must all be kept, and the Space click 0.4 s later still left out.
+    def test_soft_last_words_with_gaps_between_them_are_all_kept(self):
+        words = [tone(0.35, -14.0, 140.0), noise(0.06),           # loud words
+                 tone(0.25, -30.0, 130.0), noise(0.05),           # "made"
+                 tone(0.12, -34.0, 125.0), noise(0.07),           # "of"
+                 noise(0.06, -36.0), tone(0.30, -37.0, 120.0)]    # "s" + "tone"
+        x = np.concatenate([noise(0.5)] + words + [noise(0.4), click(0.020), noise(0.3)])
+        last_word_end = 0.5 + sum(len(w) for w in words) / RATE
+        y, info = vj.trim_take(x, RATE)
+        kept_until = len(x) / RATE - info["tail_s"]
+        self.assertAlmostEqual(kept_until, last_word_end + 0.15, delta=0.015)
+        self.assertLess(kept_until, last_word_end + 0.4)   # the click is left out
+
+    # Jon's 01.2: "It ... stands" lost its soft start.
+    def test_a_soft_first_word_is_kept(self):
+        x = np.concatenate([noise(0.6), tone(0.15, -33.0, 150.0), noise(0.08),     # "It"
+                            noise(0.08, -35.0), tone(0.5, -14.0, 140.0), noise(0.6)])  # "s" + "tands"
+        y, info = vj.trim_take(x, RATE)
+        self.assertAlmostEqual(info["head_s"], 0.6 - 0.05, delta=0.015)
+
+    def test_a_soft_word_inside_a_long_pause_is_never_cut_out(self):
+        x = np.concatenate([noise(0.5), tone(0.5, -14.0), noise(0.45),
+                            tone(0.2, -36.0, 130.0), noise(0.45), tone(0.5, -14.0), noise(0.5)])
+        y, stalls = vj.tighten_stalls(x, RATE)
+        self.assertEqual(stalls, [])
+        self.assertEqual(len(y), len(x))
+
     def test_voiced_zcr_threshold_means_the_same_as_at_16k(self):
         # ZCR 0.12 at 16 kHz is 1920 crossings a second (a 960 Hz tone).
         # 1.5 kHz is unvoiced in take_checks; 600 Hz is voiced.
@@ -437,7 +466,8 @@ class JoinCommandTest(unittest.TestCase):
         self.assertEqual([r["name"] for r in rows], ["demo_01", "demo_02"])
         self.assertEqual(rows[0]["start_s"], "0.000")
         self.assertEqual(rows[0]["timecode"], "00:00.00")
-        self.assertAlmostEqual(float(rows[1]["start_s"]) - float(rows[0]["end_s"]), 1.2,
+        # the first section change is the end of the cold open: the title hold (6 s)
+        self.assertAlmostEqual(float(rows[1]["start_s"]) - float(rows[0]["end_s"]), 6.0,
                                delta=0.001)
         self.assertAlmostEqual(done["length_s"] - float(rows[1]["end_s"]), 0.5, delta=0.001)
         self.assertEqual(rows[1]["timecode"], vj.timecode(float(rows[1]["start_s"])))
@@ -649,6 +679,105 @@ class JoinCommandTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("error", json.loads(buf.getvalue().splitlines()[-1]))
 
+    def pauses_file(self, data):
+        path = os.path.join(self.dir, "pauses.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        return path
+
+    def test_no_pauses_is_unchanged(self):
+        code, lines = self.run_join()
+        self.assertEqual(code, 0)
+        done0 = lines[-1]
+        with open(done0["wav"], "rb") as fh:
+            wav0 = fh.read()
+        with open(done0["csv"], encoding="utf-8") as fh:
+            csv0 = fh.read()
+        self.assertEqual(done0["tight"], [])
+        self.assertEqual(done0["pauses"], {"inside": 0, "after": 0})
+        code, lines = self.run_join("--pauses", self.pauses_file({}))
+        self.assertEqual(code, 0)
+        with open(lines[-1]["wav"], "rb") as fh:
+            self.assertEqual(fh.read(), wav0)
+        with open(lines[-1]["csv"], encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), csv0)
+        self.assertEqual(lines[-1]["pauses"], {"inside": 0, "after": 0})
+
+    def test_done_line_reports_tight_and_counts(self):
+        path = self.pauses_file({"inside": {"01.1": [{"at_s": 0.3, "add_s": 0.4}]},
+                                 "after": {"01.2": 0.7}})
+        code, lines = self.run_join("--pauses", path)
+        self.assertEqual(code, 0, lines[-1])
+        done = lines[-1]
+        self.assertEqual(done["pauses"], {"inside": 1, "after": 1})
+        self.assertIsInstance(done["tight"], list)
+        self.assertEqual([t["id"] for t in done["tight"]], ["01.1"])   # a steady tone: no gap
+        _, base = self.run_join()
+        self.assertAlmostEqual(done["length_s"] - base[-1]["length_s"], 1.1, delta=0.002)
+
+    def test_transcript_offsets_follow_inside_and_after_gaps(self):
+        _, base = self.run_join()
+        with open(base[-1]["transcript"], encoding="utf-8") as fh:
+            t0 = json.load(fh)["sentences"]
+        path = self.pauses_file({"inside": {"01.1": [{"at_s": 0.3, "add_s": 0.4}]},
+                                 "after": {"01.1": 0.25}})
+        code, lines = self.run_join("--pauses", path)
+        self.assertEqual(code, 0, lines[-1])
+        with open(lines[-1]["transcript"], encoding="utf-8") as fh:
+            t1 = json.load(fh)["sentences"]
+        self.assertAlmostEqual(t1[0]["end"] - t0[0]["end"], 0.4, delta=0.002)
+        self.assertAlmostEqual(t1[1]["start"] - t0[1]["start"], 0.65, delta=0.002)
+        self.assertAlmostEqual(t1[1]["end"] - t0[1]["end"], 0.65, delta=0.002)
+
+    def test_non_finite_pauses_are_dropped(self):
+        path = os.path.join(self.dir, "inf.json")
+        with open(path, "w") as fh:
+            fh.write('{"inside": {"01.1": [{"at_s": 0.3, "add_s": Infinity}, '
+                     '{"at_s": 0.3, "add_s": NaN}]}, '
+                     '"after": {"01.2": Infinity, "02.1": -Infinity}}')
+        code, lines = self.run_join("--pauses", path)
+        self.assertEqual(code, 0, lines[-1])
+        self.assertEqual(lines[-1]["pauses"], {"inside": 0, "after": 0})
+
+    def test_a_clip_with_pauses_keeps_the_voice_level_of_the_clip_without(self):
+        # The clip's level is set on its voice, not on its voice plus the silence the pauses add.
+        def voice_rms(path):
+            x = vj.decode48(path)
+            n = RATE // 100
+            f = np.asarray(x[:len(x) // n * n], dtype=np.float64).reshape(-1, n)
+            db = 10 * np.log10(np.maximum(np.mean(f ** 2, axis=1), 1e-20))
+            return vj.rms_db(f[db > -40.0].ravel())
+        code, base = self.run_join()
+        self.assertEqual(code, 0, base[-1])
+        plain = voice_rms(base[-1]["wav"])
+        path = self.pauses_file({"inside": {"01.1": [{"at_s": 0.3, "add_s": 1.0}]},
+                                 "after": {"01.1": 1.0}})
+        code, lines = self.run_join("--pauses", path)
+        self.assertEqual(code, 0, lines[-1])
+        self.assertAlmostEqual(voice_rms(lines[-1]["wav"]), plain, delta=0.1)
+
+    def test_level_clip_with_a_reference_uses_the_reference_gain(self):
+        clip = vj.build_clip([tone(0.8, -25.0), tone(0.6, -8.0)])
+        padded = np.concatenate([clip[:RATE // 2], np.zeros(RATE), clip[RATE // 2:]])
+        y0 = vj.level_clip(clip)
+        y1 = vj.level_clip(padded, ref=clip)
+        np.testing.assert_allclose(np.concatenate([y1[:RATE // 2], y1[RATE // 2 + RATE:]]), y0, atol=1e-6)
+        np.testing.assert_array_equal(vj.level_clip(clip, ref=clip), y0)
+
+    def test_after_on_the_last_line_is_not_counted(self):
+        path = self.pauses_file({"after": {"02.1": 0.5}})
+        code, lines = self.run_join("--pauses", path)
+        self.assertEqual(code, 0, lines[-1])
+        self.assertEqual(lines[-1]["pauses"], {"inside": 0, "after": 0})
+
+    def test_a_broken_pauses_file_is_refused(self):
+        path = os.path.join(self.dir, "bad.json")
+        with open(path, "w") as fh:
+            fh.write("[1, 2")
+        code, lines = self.run_join("--pauses", path)
+        self.assertEqual(code, 2)
+        self.assertIn("error", lines[-1])
+
 
 class TranscriptForTest(unittest.TestCase):
     def test_each_part_is_offset_to_its_place(self):
@@ -679,5 +808,89 @@ class TimecodeTest(unittest.TestCase):
         self.assertEqual(vj.timecode(6125.5), "102:05.50")
 
 
+def _gap_part():
+    return np.concatenate([tone(0.5), silence(0.08), tone(0.5)])
+
+
+def _first_silent_run_start(y, floor_db=-60.0, after_s=0.45):
+    """Start (s) of the first run of 1 ms frames below floor_db after after_s."""
+    n = RATE // 1000
+    db = take_checks._frame_db(take_checks._frames(np.asarray(y), n))
+    quiet = np.flatnonzero(db < floor_db)
+    return quiet[quiet >= int(after_s * 1000)][0] / 1000.0
+
+
+class TestPauses(unittest.TestCase):
+    def test_inside_pause_adds_silence_at_the_gap(self):
+        x = _gap_part()
+        y, tight = vj.insert_pauses(x, [{"at_s": 0.54, "add_s": 0.6}], RATE)
+        self.assertEqual(len(y), len(x) + round(0.6 * RATE))
+        mid = y[int(0.5 * RATE):int(1.18 * RATE)]
+        self.assertLess(vj.rms_db(mid), -60.0)
+        self.assertLess(np.max(np.abs(mid)), 10 ** (-60 / 20))
+        self.assertEqual(tight, [])
+
+    def test_inside_pause_moves_to_the_quietest_point(self):
+        x = _gap_part()
+        y, tight = vj.insert_pauses(x, [{"at_s": 0.40, "add_s": 0.6}], RATE)
+        self.assertEqual(len(y), len(x) + round(0.6 * RATE))
+        start = _first_silent_run_start(y)
+        self.assertGreaterEqual(start, 0.5 - 0.002)
+        self.assertLessEqual(start, 0.58)
+        self.assertEqual(tight, [])
+
+    def test_words_run_together_still_get_the_pause_flagged(self):
+        x = np.concatenate([noise(0.1), tone(1.2), noise(0.1)])
+        y, tight = vj.insert_pauses(x, [{"at_s": 0.7, "add_s": 0.6}], RATE)
+        self.assertEqual(len(y), len(x) + round(0.6 * RATE))
+        self.assertEqual(len(tight), 1)
+        self.assertAlmostEqual(tight[0], 0.7, delta=0.15)
+
+    def test_several_pauses_shift_by_the_silence_already_inserted(self):
+        x = np.concatenate([tone(0.5), silence(0.08), tone(0.5), silence(0.08), tone(0.5)])
+        y, tight = vj.insert_pauses(x, [{"at_s": 1.12, "add_s": 0.3},
+                                        {"at_s": 0.54, "add_s": 0.2}], RATE)
+        self.assertEqual(len(y), len(x) + round(0.5 * RATE))
+        self.assertEqual(tight, [])
+        db = take_checks._frame_db(take_checks._frames(y, RATE // 1000))
+        runs = [(a, b) for a, b in take_checks._runs(db < -60.0) if b - a > 150]
+        self.assertEqual(len(runs), 2)
+        self.assertGreater(runs[0][1] - runs[0][0], 270)    # 0.08 + 0.2
+        self.assertGreater(runs[1][1] - runs[1][0], 370)    # 0.08 + 0.3
+
+    def test_after_gap_adds_to_sentence_and_clip_gaps(self):
+        a, b = tone(0.5), tone(0.4)
+        base = vj.build_clip([a, b])
+        longer = vj.build_clip([a, b], after=[0.3, 0.0])
+        self.assertEqual(len(longer) - len(base), round(0.3 * RATE))
+        clips = [("01", np.ones(RATE)), ("02", np.ones(RATE))]
+        _, t0 = vj.assemble(clips, ["A", "A"], rate=RATE)
+        _, t1 = vj.assemble(clips, ["A", "A"], rate=RATE, after=[0.5, 0])
+        self.assertAlmostEqual(t1[1]["start_s"] - t0[1]["start_s"], 0.5, places=6)
+        self.assertAlmostEqual(t1[0]["start_s"], t0[0]["start_s"], places=6)
+
+    def test_build_clip_without_inside_keeps_its_single_return(self):
+        self.assertIsInstance(vj.build_clip([tone(0.3)]), np.ndarray)
+        y, tight = vj.build_clip([tone(0.3)], inside=[[]])
+        self.assertEqual(tight, [[]])
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class TitleHoldTest(unittest.TestCase):
+    # Jon (27 Nov): the voiceover needs a gap where the title card sits, at
+    # the end of the cold open, not at the start of the film.
+    def test_the_first_section_change_gets_the_title_hold(self):
+        a = np.ones(RATE)
+        clips = [("01", a), ("02", a), ("03", a), ("04", a)]
+        x, t = vj.assemble(clips, ["Cold open", "Cold open", "Village", "Storm"], rate=RATE, title_hold_s=6.0)
+        self.assertAlmostEqual(t[1]["start_s"] - t[0]["end_s"], 0.6, places=6)
+        self.assertAlmostEqual(t[2]["start_s"] - t[1]["end_s"], 6.0, places=6)
+        self.assertAlmostEqual(t[3]["start_s"] - t[2]["end_s"], 1.2, places=6)
+
+    def test_without_a_title_hold_every_section_change_is_1_2_s(self):
+        a = np.ones(RATE)
+        x, t = vj.assemble([("01", a), ("02", a)], ["A", "B"], rate=RATE)
+        self.assertAlmostEqual(t[1]["start_s"] - t[0]["end_s"], 1.2, places=6)

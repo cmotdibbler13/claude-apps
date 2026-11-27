@@ -1,6 +1,7 @@
 // Review view, music and sound effects: the Score card, the Sound effects cards and the Stable Audio chip.
 // audioModel is pure; audioSections builds the DOM from it.
-import { h, btn, toolLabel } from "./dom.js";
+import { h, btn, toolLabel, playToggle } from "./dom.js";
+import { foldable } from "./fold.js";
 import { nodeSig } from "../tools/elevenlabs.js";
 import { formatStart } from "../audioplan.js";
 
@@ -194,8 +195,7 @@ function loopBox(c, actions) {
 function takeRow(c, t, actions) {
   return h("li", { class: `arow${t.chosen ? " on" : ""}` },
     t.file
-      ? h("button", { type: "button", class: `nplay${t.playing ? " on" : ""}`, "aria-label": `${t.playing ? "Stop" : "Play"} ${c.id} take ${t.n}`,
-        title: t.playing ? "Stop" : "Play this take", onclick: () => actions.playTake(t.file) }, t.playing ? "■" : "▶")
+      ? playToggle(t.file, t.playing, `${c.id} take ${t.n}`, actions)
       : h("span", { class: "nplay-gap" }),
     h("div", { class: "abody" },
       h("div", { class: "ahead" }, h("span", { class: "an", text: `Take ${t.n}` }), h("span", { class: "asrc", text: t.sourceLabel })),
@@ -265,12 +265,12 @@ function addCueForm(m, actions) {
 export function audioSections(m, actions) {
   if (!m) return [];
   if (m.needsPlan) {
-    return [h("section", { class: "audio-plan", "aria-label": "Music and sound effects" },
+    return [foldable(h("section", { class: "audio-plan", "aria-label": "Music and sound effects" },
       h("div", { class: "h2row" }, h("h2", { text: "Music and sound effects" })),
       h("div", { class: "panel" },
         h("p", { text: "No music or sound effects planned yet. Claude reads the script and part1_handover.md and plans the score and each cue." }),
         btn(m.planning ? "Planning…" : "Plan music and sound effects", () => actions.planAudio(), { disabled: m.planning }),
-        m.planError ? h("p", { class: "err", text: m.planError }) : null))];
+        m.planError ? h("p", { class: "err", text: m.planError }) : null)), "Music and sound effects")];
   }
   const scoreSec = h("section", { class: "audio", "aria-label": "Score" },
     h("div", { class: "h2row" }, h("h2", { text: "Score" })),
@@ -284,5 +284,5 @@ export function audioSections(m, actions) {
     s.message ? h("p", { class: "err", text: s.message }) : null,
     m.sfx.length ? h("div", { class: "cards sfx-cards" }, m.sfx.map((c) => audioCard(c, actions))) : h("p", { class: "note", text: "No sound effects yet." }),
     addCueForm(m, actions));
-  return [scoreSec, sfxSec];
+  return [foldable(scoreSec, "Score"), foldable(sfxSec, "Sound effects")];
 }

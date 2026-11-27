@@ -1,5 +1,5 @@
 // Stable Audio 3 Small SFX (Pinokio): status check and a starter that keeps the pterm process alive.
-import { runProcess } from "../proc.js";
+import { killTree, runProcess } from "../proc.js";
 import { join } from "../paths.js";
 import { finishSfx, measure } from "../audio.js";
 
@@ -56,8 +56,9 @@ export async function stableAudioState(host, sa) {
   return modelFromTitles(titles) === "music" ? "music" : "ready";
 }
 
+const PINOKIO_POLLS = 40;
 export function makeStableAudioStarter({ sleep, settings }) {
-  let state = "off", message = null, proc = null, running = null, gen = 0;
+  let state = "off", message = null, proc = null, running = null, gen = 0, host0 = null, pinokio = null;
   const subs = new Set();
   const set = (s, m = null) => {
     if (s === state && m === message) return;
@@ -67,6 +68,7 @@ export function makeStableAudioStarter({ sleep, settings }) {
   const sa = () => settings.stableAudio;
 
   async function start(host) {
+    host0 = host;
     const myGen = gen;
     const live = await stableAudioState(host, sa());
     if (live === "ready") { set("ready"); return; }
@@ -74,6 +76,8 @@ export function makeStableAudioStarter({ sleep, settings }) {
     const stopped = () => { if (!running) set("off"); throw new Error(MSG_STOPPED); };
     if (gen !== myGen) stopped();
     set("starting");
+    await openPinokio(host, myGen);
+    if (gen !== myGen) stopped();
     let output = "", exited = false;
     const p = host.spawn(quote(sa().pterm), ["run", sa().app, "--default", "start.js?model=small-sfx"].map(quote), { shell: true });
     proc = p;
@@ -95,6 +99,24 @@ export function makeStableAudioStarter({ sleep, settings }) {
       if (exited) return fail(i === 1 || /42000|ECONNREFUSED|connect/i.test(output) ? MSG_PINOKIO : MSG_DIDNT_START);
     }
     return fail(MSG_DIDNT_START);
+  }
+
+  // Pinokio must be running for pterm. If it isn't and its exe is there, open it and wait (up to 2 min).
+  // Studio closes it on exit only if it opened it. Without the exe, the old behaviour (pterm says why).
+  async function openPinokio(host, myGen) {
+    const exe = sa().pinokioExe, url = String(sa().pinokioUrl || "http://127.0.0.1:42000").replace(/\/+$/, "");
+    if (!exe || pinokio) return;
+    try { if (!(await host.fs.exists(exe))) return; } catch { return; }
+    const up = async () => { try { return (await curlGet(host, url)).code === 0; } catch { return false; } };
+    if (await up()) return;
+    pinokio = host.spawn(exe, []);
+    for (let i = 0; i < PINOKIO_POLLS; i++) {
+      await sleep(POLL_MS);
+      if (gen !== myGen) return;
+      if (await up()) return;
+    }
+    set("failed", MSG_PINOKIO);
+    throw new Error(MSG_PINOKIO);
   }
 
   return {
@@ -120,7 +142,10 @@ export function makeStableAudioStarter({ sleep, settings }) {
     async stop() {
       const p = proc;
       proc = null; gen++; running = null;
-      if (p) { try { await p.kill(); } catch { /* already gone */ } }
+      // The whole tree: pterm runs under cmd.exe (shell), and the app under pterm.
+      if (p) await (host0 ? killTree(host0, p) : Promise.resolve(p.kill()).catch(() => {}));
+      const pk = pinokio; pinokio = null;
+      if (pk) await (host0 ? killTree(host0, pk) : Promise.resolve(pk.kill()).catch(() => {}));
       if (state === "ready" || state === "starting") set("off");
     },
   };

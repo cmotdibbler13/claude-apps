@@ -158,9 +158,10 @@ export function countsLine(c) {
   if (c.ok) parts.push(`${c.ok} ok`);
   if (c.jon) parts.push(`${c.jon} OK by Jon`);
   if (c.flagged) parts.push(`${c.flagged} flagged`);
+  if (c.rerecord) parts.push(`${c.rerecord} to re-record`);
   if (c.unchecked) parts.push(`${c.unchecked} not checked \u2014 press Check all in Autocue Studio`);
   return parts.join(" \u00B7 ");
 }
 
-export const STATUS_LABEL = { missing: "Missing", unchecked: "Not checked", outdated: "Old check", checking: "Checking\u2026", ok: "OK", jon: "OK by Jon", flagged: "Flagged", error: "Error" };
+export const STATUS_LABEL = { missing: "Missing", unchecked: "Not checked", outdated: "Old check", checking: "Checking\u2026", ok: "OK", jon: "OK by Jon", flagged: "Flagged", rerecord: "Re-record", error: "Error" };
 export const NO_LINE_SCRIPT = "No line script found for this film. Name it in part1_handover.md.";

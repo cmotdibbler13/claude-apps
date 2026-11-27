@@ -37,13 +37,14 @@ function setInput(wf, ref, value, key) {
 }
 
 // Pure: returns a copy of the workflow with the mapped inputs set.
-export function fillWorkflow(workflow, comfy, { prompt, seed, prefix }) {
+export function fillWorkflow(workflow, comfy, { prompt, seed, prefix, image }) {
   const wf = structuredClone(workflow);
   const m = comfy.nodes ?? {};
   const seconds = Number(comfy.seconds), fps = Number(comfy.fps);
   let length = seconds;
   if (comfy.lengthUnit === "frames") length = 4 * Math.round((Math.round(seconds * fps) - 1) / 4) + 1;
   setInput(wf, m.prompt, prompt, "prompt");
+  if (image !== undefined) setInput(wf, m.image, image, "image");
   setInput(wf, m.width, comfy.width, "width");
   setInput(wf, m.height, comfy.height, "height");
   setInput(wf, m.length, length, "length");
@@ -87,6 +88,27 @@ function rejection(p, raw) {
   return `ComfyUI rejected the workflow: ${m}${more.length ? ` (${more.join("; ")})` : ""}`;
 }
 
+export const MSG_I2V_NOT_READY = "Set up the image-to-video workflow (see Probe)";
+
+// The image-to-video settings as a comfy-like object: i2v workflow and nodes, the rest from the b-roll settings.
+export function i2vConfig(comfy) {
+  const i = comfy?.i2v ?? {};
+  const c = { ...comfy, workflow: i.workflow, nodes: i.nodes ?? {} };
+  for (const k of ["seconds", "fps", "lengthUnit"]) if (i[k] !== undefined && i[k] !== null) c[k] = i[k];
+  return c;
+}
+
+// Ready when the workflow file exists and the image, prompt and output nodes are mapped.
+export async function i2vReady(host, comfy) {
+  const i = comfy?.i2v ?? {};
+  const n = i.nodes ?? {};
+  const name = baseOf(i.workflow || "animate_i2v.json");
+  if (!i.workflow || !(await host.fs.exists(i.workflow))) return { ok: false, why: `${name} isn't in ComfyUI workflows` };
+  const missing = ["image", "prompt", "output"].filter((k) => !n[k]);
+  if (missing.length) return { ok: false, why: "comfy.i2v.nodes needs image, prompt and output" + (missing.length < 3 ? ` (missing ${missing.join(", ")})` : "") };
+  return { ok: true, why: "" };
+}
+
 const safe = (s) => String(s ?? "").replace(/[^A-Za-z0-9_-]/g, "_");
 
 export function makeComfyRunner({ settings = DEFAULT_SETTINGS, sleep = realSleep, random = Math.random } = {}) {
@@ -111,9 +133,11 @@ export function makeComfyRunner({ settings = DEFAULT_SETTINGS, sleep = realSleep
     return { file: out };
   }
 
+  const cfgFor = (job) => (job?.input?.kind === "animated" ? i2vConfig(comfy()) : comfy());
+
   async function wait(job, ctx, promptId) {
     const { host } = ctx;
-    const c = comfy();
+    const c = cfgFor(job);
     const url = String(c.url).replace(/\/+$/, "");
     const t0 = host.now();
     let slept = 0, errors = 0, missing = 0;
@@ -168,9 +192,15 @@ export function makeComfyRunner({ settings = DEFAULT_SETTINGS, sleep = realSleep
 
     async start(job, ctx) {
       const { host } = ctx;
-      const c = comfy();
-      const { prompt, out } = job.input ?? {};
+      const animated = job.input?.kind === "animated";
+      const c = cfgFor(job);
+      const { prompt, out, sourceFile } = job.input ?? {};
       if (typeof out !== "string" || !/\.mp4$/i.test(out)) throw new Error("This job has no .mp4 output path; not rendering.");
+      if (animated) {
+        const ready = await i2vReady(host, comfy());
+        if (!ready.ok) throw new Error(`${MSG_I2V_NOT_READY}: ${ready.why}`);
+        if (typeof sourceFile !== "string" || !sourceFile) throw new Error("This job has no drawing to animate; not rendering.");
+      }
       let workflow;
       try { workflow = JSON.parse(await host.fs.read(c.workflow, "utf8")); } catch { throw new Error(`Couldn't read the ComfyUI workflow at ${c.workflow}`); }
       const mediaDir = parentOf(out);
@@ -181,15 +211,29 @@ export function makeComfyRunner({ settings = DEFAULT_SETTINGS, sleep = realSleep
       const take = job.take ?? stem.match(/_t(\d+)$/)?.[1] ?? "1";
       const prefix = `broll/sixmin_${safe(baseOf(filmDir))}_${safe(id)}_t${safe(take)}_${host.now()}`;
       const seed = Math.floor(random() * 2 ** 31);
-      const body = JSON.stringify({ prompt: fillWorkflow(workflow, c, { prompt, seed, prefix }) });
-
+      const url = String(c.url).replace(/\/+$/, "");
+      const notRunning = `ComfyUI isn't running at ${hostPort(url)}. Open ComfyUI Desktop and press Run again.`;
+      const timedOut = () => ambiguous("ComfyUI didn't answer in time; the render may have been queued. Check ComfyUI before running again.");
+      let image;
+      if (animated) {
+        // Argument list, no shell: the path can't be quoted wrong.
+        let u;
+        try {
+          u = await runProcess(host, "curl", ["-sS", "--fail", "-F", "image=@" + sourceFile, "-F", "overwrite=true", url + "/upload/image"], { timeout: CURL_MS });
+        } catch (e) {
+          throw /timed out/.test(msg(e)) ? new Error("ComfyUI didn't answer in time while sending the drawing. Check ComfyUI and run again.") : new Error(notRunning);
+        }
+        if (u.code === 6 || u.code === 7) throw new Error(notRunning);
+        if (u.code !== 0) throw new Error(`Couldn't send the drawing to ComfyUI: ${excerpt(u.stderr)}`);
+        let up; try { up = JSON.parse(u.stdout); } catch { /* not JSON */ }
+        if (!up || typeof up.name !== "string" || !up.name) throw new Error(`Couldn't send the drawing to ComfyUI: ${excerpt(u.stdout)}`);
+        image = up.subfolder ? up.subfolder + "/" + up.name : up.name;
+      }
+      const body = JSON.stringify({ prompt: fillWorkflow(workflow, c, { prompt, seed, prefix, image }) });
       const tmp = join(studioDir, "tmp");
       const bodyFile = join(tmp, "comfy_body.json"); // one file, overwritten per submit
       await host.fs.mkdir(tmp);
       await host.fs.write(bodyFile, body);
-      const url = String(c.url).replace(/\/+$/, "");
-      const notRunning = `ComfyUI isn't running at ${hostPort(url)}. Open ComfyUI Desktop and press Run again.`;
-      const timedOut = () => ambiguous("ComfyUI didn't answer in time; the render may have been queued. Check ComfyUI before running again.");
       let r;
       try {
         r = await runProcess(host, "curl", ["-sS", "-X", "POST", "-H", "Content-Type: application/json", "--data-binary", "@" + bodyFile, "-w", "\n%{http_code}", url + "/prompt"], { timeout: CURL_MS });

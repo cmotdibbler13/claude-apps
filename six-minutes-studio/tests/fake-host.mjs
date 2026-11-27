@@ -15,6 +15,7 @@ export class FakeHost {
     this._spawn = () => {};
     this._mcp = () => undefined;
     this._claude = () => undefined;
+    this._limits = () => ({});
     this.mcpTools = {};
     const fs = {
       read: async (p, enc) => {
@@ -82,6 +83,7 @@ export class FakeHost {
     this.claude = claude ? {
       json: async (input, opts = {}) => this._claude("json", input, opts),
       text: async (input, opts = {}) => this._claude("text", input, opts),
+      limits: async () => this._limits(),
     } : null;
   }
   _key(p) {
@@ -109,6 +111,7 @@ export class FakeHost {
   spawnScript(fn) { this._spawn = fn; }
   mcpScript(fn) { this._mcp = fn; }
   claudeScript(fn) { this._claude = fn; }
+  limitsScript(fn) { this._limits = fn; }
   async exec(cmd, opts = {}) { return this._exec(cmd, opts); }
   spawn(cmd, args = [], opts = {}) {
     const h = { out: [], err: [], exit: [] };
@@ -124,6 +127,7 @@ export class FakeHost {
       onErr: (f) => h.err.push(f),
       onExit: (f) => h.exit.push(f),
       kill: () => ctl.exit(null),
+      pid: 4242,
     };
     Promise.resolve().then(() => this._spawn(cmd, args, opts, ctl));
     return proc;

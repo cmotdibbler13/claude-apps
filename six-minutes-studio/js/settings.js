@@ -3,7 +3,7 @@ import { join } from "./paths.js";
 
 export const DEFAULT_SETTINGS = {
   autocueRecordings: "C:\\Users\\Jon\\desktop autocue\\Recordings", autocueDir: "C:\\Users\\Jon\\desktop autocue",
-  autocuePython: "python", stemRemixerDir: null, endCardS: 12, mixMusicDb: -26, mixSfxDb: -18,
+  autocuePython: "python", stemRemixerDir: null, endCardS: 12, titleHoldS: 6, mixMusicDb: -26, mixSfxDb: -18,
   videoModel: "kling3_0", imageModel: "gpt_image_2", blenderPath: "blender",
   comfy: {
     url: "http://127.0.0.1:8188",
@@ -13,11 +13,17 @@ export const DEFAULT_SETTINGS = {
       prompt: ["364", "text"], width: ["372", "value"], height: ["360", "value"], length: ["362", "value"],
       fps: ["361", "value"], seed: ["339", "noise_seed"], output: ["9999", "filename_prefix"],
     },
+    // Image-to-video (animate a drawing): its own workflow and node map. seconds/fps/lengthUnit fall back to the above.
+    i2v: { workflow: null, nodes: {} },
     lengthUnit: "seconds", width: 1920, height: 1088, seconds: 5, fps: 24, expectedSeconds: 240,
   },
+  // Started when Studio opens (each can be turned off).
+  autostart: { comfy: true, stableAudio: true },
   stableAudio: {
     url: "http://127.0.0.1:7860", pterm: "C:\\pinokio\\bin\\npm\\pterm.cmd",
     app: "C:\\pinokio\\api\\stable-audio-3-small.pinokio.git", steps: 8, cfg: 1.0,
+    // Pinokio itself: opened first when it isn't running (Stable Audio starts through it).
+    pinokioExe: "C:\\Users\\Jon\\AppData\\Local\\Programs\\Pinokio\\Pinokio.exe", pinokioUrl: "http://127.0.0.1:42000",
   },
 };
 
@@ -28,8 +34,14 @@ function withDefaults(root, v = {}) {
   const c = isObj(v.comfy) ? v.comfy : {};
   const comfy = { ...d.comfy, ...c, nodes: { ...d.comfy.nodes, ...(isObj(c.nodes) ? c.nodes : {}) } };
   if (!comfy.workflow) comfy.workflow = join(root, "ComfyUI workflows", "broll_ltx.json");
+  const ci = isObj(c.i2v) ? c.i2v : {};
+  comfy.i2v = { ...d.comfy.i2v, ...ci, nodes: { ...d.comfy.i2v.nodes, ...(isObj(ci.nodes) ? ci.nodes : {}) } };
+  if (!comfy.i2v.workflow) comfy.i2v.workflow = join(root, "ComfyUI workflows", "animate_i2v.json");
   const stableAudio = { ...d.stableAudio, ...(isObj(v.stableAudio) ? v.stableAudio : {}) };
-  return { ...d, ...v, comfy, stableAudio };
+  // "autostart": false (or true) switches both; an object sets each.
+  const autostart = typeof v.autostart === "boolean" ? { comfy: v.autostart, stableAudio: v.autostart }
+    : { ...d.autostart, ...(isObj(v.autostart) ? v.autostart : {}) };
+  return { ...d, ...v, comfy, stableAudio, autostart };
 }
 
 export async function loadSettings(host, root) {

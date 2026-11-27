@@ -5,7 +5,8 @@ import { openFilm } from "../js/store.js";
 import { makeJobs } from "../js/jobs.js";
 import { watchJobs, holders } from "../js/redo.js";
 import { startJoin, startFit, startMix, useStemRemixerExport, approveMix, fitStale, mixStale, OUT_OF_DATE, parseCsv,
-  openFitInStemRemixer, REJOIN, pastedPath } from "../js/mixplan.js";
+  openFitInStemRemixer, REJOIN, pastedPath, pacingStale, goodFrame } from "../js/mixplan.js";
+import { marksSig } from "../js/pacing.js";
 import { MSG_NO_STEM_REMIXER, MSG_SET_STEM_REMIXER } from "../js/tools/stemfit.js";
 
 const DIR = "S:\\Youtube video ideas\\Film A";
@@ -27,7 +28,7 @@ function score(chosen = 1, approved = true) {
 const sfx = (o = {}) => ({ id: "SFX-01", cue: "door", prompt: "p", durationS: 3, loop: false, source: "stableaudio", lineId: "01", startS: 8,
   approved: true, chosen: 1, takes: [{ n: 1, status: "done", file: SFX1, meanDb: -25 }], ...o });
 
-async function setup({ settings = {}, audio, csv = CSV, python = true, exportS = 48.5 } = {}) {
+async function setup({ settings = {}, audio, csv = CSV, python = true, exportS = 42.5 } = {}) {
   const host = new FakeHost();
   await host.fs.mkdir(DIR);
   await host.fs.mkdir(MEDIA);
@@ -47,7 +48,7 @@ async function setup({ settings = {}, audio, csv = CSV, python = true, exportS =
       const wav = VO + "\\film_a_voiceover.wav", csv = VO + "\\film_a_voiceover_timings.csv";
       await host.fs.mkdir(VO);
       await host.fs.write(csv, csvText);
-      return { file: wav, meta: { wav, csv, transcript: VO + "\\t.json", lengthS: 30.5, tightened: [{ id: "01.1", at_s: 1, from_s: 0.9, to_s: 0.3 }], extra: [], silent: [],
+      return { file: wav, meta: { wav, csv, transcript: VO + "\\t.json", lengthS: 30.5, tightened: [{ id: "01.1", at_s: 1, from_s: 0.9, to_s: 0.3 }], tight: [{ id: "01.1", at_s: 2 }], extra: [], silent: [],
         duplicates: [{ id: "01.1", files: [REC + "\\film_a\\film_a_01.1.wav", REC + "\\old\\film_a_01.1.wav"] }] } };
     } },
     stemfit: { lane: "gpu", async start(job) {
@@ -61,8 +62,8 @@ async function setup({ settings = {}, audio, csv = CSV, python = true, exportS =
       }
       calls.fit.push(i);
       await host.fs.mkdir(MIXD);
-      await host.fs.write(i.out + ".measure.json", JSON.stringify({ ...MEASURE, duration_s: 48.5 }));
-      return { file: i.out, meta: { lengthS: 48.5, measureFile: i.out + ".measure.json" } };
+      await host.fs.write(i.out + ".measure.json", JSON.stringify({ ...MEASURE, duration_s: 42.5 }));
+      return { file: i.out, meta: { lengthS: 42.5, measureFile: i.out + ".measure.json" } };
     } },
     mixdown: { lane: "gpu", async start(job) {
       calls.mix.push(job.input);
@@ -129,7 +130,7 @@ test("startFit measures the score once, plans with Claude and queues a Score fit
   const fitJob = s.jobs.list().find((j) => j.assetId === "FIT");
   assert.equal(fitJob.what, "Score fit");
   assert.equal(fitJob.tool, "stemfit");
-  assert.deepEqual(fitJob.input, { score: SCORE1, plan: { steps: [{ from_s: 0, to_s: 48.5, tempo: 1, xfade_s: 0.03 }] }, out: MIXD + "\\Film_A_score_fitted.wav" });
+  assert.deepEqual(fitJob.input, { score: SCORE1, plan: { steps: [{ from_s: 0, to_s: 42.5, tempo: 1, xfade_s: 0.03 }] }, out: MIXD + "\\Film_A_score_fitted.wav" });
   const f = st(s).fit;
   assert.equal(f.source, "app");
   assert.equal(f.file, MIXD + "\\Film_A_score_fitted.wav");
@@ -137,8 +138,8 @@ test("startFit measures the score once, plans with Claude and queues a Score fit
   assert.equal(f.fromScoreTake, 1);
   assert.equal(f.sheet.rows.length, 1);
   assert.equal(f.sheet.rows[0].section, "Opening", "the sheet shows the ## title, not the file name");
-  assert.deepEqual(f.targets.sections, [{ name: "Opening", startS: 6 }], "the mix marks and Claude's targets do too");
-  assert.equal(f.sheet.rows[0].targetS, 6);
+  assert.deepEqual(f.targets.sections, [{ name: "Opening", startS: 0 }], "the mix marks and Claude's targets do too");
+  assert.equal(f.sheet.rows[0].targetS, 0);
   assert.ok(Math.abs(f.sheet.rows[0].landsS - 6.5) < 1e-9);
   assert.equal(f.plan.notes, "Kept the opening.");
   assert.equal(fitStale(s.store.state), false);
@@ -194,7 +195,7 @@ test("startMix passes the voice, fitted score, approved SFX with starts, film le
   const [i] = s.calls.mix;
   assert.equal(i.voice, VO + "\\film_a_voiceover.wav");
   assert.equal(i.music, MIXD + "\\Film_A_score_fitted.wav");
-  assert.equal(i.filmS, 48.5);
+  assert.equal(i.filmS, 42.5);
   assert.equal(i.out, MIXD + "\\Film_A_mix.wav");
   assert.deepEqual(i.sfx.map((x) => [x.id, x.file, x.startS, x.loop, x.meanDb]), [["SFX-01", SFX1, 8, false, -25], ["SFX-02", SFX1, null, false, -25]]);
   assert.equal(i.sfxDb, -18);
@@ -235,8 +236,8 @@ test("a loop runs to the next section start", async () => {
   await joined(s);
   await fitted(s);
   await mixed(s);
-  assert.equal(s.calls.mix[0].sfx[0].endS, 37.2);
-  assert.equal(s.calls.mix[0].filmS, 58.5);
+  assert.equal(s.calls.mix[0].sfx[0].endS, 31.2);
+  assert.equal(s.calls.mix[0].filmS, 52.5);
 });
 
 test("no stemRemixerDir: the fit says exactly what to set and starts nothing", async () => {
@@ -349,7 +350,7 @@ test("Use another file: Explorer's quotes and spaces are stripped; a path that i
 });
 
 test("an export more than 1 s off the film's length asks first; confirmed, it is used without measuring again", async () => {
-  const s = await setup({ exportS: 50.3 });
+  const s = await setup({ exportS: 44.3 });
   await joined(s);
   await fitted(s);
   const EXP = MIXD + "\\long.wav";
@@ -364,12 +365,12 @@ test("an export more than 1 s off the film's length asks first; confirmed, it is
   assert.equal(s.calls.measure.length, measures);
   assert.equal(st(s).fit.file, EXP);
   assert.equal(st(s).fit.source, "stemremixer");
-  const t = await setup({ exportS: 46 });
+  const t = await setup({ exportS: 40 });
   await joined(t);
   await fitted(t);
   await t.host.fs.write(EXP, "x");
   assert.deepEqual(await useStemRemixerExport(t.ctx, EXP), { confirm: "This export is 2.5 s shorter than the film. Use it anyway?" });
-  const u = await setup({ exportS: 49.2 });
+  const u = await setup({ exportS: 43.2 });
   await joined(u);
   await fitted(u);
   await u.host.fs.write(EXP, "x");
@@ -379,4 +380,73 @@ test("an export more than 1 s off the film's length asks first; confirmed, it is
 test("parseCsv reads the timings, quoted fields too", () => {
   assert.deepEqual(parseCsv('a,b\n1,"x, ""y"""\n'), [{ a: "1", b: 'x, "y"' }]);
   assert.equal(parseCsv(CSV).length, 2);
+});
+
+test("startJoin with pauses writes the file, passes its path and keeps the sig on the holder", async () => {
+  const s = await setup();
+  const file = { inside: { "01.1": [{ at_s: 1.2, add_s: 0.6 }] }, after: {} };
+  await startJoin(s.ctx, { pauses: { file, sig: "SIG1", applied: { "01.1": [] }, allowedIds: ["02.1"] } });
+  const path = MIXD + "\\Film_A_pauses.json";
+  assert.equal(s.jobs.list()[0].input.pauses, path);
+  assert.deepEqual(JSON.parse(await s.host.fs.read(path, "utf8")), file);
+  await until(() => st(s).voiceover.status === "done");
+  const v = st(s).voiceover;
+  assert.equal(v.pausesSig, "SIG1");
+  assert.deepEqual(v.pausesApplied, { "01.1": [] });
+  assert.deepEqual(v.allowedIds, ["02.1"]);
+  assert.deepEqual(v.tight, [{ id: "01.1", at_s: 2 }]);
+});
+
+test("startJoin without pauses stores no sig and the caller's not-OK ids", async () => {
+  const s = await setup();
+  s.ctx.notOkIds = ["03.1"];
+  await startJoin(s.ctx);
+  assert.ok(!("pauses" in s.jobs.list()[0].input));
+  await until(() => st(s).voiceover.status === "done");
+  const v = st(s).voiceover;
+  assert.equal(v.pausesSig, null);
+  assert.deepEqual(v.pausesApplied, {});
+  assert.deepEqual(v.allowedIds, ["03.1"]);
+});
+
+test("pacingStale: true after the marks change, false right after a join with that sig", async () => {
+  const s = await setup();
+  const empty = marksSig({ lines: {} }, {});
+  assert.equal(pacingStale(s.store.state, empty), false, "no voiceover");
+  await joined(s);
+  assert.equal(pacingStale(s.store.state, empty), false, "joined without marks, none now");
+  const marked = marksSig({ lines: { "01.1": { pauses: [{ key: "end", size: "long" }] } } }, {});
+  assert.equal(pacingStale(s.store.state, marked), true);
+  await startJoin(s.ctx, { pauses: { file: { inside: {}, after: {} }, sig: marked, applied: {}, allowedIds: [] } });
+  await until(() => st(s).voiceover.status === "done" && st(s).voiceover.pausesSig === marked);
+  assert.equal(pacingStale(s.store.state, marked), false);
+  assert.equal(pacingStale(s.store.state, empty), true);
+});
+
+test("goodFrame: a done join is its own frame; otherwise the last good join it carries", () => {
+  const done = { status: "done", transcript: "T1", pausesApplied: { "01.1": [{ at_s: 1, add_s: 0.6 }] }, startedAt: 10, at: 20, allowFlagged: true, tight: [{ id: "01.1", at_s: 1 }] };
+  assert.deepEqual(goodFrame(done), { transcript: "T1", applied: { "01.1": [{ at_s: 1, add_s: 0.6 }] }, startedAt: 10, at: 20, allowFlagged: true, tight: [{ id: "01.1", at_s: 1 }] });
+  assert.deepEqual(goodFrame({ status: "done", transcript: "T", startedAt: 1, at: 2 }).applied, {});
+  const lg = { transcript: "T0", applied: {}, startedAt: 1, at: 2, allowFlagged: false, tight: [] };
+  assert.equal(goodFrame({ status: "failed", transcript: null, lastGood: lg }), lg);
+  assert.equal(goodFrame({ status: "running" }), null);
+  assert.equal(goodFrame(null), null);
+});
+
+test("a new join carries the last good join's frame, through a failed one too", async () => {
+  const s = await setup();
+  await startJoin(s.ctx, { pauses: { file: { inside: {}, after: {} }, sig: "S1", applied: { "01.1": [{ at_s: 1, add_s: 0.6 }] }, allowedIds: [] } });
+  await until(() => st(s).voiceover.status === "done");
+  const first = goodFrame(st(s).voiceover);
+  assert.equal(first.transcript, VO + "\\t.json");
+  assert.deepEqual(first.applied, { "01.1": [{ at_s: 1, add_s: 0.6 }] });
+  const orig = s.host.fs.write;
+  s.host.fs.write = async (p, d) => { if (String(p).endsWith("_timings.csv")) throw new Error("disk full"); return orig(p, d); };
+  await startJoin(s.ctx, { pauses: { file: { inside: {}, after: {} }, sig: "S2", applied: { "01.1": [{ at_s: 2, add_s: 1 }] }, allowedIds: [] } });
+  assert.deepEqual(st(s).voiceover.lastGood, first);
+  await until(() => st(s).voiceover.status === "failed");
+  s.host.fs.write = orig;
+  assert.deepEqual(goodFrame(st(s).voiceover), first);
+  await startJoin(s.ctx);
+  assert.deepEqual(st(s).voiceover.lastGood, first, "a failed join passes the frame it carried on");
 });

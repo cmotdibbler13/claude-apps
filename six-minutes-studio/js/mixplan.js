@@ -4,6 +4,7 @@
 // older output is out of date until it is run again.
 import { join, filmKey } from "./paths.js";
 import { projectOf } from "./audio.js";
+import { marksSig } from "./pacing.js";
 import { filmTargets, planFit, fitSheet } from "./fitplan.js";
 import { NO_LINE_SCRIPT } from "./narration.js";
 import { measureFileFor, needStemRemixer, openInStemRemixer } from "./tools/stemfit.js";
@@ -29,7 +30,7 @@ export function mixJobDone(h, j) {
   const copy = (keys) => { for (const k of keys) if (m[k] !== undefined) h[k] = m[k]; };
   h.at = j.endedAt ?? null;
   h.startedAt = j.startedAt ?? null; // a take saved after this is not in the run
-  if (h.id === "VOICEOVER") copy(["wav", "csv", "transcript", "lengthS", "tightened", "extra", "silent", "duplicates"]);
+  if (h.id === "VOICEOVER") copy(["wav", "csv", "transcript", "lengthS", "tightened", "tight", "extra", "silent", "duplicates"]);
   else if (h.id === "FIT") { if (j.file) h.file = j.file; copy(["lengthS", "measureFile", "turnedDown"]); }
   else if (h.id === "MIX") { copy(["files", "unplaced", "lengthS", "sfx"]); h.approved = false; }
 }
@@ -59,6 +60,13 @@ export function joinStale(vo, narration) {
 function refuseIfJoinStale(ctx) {
   const stale = ctx.joinStale ?? joinStale(ctx.store.state.mix?.voiceover, ctx.narration);
   if (stale) throw new Error(REJOIN);
+}
+// The voiceover was joined with different pause marks than the ones now set. A join without marks matches no marks.
+const EMPTY_SIG = marksSig({ lines: {} }, {});
+export function pacingStale(state, currentSig) {
+  const vo = state?.mix?.voiceover;
+  if (vo?.status !== "done") return false;
+  return (vo.pausesSig ?? EMPTY_SIG) !== currentSig;
 }
 export function fitStale(state) {
   const f = state?.mix?.fit;
@@ -217,16 +225,34 @@ async function preparing(store, id, fn) {
   try { return await fn(); } finally { store.pending?.delete(key); }
 }
 
+// The last good join: the one whose transcript and applied pauses the marks are placed from. A done join is its
+// own; a join that is queued, running, failed or interrupted carries the one before it (lastGood).
+export function goodFrame(vo) {
+  if (!vo) return null;
+  if (vo.status === "done") {
+    return { transcript: vo.transcript ?? null, applied: vo.pausesApplied ?? {}, startedAt: vo.startedAt ?? null, at: vo.at ?? null,
+      allowFlagged: !!vo.allowFlagged, tight: vo.tight ?? [] };
+  }
+  return vo.lastGood ?? null;
+}
+
 // ---- actions ----
-export async function startJoin(ctx, { allowFlagged = false } = {}) {
-  const { store, settings = {} } = ctx;
+export async function startJoin(ctx, { allowFlagged = false, pauses = null } = {}) {
+  const { host, store, settings = {} } = ctx;
   const ls = ctx.lineScript;
   if (!ls?.path || !ls?.name) throw new Error(NO_LINE_SCRIPT);
   if (!settings.autocueRecordings) throw new Error("Set where Autocue Studio's recordings are (autocueRecordings in .studio-settings.json).");
   if (busy(store, "VOICEOVER")) throw new Error("The voiceover join is already running.");
   const input = { script: ls.path, takes: join(settings.autocueRecordings, ls.name), out: join(store.dir, "studio", "voiceover"), allowFlagged: !!allowFlagged };
+  if (pauses) {
+    const path = join(mixDir(store), `${projectOf(store.dir)}_pauses.json`);
+    await host.fs.mkdir(mixDir(store));
+    await host.fs.write(path, JSON.stringify(pauses.file));
+    input.pauses = path;
+  }
   return startRun(ctx, "VOICEOVER", {
-    allowFlagged: !!allowFlagged, wav: null, csv: null, transcript: null, lengthS: null, tightened: [], extra: [], silent: [], duplicates: [], at: null,
+    allowFlagged: !!allowFlagged, lastGood: goodFrame(store.state.mix?.voiceover),
+    pausesSig: pauses ? pauses.sig : null, pausesApplied: pauses ? pauses.applied ?? {} : {}, allowedIds: pauses ? pauses.allowedIds ?? [] : ctx.notOkIds ?? [], wav: null, csv: null, transcript: null, lengthS: null, tightened: [], tight: [], extra: [], silent: [], duplicates: [], at: null,
   }, { why: allowFlagged ? "Flagged lines allowed" : undefined, input });
 }
 

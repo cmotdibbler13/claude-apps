@@ -1,31 +1,37 @@
 // Boot: host, install gate, project root, jobs, routing and re-rendering of the three screens.
 import { makeHost } from "./host.js";
 import { accessGate } from "./gate.js";
-import { resolveRoot, join } from "./paths.js";
+import { resolveRoot, join, filmKey } from "./paths.js";
 import { loadSettings } from "./settings.js";
+import { withRerecord, rerecordsToClear, lineWords, takeSig, addMark, setSize, moveMark, removeMark, placeFromNotes, newTakeIds } from "./pacing.js";
+import { applyPauses, JOINED_WITHOUT } from "./pacingchain.js";
 import { findLineScript, loadLineScript, refreshLineScript, narrationStatus } from "./narration.js";
 import { scanFilms } from "./films.js";
 import { makeFilmSession, readSavedJobs } from "./session.js";
 import { makeJobs } from "./jobs.js";
 import { notifyRules } from "./notify.js";
 import { buildShotList } from "./shots.js";
-import { startTake, approve, unapprove, choose, setTool, setPreferComfy, addBlender3d } from "./redo.js";
+import { startTake, approve, unapprove, choose, setTool, setPreferComfy, addBlender3d, addAnimated, removeVersion, jobGone, jobRemoved, removedText } from "./redo.js";
 import { ensureProxy, toBlobUrl, openFull, revokeAll } from "./media.js";
 import { makeHiggsfieldRunner } from "./tools/higgsfield.js";
 import { makeBlenderRunner } from "./tools/blender.js";
-import { makeComfyRunner } from "./tools/comfyui.js";
+import { makeComfyRunner, i2vReady } from "./tools/comfyui.js";
 import { makeStableAudioStarter, makeStableAudioRunner } from "./tools/stableaudio.js";
+import { makeComfyStarter } from "./tools/comfystart.js";
+import { autostart, toolsLine } from "./autostart.js";
 import { makeElevenRunner } from "./tools/elevenlabs.js";
 import { planAudio, addCue, editItem, getEstimate, rewriteFromNote, startAudioTake, approveAudio, unapproveAudio, chooseAudio, proposeStarts } from "./audioplan.js";
 import { makeVoiceJoinRunner } from "./tools/voicejoin.js";
 import { makeStemFitRunner, listExports } from "./tools/stemfit.js";
 import { makeMixdownRunner } from "./tools/mixdown.js";
-import { startJoin, startFit, startMix, useStemRemixerExport, approveMix, parseCsv, openFitInStemRemixer, stemExportDir, pastedPath } from "./mixplan.js";
+import { startFit, startMix, useStemRemixerExport, approveMix, parseCsv, openFitInStemRemixer, stemExportDir, pastedPath, goodFrame } from "./mixplan.js";
 import { mountProbe } from "./ui/probe.js";
 import * as filmsView from "./ui/films.js";
 import * as jobsView from "./ui/jobs.js";
 import * as reviewView from "./ui/review.js";
 import { keepPlayer } from "./ui/mix.js";
+import { followPlayer } from "./ui/pacing.js";
+import { prompterBar } from "./ui/prompter.js";
 
 const $ = (id) => document.getElementById(id);
 const msg = (e) => String(e?.message ?? e);
@@ -33,7 +39,7 @@ const LAYOUT_KEY = "six-minutes-studio.reviewLayout";
 
 const app = {
   host: null, root: null, jobs: null, films: [], view: "films",
-  film: null, store: null, session: null, playing: null, retried: new Set(), movedAside: null, stateError: null, bootError: null, openError: null,
+  film: null, store: null, session: null, playing: null, retried: new Set(), goneJobs: new Map(), movedAside: null, stateError: null, bootError: null, openError: null,
   review: { making: false, listError: null, cardErrors: new Map(), pending: new Set(), estimating: new Set(), noteFor: null, draft: "" },
   starter: null, saBusy: false,
   previews: new Map(),
@@ -84,7 +90,7 @@ function updateTray() {
     const open = () => { try { app.host.showWindow?.().catch(() => {}); } catch { /* ignore */ } };
     Promise.resolve(app.host.tray({
       icon: drawTrayIcon(), iconIsTemplate: false,
-      toolTip: `Six Minutes Studio \u2014 ${n} running`,
+      toolTip: `Six Minutes Studio \u2014 ${n} running${app.comfyStarter ? `\n${toolsLine({ comfy: app.comfyStarter, stableAudio: app.starter })}` : ""}`,
       menu: [
         { label: "Open", click: open },
         { label: "Live jobs", click: () => { open(); showView("jobs"); } },
@@ -125,7 +131,7 @@ function paint(name, el, model, view, actions) {
   const refocus = document.activeElement?.id === "note-box" || (name === "review" && app.review.focusNote);
   // An audio prompt, length or cue box Jon is typing in keeps its caret across the re-render.
   const act = document.activeElement;
-  const keep = act?.id?.startsWith("au-") ? { id: act.id, start: act.selectionStart ?? null, end: act.selectionEnd ?? null } : null;
+  const keep = act?.id?.startsWith("au-") || act?.id?.startsWith("pace-") ? { id: act.id, start: act.selectionStart ?? null, end: act.selectionEnd ?? null } : null;
   rendering = true;
   try { view.render(el, model, actions); } finally { rendering = false; }
   const ta = refocus ? $("note-box") : null;
@@ -157,23 +163,33 @@ async function renderNow() {
   $("state-banner").textContent = se ? jobsView.stateErrorBanner(se.film, se.message) : "";
 
   if (app.view === "films") {
-    paint("films", $("view-films"), filmsView.filmsModel({ root: app.root, films: app.films, jobs: list, error: app.bootError }), filmsView, filmsActions);
+    paint("films", $("view-films"), filmsView.filmsModel({ root: app.root, films: app.films, jobs: list, error: app.bootError,
+      tools: app.comfyStarter ? toolsLine({ comfy: app.comfyStarter, stableAudio: app.starter }) : null }), filmsView, filmsActions);
   } else if (app.view === "jobs") {
     const log = app.store ? await app.store.readLog(50) : null;
-    const model = jobsView.jobsModel({ jobs: list, log, retried: app.retried, persistError: null });
+    const model = jobsView.jobsModel({ jobs: list, log, retried: app.retried, persistError: null, gone: goneJobs(list) });
     paint("jobs", $("view-jobs"), model, jobsView, jobsActions);
   } else if (app.view === "review") {
     const r = app.review;
     const model = reviewView.reviewModel({
       film: app.film, state: app.store?.state, layout: app.layout, making: r.making, listError: r.listError,
-      cardErrors: r.cardErrors, pending: r.pending, noteFor: r.noteFor, openError: app.openError, prefError: r.prefError ?? null, narration: r.narration ?? null, playing: app.playing,
+      cardErrors: r.cardErrors, pending: r.pending, noteFor: r.noteFor, openError: app.openError, prefError: r.prefError ?? null, i2v: r.i2v ?? null, removeFor: r.removeFor ?? null, narration: r.narration ?? null, playing: app.playing, paused: !!app.paused,
       audio: app.store?.state?.audio ?? null,
       sa: app.starter ? { state: app.starter.state(), message: app.starter.message() } : null,
       audioUi: { estimating: r.estimating, planning: !!r.planning, planError: r.planError ?? null, adding: !!r.adding, addError: r.addError ?? null },
-      mixUi: { settings: { stemRemixer: !!app.settings?.stemRemixerDir }, jobs: list, ui: { exports: r.exports ?? null, opened: r.opened ?? null, confirm: r.exportConfirm ?? null } },
+      mixUi: { settings: { stemRemixer: !!app.settings?.stemRemixerDir }, jobs: list, ui: { exports: r.exports ?? null, opened: r.opened ?? null, confirm: r.exportConfirm ?? null },
+        pacing: { transcript: r.transcript ?? null, lineScript: r.lineScript ?? null, menu: r.paceMenu ?? null,
+          chain: { applying: r.applying ?? null, placing: !!r.placing, error: r.paceError ?? null, info: r.paceInfo ?? null } } },
     });
+    r.paceSource = model.mix?.pacing?.source ?? null;
+    // No voiceover player in the review now (a rejoin is running, or the mix is current): stop the old one, unseen.
+    if (!model.mix?.pacing?.player && players.review.el) dropPlayer("review");
     paint("review", $("view-review"), model, reviewView, reviewActions);
+    attachFollow();
+    // A ‖ just opened: its menu takes the focus (Escape closes it).
+    if (r.focusMenu) { r.focusMenu = false; document.querySelector("#view-review .pmenu .pop")?.focus(); }
     proposeOnce();
+    loadTranscript();
   }
 }
 
@@ -189,7 +205,14 @@ async function loadRoot() {
     // One Stable Audio starter for the app: the runner starts it when a take needs it, Review shows its state.
     const starter = makeStableAudioStarter({ settings, sleep: (ms) => new Promise((res) => setTimeout(res, ms)) });
     app.starter = starter;
-    starter.onChange(() => render());
+    starter.onChange(() => { render(); updateTray(); });
+    // ComfyUI Desktop, started with Stable Audio when Studio opens (settings "autostart"); closed on exit if Studio started it.
+    app.comfyStarter = makeComfyStarter({ settings, sleep: (ms) => new Promise((res) => setTimeout(res, ms)) });
+    app.comfyStarter.onChange(() => { render(); updateTray(); });
+    // Load ComfyUI and Stable Audio now, so a job never waits on them (states show on Films and in the tray).
+    autostart(host, settings, { comfy: app.comfyStarter, stableAudio: starter }).catch(() => {});
+    // A free check every 30 s keeps the line true when Jon opens or closes either tool himself.
+    setInterval(() => { for (const s of [app.comfyStarter, app.starter]) Promise.resolve(s?.refresh(host)).catch(() => {}); }, 30_000);
     app.jobs = makeJobs(host, {
       runners: {
         higgsfield: makeHiggsfieldRunner({ settings }),
@@ -228,8 +251,10 @@ const filmsActions = {
 };
 
 function resetReview() {
+  app.review?.bar?.attach(null);
   stopTake();
-  dropMixPlayer();
+  unfollow();
+  for (const slot of Object.keys(players)) dropPlayer(slot);
   app.previews.clear();
   revokeAll();
   app.review = { making: false, listError: null, cardErrors: new Map(), pending: new Set(), estimating: new Set(), noteFor: null, draft: "" };
@@ -258,23 +283,55 @@ async function openReview(dir) {
     app.store = store;
   }
   showView("review");
+  refreshI2v();
   // One free check so the Stable Audio chip is right when Small SFX is already running or was stopped by hand.
   if (app.starter) Promise.resolve(app.starter.refresh(app.host)).catch(() => {}).then(() => render());
 }
 
+// Animate with ComfyUI needs the image-to-video workflow set up: checked when a review opens and after Probe.
+async function refreshI2v() {
+  const r = app.review;
+  if (!r || !app.host) return;
+  let v;
+  try { v = await i2vReady(app.host, app.settings?.comfy ?? {}); } catch (e) { v = { ok: false, why: msg(e) }; }
+  if (app.review === r) { r.i2v = v; render(); }
+}
+
 // ---- live jobs ----
+// Jobs whose shot was removed from the review (open film from its state; others once a click was refused).
+function goneJobs(list) {
+  const m = new Map(app.goneJobs);
+  const st = app.store;
+  if (st) for (const j of list) if (filmKey(j.film) === filmKey(st.dir) && jobGone(st.state, j)) m.set(j.id, removedText(j.assetId));
+  return m;
+}
+
+// Retry or Check on a removed shot would run the whole job and throw the result away: refuse it.
+async function refusedAsGone(id) {
+  const job = app.jobs?.list().find((j) => j.id === id);
+  if (!job) return false;
+  let why = null;
+  try { why = await jobRemoved(app.host, job, app.store); } catch (e) { console.error(e); }
+  if (!why) return false;
+  app.goneJobs.set(id, why);
+  render();
+  return true;
+}
+
 const jobsActions = {
-  retry(id) {
+  async retry(id) {
     if (app.retried.has(id)) return;
     // An ElevenLabs re-run is paid: new takes start only from the card, where the cost is shown.
     if (app.jobs?.list().find((j) => j.id === id)?.tool === "elevenlabs") return;
     app.retried.add(id);
+    if (await refusedAsGone(id)) return;
     userStarted();
     try { app.jobs.retry(id); } catch (e) { console.error(e); }
     render();
   },
   // Free: polls the existing job by its id, never generates.
-  check(id) {
+  async check(id) {
+    if (await refusedAsGone(id)) return;
     userStarted();
     try { app.jobs.check(id); } catch (e) { console.error(e); }
     render();
@@ -294,7 +351,9 @@ async function refreshNarration() {
       r.lineScript = await loadLineScript(app.host, path);
     }
     const st = await narrationStatus(app.host, app.settings ?? {}, r.lineScript, app.store?.state?.narrationOk ?? {});
-    if (app.review === r) r.narration = st;
+    const stale = rerecordsToClear(st, app.store.state.mix?.pacing);
+    if (stale.length) await app.store.update((d) => { for (const id of stale) { const l = d.mix?.pacing?.lines?.[id]; if (l) l.rerecord = null; } });
+    if (app.review === r) r.narration = withRerecord(st, app.store.state.mix?.pacing);
   } catch (e) { console.error(e); }
 }
 let narrTimer = null;
@@ -314,18 +373,33 @@ function pollNarration() {
   narrTimer = setInterval(() => { if (app.view === "review") tick(); }, 10_000);
 }
 
-// ---- listening to a narration take: one player, pressing again (or another line) stops it ----
+// ---- listening: one sound at a time. A take's ▶ plays, pauses and carries on from the same place;
+// pressing another take (or a player below) pauses this one and forgets where it was. ----
 let player = null;
 function stopTake() {
   if (player) { player.pause(); player.onended = player.onerror = null; player = null; }
   app.playing = null;
+  app.paused = false;
+}
+function pausePlayers(except = null) {
+  for (const p of Object.values(players)) if (p.el && p.el !== except) { try { p.el.pause(); } catch { /* not loaded */ } }
 }
 async function playTake(file) {
-  const again = app.playing === file;
+  if (app.playing === file && player) {
+    if (app.paused) {
+      pausePlayers();
+      app.paused = false;
+      player.play().catch((e) => { console.error(e); stopTake(); render(); });
+    } else {
+      player.pause();
+      app.paused = true;
+    }
+    render();
+    return;
+  }
+  if (app.playing === file) return;              // still loading: the press counts once
   stopTake();
-  try { mixPlayer.el?.pause(); } catch { /* not loaded */ }
-  render();
-  if (again) return;
+  pausePlayers();
   app.playing = file;
   render();
   try {
@@ -341,32 +415,154 @@ async function playTake(file) {
   }
 }
 
-// ---- the mix preview: one <audio> with its own scrubber, kept across re-renders so it keeps playing ----
-const mixPlayer = { key: null, el: null };
-function dropMixPlayer() {
-  if (mixPlayer.el) { try { mixPlayer.el.pause(); } catch { /* gone */ } mixPlayer.el.removeAttribute("src"); }
-  mixPlayer.key = null; mixPlayer.el = null;
+// ---- the voiceover, fitted score and mix players: <audio> with pause and a scrubber, one per slot,
+// kept across re-renders so they keep playing and keep their place ----
+const players = { voice: { key: null, el: null }, fit: { key: null, el: null }, mix: { key: null, el: null }, review: { key: null, el: null } };
+const mixPlayer = players.mix;
+function dropPlayer(slot) {
+  const p = players[slot];
+  if (p.el) { try { p.el.pause(); } catch { /* gone */ } p.el.removeAttribute("src"); }
+  p.key = null; p.el = null;
 }
-// key = the file and the mix run's time: "Make mix again" writes the same path, so a new run gets a new player.
-function mixAudioEl(file, key, label) {
-  if (keepPlayer(mixPlayer, key)) return mixPlayer.el;
-  dropMixPlayer();
+function dropMixPlayer() { dropPlayer("mix"); }
+// key = the file and its run's time: a new join, fit or mix writes the same path, so a new run gets a new player.
+function audioEl(slot, file, key, label) {
+  const p = players[slot];
+  if (keepPlayer(p, key)) return p.el;
+  dropPlayer(slot);
   const el = document.createElement("audio");
   el.controls = true;
   el.preload = "metadata";
   el.className = "maudio";
-  el.setAttribute("aria-label", `Mix preview ${label ?? ""}`.trim());
-  // Starting the mix stops a narration or score take that is playing (one sound at a time).
-  el.addEventListener("play", () => { if (app.playing) { stopTake(); render(); } });
-  mixPlayer.key = key; mixPlayer.el = el;
-  toBlobUrl(app.host, file).then((url) => { if (mixPlayer.el === el) el.src = url; }, (e) => console.error(e));
+  el.setAttribute("aria-label", `Player for ${label ?? ""}`.trim());
+  // Starting one stops a take that is playing and pauses the other players.
+  el.addEventListener("play", () => {
+    pausePlayers(el);
+    if (app.playing) { stopTake(); render(); }
+  });
+  p.key = key; p.el = el;
+  toBlobUrl(app.host, file).then((url) => { if (p.el === el) el.src = url; }, (e) => console.error(e));
   return el;
 }
+function mixAudioEl(file, key, label) { return audioEl("mix", file, key, `Mix preview ${label ?? ""}`.trim()); }
 function seekMix(t) {
   const el = mixPlayer.el;
   if (!el) return;
   try { el.currentTime = Math.max(0, Number(t) || 0); } catch { /* not loaded yet */ }
   el.play().catch(() => {});
+}
+
+// ---- pacing review: the line being spoken follows the mix player (or the voiceover's, when the mix is older) ----
+let follow = { el: null, list: null, off: null };
+function unfollow() { follow.off?.(); follow = { el: null, list: null, off: null }; }
+const reviewEl = () => (app.review.paceSource === "mix" ? players.mix.el : players.review.el);
+// After a render: the list is new whenever the review was painted again; the player only on a new run.
+function attachFollow() {
+  const list = document.querySelector("#view-review ul.pace");
+  const el = app.view === "review" ? reviewEl() : null;
+  app.review.bar?.attach(el ?? null);
+  if (!list || !el) { unfollow(); return; }
+  if (follow.el === el && follow.list === list) return;
+  unfollow();
+  follow = { el, list, off: followPlayer(el, list) };
+}
+function seekReview(t) {
+  const el = reviewEl();
+  if (!el || t == null) return;
+  try { el.currentTime = Math.max(0, Number(t) || 0); } catch { /* not loaded yet */ }
+  el.play().catch(() => {});
+}
+
+// The last good join's transcript (lines and words; mixplan.goodFrame), read once per join. While a join runs,
+// or after one failed, it is the one before it, so the marks Jon places sit where the next join reads them from.
+function loadTranscript() {
+  const r = app.review;
+  const f = goodFrame(app.store?.state?.mix?.voiceover);
+  if (!f?.transcript || !app.host) return Promise.resolve(f ? r.transcript ?? null : null);
+  if (r.transcriptFor?.at === f.at && r.transcriptFor?.path === f.transcript) return r.transcriptFor.p;
+  const p = app.host.fs.read(f.transcript, "utf8").then((t) => JSON.parse(t)).catch((e) => { console.error(e); return null; })
+    .then((t) => { if (app.review === r && r.transcriptFor?.p === p) { r.transcript = t; render(); } return t; });
+  r.transcriptFor = { at: f.at, path: f.transcript, p };
+  return p;
+}
+
+const takeSigsNow = () => Object.fromEntries((app.review.narration?.rows ?? []).map((x) => [x.id, takeSig(x)]).filter(([, v]) => v != null));
+const takeOf = (id) => takeSig((app.review.narration?.rows ?? []).find((x) => x.id === id)) ?? null;
+const wordsOf = (id) => lineWords(app.review.transcript, id);
+// A take saved after the last good join: its words in the transcript are the old take's (no word marks until it is joined).
+const newTake = (id) => newTakeIds(app.review.narration, goodFrame(app.store?.state?.mix?.voiceover)).has(id);
+
+// One line's marks and note, changed through the store (saved in the film's state.json).
+async function editLine(id, fn) {
+  const r = app.review;
+  try {
+    await app.store.update((d) => {
+      d.mix ??= {};
+      d.mix.pacing ??= { lines: {} };
+      d.mix.pacing.lines ??= {};
+      d.mix.pacing.lines[id] = fn(d.mix.pacing.lines[id] ?? {});
+    });
+    return true;
+  } catch (e) {
+    if (app.review === r) r.paceError = `Couldn't save: ${msg(e)}`;
+    return false;
+  } finally { render(); }
+}
+
+// A mark Jon changes is his from then on, so Claude's next placing leaves it alone.
+const jonOwns = (line, keys) => ({ ...line, pauses: (line.pauses ?? []).map((p) => (keys.has(p.key) ? { ...p, by: "jon" } : p)) });
+
+async function editMark(id, key, op) {
+  const r = app.review;
+  const words = wordsOf(id);
+  let next = key;
+  await editLine(id, (l) => {
+    if (op === "remove") { next = null; return removeMark(l, key); }
+    if (op === "left" || op === "right") {
+      const before = new Set((l.pauses ?? []).filter((p) => p.key !== key).map((p) => p.key));
+      const moved = moveMark(l, key, op === "left" ? -1 : 1, words);
+      if (moved === l) return l;
+      next = (moved.pauses ?? []).map((p) => p.key).find((k) => !before.has(k)) ?? null;
+      return next ? jonOwns(moved, new Set([next])) : moved;
+    }
+    return jonOwns(setSize(l, key, op), new Set([key]));
+  });
+  if (app.review === r) { r.paceMenu = next ? { id, key: next } : null; render(); }
+}
+
+async function placePauses() {
+  const r = app.review;
+  if (r.placing || r.applying || !app.store) return;
+  r.placing = true; r.paceError = null; r.paceInfo = null; render();
+  try {
+    const transcript = await loadTranscript();
+    await placeFromNotes(app.host, app.store, { transcript, lineScript: r.lineScript ?? null, takeSigs: takeSigsNow() });
+  } catch (e) {
+    if (app.review === r) r.paceError = msg(e);
+  } finally {
+    r.placing = false;
+    render();
+  }
+}
+
+// Join with the marks, then fit and mix again (pacingchain). Notes and marks can still be edited meanwhile.
+async function runApplyPauses() {
+  const r = app.review;
+  if (r.applying || r.placing || !app.store) return;
+  userStarted();
+  r.applying = { step: null }; r.paceError = null; r.paceInfo = null; r.paceMenu = null; render();
+  try {
+    const fit = app.store.state.mix?.fit;
+    const res = await applyPauses(mixCtx(), { onStep: (step) => { if (r.applying) { r.applying = { step }; render(); } } });
+    if (app.review === r && res?.stoppedAt === "FIT" && fit?.status === "done" && fit.source === "stemremixer") {
+      r.paceInfo = "Joined with the pauses. The score fit is your Stem Remixer export, so it was left as it is.";
+    }
+  } catch (e) {
+    if (app.review === r) r.paceError = msg(e);
+  } finally {
+    r.applying = null;
+    render();
+  }
 }
 
 // Once a voiceover is joined (and when Review opens on a film that has one), Claude's start times for the
@@ -485,7 +681,8 @@ const ctx = () => ({ host: app.host, store: app.store, jobs: app.jobs });
 // narration: the mix steps refuse to run from a join that misses a take saved since (joinStale).
 const mixCtx = () => ({ ...ctx(), lineScript: app.review.lineScript ?? null, settings: app.settings ?? {}, narration: app.review.narration ?? null });
 // A Voiceover and mix step's action, guarded like a card (VOICEOVER, FIT or MIX).
-const stepAction = (id, fn) => { const run = cardAction((_, ...a) => fn(...a)); return (...a) => run(id, ...a); };
+// While Apply pauses runs its chain, no step starts by hand (the buttons are held too).
+const stepAction = (id, fn) => { const run = cardAction((_, ...a) => fn(...a)); return (...a) => (app.review?.applying ? false : run(id, ...a)); };
 
 async function findExports() {
   const r = app.review;
@@ -544,6 +741,13 @@ const reviewActions = {
     app.review.noteFor = null; app.review.draft = "";
   }),
   make3d: cardAction((id) => addBlender3d(ctx(), id)),
+  animate: cardAction((id) => addAnimated(ctx(), id)),
+  // Remove this version asks first, on the card; the takes stay on disk.
+  askRemove(id) { app.review.removeFor = id; app.review.cardErrors.delete(id); render(); },
+  cancelRemove() { app.review.removeFor = null; render(); },
+  removeVersion: cardAction(async (id) => {
+    try { await removeVersion(ctx(), id); } finally { if (app.review.removeFor === id) app.review.removeFor = null; }
+  }),
   // Through cardAction so the per-shot pending guard also covers a take being prepared.
   setTool: cardAction((id, tool) => setTool(ctx(), id, tool)),
   // Ignored while any card action or the shot list is in flight; resolves true once saved.
@@ -604,7 +808,23 @@ const reviewActions = {
   unapproveAudio: cardAction((id) => unapproveAudio(ctx(), id)),
   startStableAudio: () => { startStableAudio(); },
   // Voiceover and mix
-  joinVoiceover: stepAction("VOICEOVER", (allowFlagged) => { userStarted(); return startJoin(mixCtx(), { allowFlagged: !!allowFlagged }); }),
+  // The join always takes the pause marks as they are now: the same code as Apply pauses (pacingchain), stopping
+  // after the join, so Jon's cue starts move with the pauses too. The card is free once the job is queued; a failure
+  // before that shows on the card, the join's own failure on its step, anything after it under the review.
+  joinVoiceover: stepAction("VOICEOVER", async (allowFlagged) => {
+    userStarted();
+    const r = app.review;
+    let begun = false, started;
+    const queued = new Promise((res) => { started = res; });
+    const run = applyPauses(mixCtx(), { joinOnly: true, allowFlagged: !!allowFlagged, onStarted: () => { begun = true; started(); } });
+    run.then((res) => { if (res?.withoutPauses && app.review === r) { r.paceInfo = JOINED_WITHOUT; render(); } }, (e) => {
+      if (!begun || app.review !== r) return;
+      const st = app.store?.state?.mix?.voiceover?.status;
+      if (st === "failed" || st === "interrupted") return;
+      r.paceError = msg(e); render();
+    });
+    await Promise.race([queued, run]);
+  }),
   fitScore: stepAction("FIT", async (note) => {
     if (note !== undefined && !String(note).trim()) throw new Error("Write a note saying what should change.");
     userStarted();
@@ -634,7 +854,48 @@ const reviewActions = {
   makeMix: stepAction("MIX", () => { userStarted(); return startMix(mixCtx()); }),
   approveMix: stepAction("MIX", () => approveMix(mixCtx())),
   mixPlayer: (file, key, label) => mixAudioEl(file, key, label),
+  audioPlayer: (slot, file, key, label) => audioEl(slot, file, key, label),
+  isPaused: (file) => app.playing === file && !!app.paused,
   seekMix,
+  // Pacing review
+  reviewPlayer: (file, key, label) => audioEl("review", file, key, label),
+  // A new bar per paint (the old one is dropped with the old DOM); attachFollow binds it to the review's player.
+  prompter(m) {
+    const old = app.review.bar;
+    old?.attach(null);
+    app.review.bar = prompterBar(m, reviewActions, { index: old?.index() ?? 0 });
+    return app.review.bar.el;
+  },
+  seekReview,
+  markWord(id, i) {
+    if (newTake(id)) return;
+    const words = wordsOf(id);
+    const w = words[i];
+    if (!w) return;
+    editLine(id, (l) => addMark(l, { after: true, word: w.word, nth: w.nth, size: "medium", by: "jon", take: takeOf(id), words }));
+  },
+  markGap(id) { editLine(id, (l) => addMark(l, { after: "end", size: "medium", by: "jon", take: takeOf(id), words: wordsOf(id) })); },
+  openMark(id, key) {
+    const m = app.review.paceMenu;
+    app.review.paceMenu = m && m.id === id && m.key === key ? null : { id, key };
+    app.review.focusMenu = !!app.review.paceMenu;
+    render();
+  },
+  editMark: (id, key, op) => { editMark(id, key, op); },
+  // Saving a note never asks Claude; Place pauses does.
+  saveNote(id, text) {
+    const now = app.host.now();
+    return editLine(id, (l) => ({ ...l, note: text, noteAt: now }));
+  },
+  async setRerecord(id, on) {
+    const now = app.host.now();
+    await editLine(id, (l) => ({ ...l, rerecord: on ? { at: now } : null }));
+    await Promise.resolve(app.store.log(`Narration ${id}: ${on ? "marked to re-record" : "Re-record removed"}`)).catch(() => {});
+    await refreshNarration();
+    render();
+  },
+  placePauses: () => { placePauses(); },
+  applyPauses: () => { runApplyPauses(); },
   field: (k) => fields.get(k),
   setField(k, v) { if (v === undefined) fields.delete(k); else fields.set(k, v); },
   rendering: () => rendering,
@@ -661,7 +922,13 @@ async function boot() {
   app.host = host;
   const desktop = await window.claude.use("desktop");
   desktop.app?.dock?.setIcon(drawIcon()).catch(() => {});
-  mountProbe(host, $("run-probe"), $("probe-results"), () => app.settings);
+  // Probe re-reads .studio-settings.json and updates the one settings object every runner holds.
+  mountProbe(host, $("run-probe"), $("probe-results"), () => app.settings, async () => {
+    if (!app.root || !app.settings) return;
+    const fresh = await loadSettings(host, app.root);
+    for (const k of Object.keys(app.settings)) if (!(k in fresh)) delete app.settings[k];
+    Object.assign(app.settings, fresh);
+  }, () => ({ comfy: app.comfyStarter, stableAudio: app.starter }), () => refreshI2v());
   await startWithAccess();
 }
 
@@ -700,7 +967,10 @@ async function startWithAccess(fromClick = false) {
 }
 
 // Closing the app stops the Stable Audio process the app started (never one Jon started himself).
-window.addEventListener("pagehide", () => { try { Promise.resolve(app.starter?.stop()).catch(() => {}); } catch { /* closing anyway */ } });
+// Closing the app stops the ComfyUI and Stable Audio processes the app started (never ones Jon started himself).
+window.addEventListener("pagehide", () => {
+  for (const s of [app.starter, app.comfyStarter]) { try { Promise.resolve(s?.stop()).catch(() => {}); } catch { /* closing anyway */ } }
+});
 
 // The sticky summary bar on Review sits just under the sticky header, whatever its height.
 {

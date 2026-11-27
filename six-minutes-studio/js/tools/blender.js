@@ -1,83 +1,217 @@
-// Blender runner (gpu lane): Claude writes a Python scene script, Blender renders it headless.
-// Claude never chooses the output path; the runner passes source and output after "--".
+// Blender runner (gpu lane). One take is model, check, render, all inside the job:
+// Claude writes a scene script looking at Jon's drawing, Blender renders a check still, Claude compares
+// the still with the drawing (fix it or it matches, at most 3 stills), then Blender renders the MP4.
+// Claude never chooses a path; the runner passes source, output and still after "--".
 import { askJson } from "../claude.js";
-import { join } from "../paths.js";
+import { readImages, canSendImages } from "../images.js";
+import { moveAside } from "../paths.js";
 import { DEFAULT_SETTINGS } from "../settings.js";
+import { SCRIPT_INSTRUCTIONS, CHECK_INSTRUCTIONS, validateScript, validateCheck } from "./blenderprompts.js";
 
-const INSTRUCTIONS = `You write a Blender Python script (bpy) for one shot of a documentary film.
-Build the scene with Blender's Python API from the shot description: asset.desc says whether it is a 3D line-art version of the source line-art image or a 3D model of a place.
-The script runs as: blender -b -P script.py -- <source> <output>. Read both paths from sys.argv after "--": source = sys.argv[sys.argv.index("--") + 1], output = sys.argv[sys.argv.index("--") + 2]. Never hard-code either path.
-Render an MP4 (H.264, FFMPEG container) at 1920x1080, 24 fps, with frame_start = 1 and frame_end = frames, to the output path.
-Look: Six Minutes On... Thin brass/amber (#d5a867) or white lines on a dark navy world (#03070c to #091a2e). Slow, deliberate camera movement.
-The script MUST NOT use the network, MUST NOT delete or overwrite any file other than the output path, and MUST NOT read any file other than the source image.
-If a previous script and a note are given, change the previous script to follow the note and keep everything else the same.
-Reply with JSON only: {"script": "<the full Python script>", "frames": <integer from 1 to 2400, the number of frames to render>}. Do not include an output path.`;
+export const NO_PICTURES = "Claude can't see pictures in this view yet. Allow pictures for Six Minutes Studio (reopen Studio, or its Permissions menu), then press Run again.";
+export const imageRejectedText = (name) => `Claude couldn't take the drawing (${name}): it may be too large. Save it smaller and press Run again.`;
+export const BLANK_TWICE = "The 3D render came out blank. Redo with a note.";
+const ROUNDS = 3;
+export const CLAUDE_WAIT_MS = 5 * 60 * 1000;
+// A declined picture consent stands for the rest of the view, so "Run again" alone can never pass.
+const NO_PICTURE_CODES = new Set(["not_granted", "images_unavailable"]);
 
-function validate(v) {
-  if (!v || typeof v !== "object") throw new Error("expected an object");
-  if (typeof v.script !== "string" || !v.script.trim()) throw new Error("script is empty");
-  if (!Number.isInteger(v.frames) || v.frames < 1 || v.frames > 2400) throw new Error("frames must be a whole number from 1 to 2400");
+// The job holds the only gpu slot while Claude thinks, so a call that never answers must not hold it for ever.
+// The wait also covers a consent prompt nobody answers; on time-out the call itself is cancelled.
+// cache: false, so a Run again never replays an answer that failed here.
+async function askBounded(host, what, waitMs, opts, drawingName) {
+  const ac = new AbortController();
+  let timer;
+  const late = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`Claude didn't answer ${what} in 5 minutes (or a permission prompt is waiting). Press Run again.`));
+      ac.abort();
+    }, waitMs);
+  });
+  const call = askJson(host, { ...opts, signal: ac.signal, cache: false });
+  call.catch(() => {}); // an answer after the time-out (or the abort's rejection) is dropped
+  try {
+    return await Promise.race([call, late]);
+  } catch (e) {
+    if (e?.name !== "ClaudeError") throw e;
+    let text;
+    if (NO_PICTURE_CODES.has(e.code)) text = NO_PICTURES;
+    else if (e.code === "image_rejected") text = imageRejectedText(drawingName);
+    else text = `Claude stopped on ${what}: ${String(e.message).replace(/\.?\s*$/, ".")} Press Run again, or Redo with a note.`;
+    const err = new Error(text);
+    err.code = e.code;
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
-// Returns the path of the written script. The frame count (needed for job.input.frames) is
-// passed to the optional onFrames callback.
-export async function writeBlenderScript(host, store, asset, take, { note, previous, onFrames } = {}) {
-  const redo = note != null || previous != null;
-  const data = { asset: { id: asset.id, desc: asset.desc, line: asset.line }, take };
-  if (previous != null) data.previousScript = previous;
-  if (note != null) data.note = note;
-  const r = await askJson(host, { instructions: INSTRUCTIONS, data, tier: redo ? "quick" : "default", validate });
-  const path = join(store.dir, "studio", "blender", `${asset.id}_t${take}.py`);
-  await host.fs.write(path, r.script);
-  if (onFrames) onFrames(r.frames);
-  return path;
+// Blender 5 only offers 'FFMPEG' once image_settings.media_type is 'VIDEO'. If a script sets the format
+// without switching to video first, add the switch just before that line (it is a no-op on Blender 4).
+const FFMPEG_LINE = /^([ \t]*)([A-Za-z_][\w.]*)\.file_format\s*=\s*(['"])FFMPEG\3/m;
+export function ensureVideoMediaType(script) {
+  if (/media_type/.test(script)) return script;
+  return script.replace(FFMPEG_LINE, (line, indent, obj) =>
+    `${indent}if hasattr(${obj}, "media_type"):\n${indent}    ${obj}.media_type = 'VIDEO'\n${line}`);
 }
 
 const FRA = /Fra:(\d+)/g;
+const parentOf = (p) => String(p).replace(/[\\/][^\\/]*$/, "");
+const fileName = (p) => String(p).split(/[\\/]/).pop();
+// Frame count for progress when no saved check has it (a round whose compare never finished).
+const frameEnd = (script) => Number(/frame_end\s*=\s*(\d+)/.exec(script)?.[1]) || null;
 
-export function makeBlenderRunner({ settings = DEFAULT_SETTINGS } = {}) {
+async function readJson(host, p) {
+  try { return JSON.parse(await host.fs.read(p, "utf8")); } catch { return null; }
+}
+
+// Runs Blender once. Resolves { code, log } (log = last 20 lines); rejects only when Blender didn't start.
+function runBlender(host, settings, args, onFrame) {
+  return new Promise((resolve, reject) => {
+    const tail = [];
+    let partial = "", errText = "";
+    const feed = (chunk) => {
+      partial += String(chunk);
+      const lines = partial.split(/\r?\n|\r/);
+      partial = lines.pop();
+      for (const line of lines) {
+        if (!line) continue;
+        tail.push(line);
+        if (tail.length > 20) tail.shift();
+        if (onFrame) for (const m of line.matchAll(FRA)) onFrame(Number(m[1]));
+      }
+    };
+    const p = host.spawn(settings.blenderPath, args);
+    p.onOut((c) => feed(c));
+    p.onErr((c) => { errText = String(c); feed(c); });
+    p.onExit((code) => {
+      if (partial) feed("\n");
+      if (code === null || code === undefined) {
+        return reject(new Error(`Blender didn't start: ${errText || "no reason given"}. Check the Blender path in .studio-settings.json.`));
+      }
+      resolve({ code, log: tail.join("\n") });
+    });
+  });
+}
+
+export function makeBlenderRunner({ settings = DEFAULT_SETTINGS, claudeWaitMs = CLAUDE_WAIT_MS } = {}) {
+  // The full MP4 render, with frame progress. frames may be unknown (no percentage then).
+  async function render(ctx, script, sourceFile, out, frames) {
+    const { host } = ctx;
+    // A leftover file at out (earlier interrupted run) must not pass for this run's result. Move it aside, never delete.
+    if (await host.fs.exists(out)) await host.fs.rename(out, out.replace(/\.mp4$/i, "") + `.stale-${host.now()}.mp4`);
+    // A script written before the Blender 5 fix: add the video switch so Run again works.
+    try {
+      const text = await host.fs.read(script, "utf8");
+      const fixed = ensureVideoMediaType(text);
+      if (fixed !== text) await host.fs.write(script, fixed);
+    } catch { /* unreadable here: Blender reports it */ }
+    let last = -1;
+    const onFrame = (f) => {
+      if (!(frames > 0)) return;
+      const p = Math.min(1, Math.max(0, f / frames));
+      // Blender prints several lines per frame: report only moves of 1 % or more (and the end).
+      if (p - last >= 0.01 || (p === 1 && last !== 1)) {
+        last = p;
+        ctx.progress(p, `Rendering frame ${Math.min(f, frames)} of ${frames}`);
+      }
+    };
+    const { code, log } = await runBlender(host, settings, ["-b", "--python-exit-code", "1", "-P", script, "--", sourceFile, out], onFrame);
+    if (code !== 0) throw new Error(`Blender stopped with exit code ${code}.\n${log}`);
+    if (!(await host.fs.exists(out))) throw new Error(`Blender finished but didn't write an output file.\n${log}`);
+  }
+
   return {
     lane: "gpu",
     async start(job, ctx) {
-      const { script, sourceFile, out, frames } = job.input;
+      const input = job.input;
+      // A job queued before takes checked themselves: it carries a ready script. Render it as before.
+      if (!input.base) {
+        await render(ctx, input.script, input.sourceFile, input.out, input.frames);
+        return { file: input.out };
+      }
       const { host } = ctx;
-      // A leftover file at out (earlier interrupted run) must not pass for this run's result. Move it aside, never delete.
-      if (await host.fs.exists(out)) await host.fs.rename(out, out.replace(/\.mp4$/i, "") + `.stale-${host.now()}.mp4`);
-      return new Promise((resolve, reject) => {
-        const tail = [];
-        let partial = "", errText = "", last = -1;
-        const feed = (chunk) => {
-          partial += String(chunk);
-          const lines = partial.split(/\r?\n|\r/);
-          partial = lines.pop();
-          for (const line of lines) {
-            if (!line) continue;
-            tail.push(line);
-            if (tail.length > 20) tail.shift();
-            for (const m of line.matchAll(FRA)) {
-              if (!(frames > 0)) continue;
-              const p = Math.min(1, Math.max(0, Number(m[1]) / frames));
-              // Blender prints several lines per frame: report only moves of 1 % or more (and the end).
-              if (p - last >= 0.01 || (p === 1 && last !== 1)) { last = p; ctx.progress(p); }
-            }
+      const { asset, take, note, previousScript, previousStill, sourceFile, base, out } = input;
+      await host.fs.mkdir(parentOf(base));
+      const scriptOf = (k) => `${base}_r${k}.py`;
+      const stillOf = (k) => `${base}_check${k}.png`;
+      const checkOf = (k) => `${base}_check${k}.json`;
+      const finalScript = `${base}.py`;
+      const writeScript = (k, text) => host.fs.write(scriptOf(k), ensureVideoMediaType(text));
+
+      // What earlier runs of this job left: round scripts and saved compares.
+      let top = 0;
+      const saved = [];
+      for (let k = 1; k <= ROUNDS; k++) {
+        if (!(await host.fs.exists(scriptOf(k)))) break;
+        top = k;
+        const c = await readJson(host, checkOf(k));
+        if (c) saved.push(c);
+      }
+      const checks = [...saved];
+      const lastSaved = saved.at(-1);
+      let frames = lastSaved?.frames ?? null;
+      const loopDone = (await host.fs.exists(finalScript)) && (saved.some((c) => c.verdict === "matches") || saved.length >= ROUNDS);
+
+      if (!loopDone) {
+        // Pictures are only needed while Claude still checks: a render-only Run again works without them.
+        if (!(await canSendImages(host))) throw new Error(NO_PICTURES);
+        const drawing = await readImages(host, [sourceFile]);
+        let k = top;
+        if (k === 0) {
+          ctx.progress(null, "Modelling");
+          const data = { asset: { id: asset.id, desc: asset.desc, line: asset.line }, take };
+          if (note != null) data.note = note;
+          if (previousScript) { try { data.previousScript = await host.fs.read(previousScript, "utf8"); } catch { /* gone: model afresh */ } }
+          const images = [...drawing];
+          if (data.previousScript != null && previousStill && (await host.fs.exists(previousStill))) images.push(...(await readImages(host, [previousStill])));
+          const r = await askBounded(host, "the Blender script", claudeWaitMs, { instructions: SCRIPT_INSTRUCTIONS, data, tier: "default", validate: validateScript, images }, fileName(sourceFile));
+          k = 1;
+          await writeScript(k, r.script);
+          frames = r.frames;
+        }
+        let script = await host.fs.read(scriptOf(k), "utf8");
+        if (frames == null) frames = frameEnd(script);
+        // Round k's compare is saved already (matches, the third round, or blank twice): only the outcome is left.
+        let verdict = checks.find((c) => c.round === k) ?? null;
+        while (!verdict) {
+          ctx.progress(null, `Check ${k} of ${ROUNDS}`);
+          const still = stillOf(k);
+          await moveAside(host, still);
+          const { code, log } = await runBlender(host, settings, ["-b", "--python-exit-code", "1", "-P", scriptOf(k), "--", sourceFile, out, "--still", still]);
+          const ok = code === 0 && (await host.fs.exists(still));
+          if (!ok && k === ROUNDS) {
+            throw new Error(code !== 0 ? `Blender stopped with exit code ${code}.\n${log}` : `Blender finished but didn't write the check still.\n${log}`);
           }
-        };
-        const p = host.spawn(settings.blenderPath, ["-b", "--python-exit-code", "1", "-P", script, "--", sourceFile, out]);
-        p.onOut((c) => feed(c));
-        p.onErr((c) => { errText = String(c); feed(c); });
-        p.onExit(async (code) => {
-          try {
-            if (partial) feed("\n");
-            if (code === null || code === undefined) {
-              return reject(new Error(`Blender didn't start: ${errText || "no reason given"}. Check the Blender path in .studio-settings.json.`));
-            }
-            const log = tail.join("\n");
-            if (code !== 0) return reject(new Error(`Blender stopped with exit code ${code}.\n${log}`));
-            if (!(await host.fs.exists(out))) return reject(new Error(`Blender finished but didn't write an output file.\n${log}`));
-            resolve({ file: out });
-          } catch (e) { reject(e); }
-        });
-      });
+          const data = { asset: { id: asset.id, desc: asset.desc, line: asset.line }, take, round: k, script, frames };
+          if (!ok) data.error = code !== 0 ? `Blender stopped with exit code ${code}.\n${log}` : `Blender finished but didn't write ${fileName(still)}.\n${log}`;
+          const images = ok ? [...drawing, ...(await readImages(host, [still]))] : drawing;
+          const r = await askBounded(host, "the Blender check", claudeWaitMs, { instructions: CHECK_INSTRUCTIONS, data, tier: "default", validate: validateCheck, images }, fileName(sourceFile));
+          const blankTwice = r.verdict === "blank" && checks.find((c) => c.round === k - 1)?.verdict === "blank";
+          const goOn = k < ROUNDS && !blankTwice && !(ok && r.verdict === "matches");
+          const nextFrames = goOn && r.frames != null ? r.frames : frames;
+          // The next round's script is written before this round's compare is saved, so a saved
+          // "fix" always has its script on disk for Run again.
+          if (goOn) await writeScript(k + 1, r.script ?? script);
+          const c = { round: k, still: ok ? still : null, verdict: r.verdict, note: r.note, frames: nextFrames };
+          await host.fs.write(checkOf(k), JSON.stringify(c));
+          checks.push(c);
+          if (!goOn) { verdict = c; break; }
+          k += 1;
+          frames = nextFrames;
+          script = await host.fs.read(scriptOf(k), "utf8");
+        }
+        // Blank twice in a row, or blank on the last round: a full render would come out blank too.
+        if (verdict.verdict === "blank") throw new Error(BLANK_TWICE);
+        await host.fs.write(finalScript, ensureVideoMediaType(script));
+        if (frames == null) frames = verdict.frames ?? frameEnd(script);
+      }
+      if (frames == null) frames = frameEnd(await host.fs.read(finalScript, "utf8").catch(() => ""));
+      await render(ctx, finalScript, sourceFile, out, frames);
+      return {
+        file: out,
+        meta: { script: finalScript, checks: checks.map(({ round, still, verdict, note }) => ({ round, still, verdict, note })) },
+      };
     },
   };
 }

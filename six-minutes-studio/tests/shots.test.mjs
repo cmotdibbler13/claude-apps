@@ -94,3 +94,12 @@ test("without the flag broll stays higgsfield; comfyui from Claude is accepted o
   const bad = await mk([shot({ kind: "lineart", tool: "comfyui" })]);
   await assert.rejects(buildShotList(bad.h, bad.store, input), (e) => e.code === "invalid");
 });
+
+test("a plan with an animated shot is refused (animated versions come only from the button)", async () => {
+  const { h, store } = await mk([
+    shot({ id: "a", kind: "lineart", lineIndex: 0 }),
+    shot({ id: "m", kind: "animated", tool: "comfyui", sourceId: "a", lineIndex: 1 }),
+  ]);
+  await assert.rejects(buildShotList(h, store, input), (e) => e.code === "invalid" && /bad kind/.test(e.message));
+  assert.deepEqual(store.state.assets, []);
+});

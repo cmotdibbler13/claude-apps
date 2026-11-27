@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { filmRow, filmsModel } from "../js/ui/films.js";
 import { activeCount, jobsModel } from "../js/ui/jobs.js";
-import { summarize, cardModel, reviewModel, scriptCandidates } from "../js/ui/review.js";
+import { summarize, cardModel, reviewModel, scriptCandidates, card, MSG_I2V_SETUP } from "../js/ui/review.js";
 
 const DIR = "S:\\Youtube video ideas\\Skara Brae";
 const parts = (a, b, c, d) => ({ 1: a, 2: b, 3: c, shorts: d });
@@ -364,6 +364,179 @@ test("cardModel can3d: line art without a Blender version, when free", () => {
   assert.equal(cardModel(running, [running]).can3d, false);
   assert.equal(cardModel(la, [la], { pending: true }).can3d, false);
 });
+
+const READY = { ok: true, why: "" };
+const NOT_READY = { ok: false, why: "animate_i2v.json isn't in ComfyUI workflows" };
+
+test("cardModel animate: line art without an animated version; disabled with the set-up title until i2v is ready", () => {
+  const la = asset({ id: "HF-02" });
+  const an = asset({ id: "HF-04", kind: "animated", tool: "comfyui", sourceId: "HF-02" });
+  let c = cardModel(la, [la], { i2v: READY });
+  assert.equal(c.showAnimate, true);
+  assert.equal(c.canAnimate, true);
+  assert.equal(c.animateWhy, null);
+  c = cardModel(la, [la], { i2v: NOT_READY });
+  assert.equal(c.showAnimate, true);
+  assert.equal(c.canAnimate, false);
+  assert.equal(c.animateWhy, "Set up the image-to-video workflow (see Probe)");
+  assert.equal(MSG_I2V_SETUP, "Set up the image-to-video workflow (see Probe)");
+  // Not checked yet counts as not ready.
+  assert.equal(cardModel(la, [la]).canAnimate, false);
+  // Hidden once the drawing has a live animated version; never on other kinds.
+  assert.equal(cardModel(la, [la, an], { i2v: READY }).showAnimate, false);
+  assert.equal(cardModel(an, [la, an], { i2v: READY }).showAnimate, false);
+  assert.equal(cardModel(asset({ id: "HF-05", kind: "broll" }), [], { i2v: READY }).showAnimate, false);
+  // Can't start while the card is busy or pending (same rule as Make 3D).
+  const running = asset({ takes: [take(1, "running")], chosen: 1 });
+  assert.equal(cardModel(running, [running], { i2v: READY }).canAnimate, false);
+  assert.equal(cardModel(la, [la], { pending: true, i2v: READY }).canAnimate, false);
+  // A 3D version doesn't hide Animate, nor an animated one Make 3D.
+  const b = asset({ id: "HF-03", kind: "blender", tool: "blender", sourceId: "HF-02" });
+  assert.equal(cardModel(la, [la, b], { i2v: READY }).showAnimate, true);
+  assert.equal(cardModel(la, [la, an], { i2v: READY }).can3d, true);
+});
+
+test("cardModel remove: derived versions only, not while a take is queued, running or pending; confirm copy", () => {
+  const la = asset({ id: "HF-01", approved: true });
+  const b = asset({ id: "HF-02", kind: "blender", tool: "blender", sourceId: "HF-01" });
+  const an = asset({ id: "HF-03", kind: "animated", tool: "comfyui", sourceId: "HF-01" });
+  assert.equal(cardModel(b, [la, b]).removable, true);
+  assert.equal(cardModel(b, [la, b]).canRemove, true);
+  assert.equal(cardModel(an, [la, an]).canRemove, true);
+  assert.equal(cardModel(la, [la]).removable, false);
+  assert.equal(cardModel(asset({ id: "HF-05", kind: "broll" }), []).removable, false);
+  for (const st of ["queued", "running"]) {
+    const busy = { ...b, takes: [take(1, st)], chosen: 1 };
+    assert.equal(cardModel(busy, [la, busy]).canRemove, false);
+  }
+  assert.equal(cardModel(b, [la, b], { pending: true }).canRemove, false);
+  assert.equal(cardModel(b, [la, b]).confirmRemove, null);
+  assert.equal(cardModel(b, [la, b], { confirmRemove: true }).confirmRemove, "Remove HF-02 from the review? Its takes stay on disk.");
+  // An animated version shows its drawing like a 3D one.
+  const src = { ...la, takes: [take(1, "done", { file: "S:\\f\\HF-01_t1.png" })], chosen: 1 };
+  assert.equal(cardModel(an, [src, an]).sourceFile, "S:\\f\\HF-01_t1.png");
+});
+
+test("review model passes i2v readiness and the remove confirm to the cards", () => {
+  const la = asset({ id: "HF-01", approved: true });
+  const b = asset({ id: "HF-02", kind: "blender", tool: "blender", sourceId: "HF-01", lineIndex: 0 });
+  const m = reviewModel({ film: film(), state: { assets: [la, b] }, i2v: READY, removeFor: "HF-02" });
+  const byId = Object.fromEntries(m.cards.map((c) => [c.id, c]));
+  assert.equal(byId["HF-01"].canAnimate, true);
+  assert.match(byId["HF-02"].confirmRemove, /^Remove HF-02 from the review\?/);
+  assert.equal(byId["HF-01"].confirmRemove, null);
+});
+
+const CHECKS = [
+  { round: 1, still: "S:\\f\\HF-02_t1_check1.png", verdict: "fix", note: "Made the top slab thicker and moved the far upright back so it lines up with the drawing's back edge." },
+  { round: 2, still: "S:\\f\\HF-02_t1_check2.png", verdict: "matches", note: "Matches the drawing." },
+];
+
+test("cardModel checks: the chosen blender take's last check still and its notes", () => {
+  const la = asset({ id: "HF-01", approved: true });
+  const b = asset({ id: "HF-02", kind: "blender", tool: "blender", sourceId: "HF-01",
+    takes: [take(1, "done", { file: "a.mp4", checks: CHECKS })], chosen: 1 });
+  const c = cardModel(b, [la, b]);
+  assert.equal(c.checks.take, 1);
+  assert.equal(c.checks.still, "S:\\f\\HF-02_t1_check2.png");
+  assert.deepEqual(c.checks.notes.map((n) => n.label), ["Check 1 (fixed)", "Check 2 (matched)"]);
+  assert.equal(c.checks.notes[1].text, "Matches the drawing.");
+  assert.ok(c.checks.notes[0].text.length <= 81 && c.checks.notes[0].text.endsWith("\u2026"));
+  assert.equal(c.checks.notes[0].full, CHECKS[0].note);
+  // A round whose still didn't render: the last still that did.
+  const noStill = { ...b, takes: [take(1, "done", { file: "a.mp4", checks: [CHECKS[0], { round: 2, still: null, verdict: "fix", note: "n" }] })] };
+  assert.equal(cardModel(noStill, [la, noStill]).checks.still, CHECKS[0].still);
+  // No checks: none shown.
+  assert.equal(cardModel({ ...b, takes: [take(1, "done", { file: "a.mp4" })] }, [la, b]).checks, null);
+  // The chosen take has none (a failed redo): the newest take that has them, named.
+  const two = { ...b, takes: [take(1, "done", { file: "a.mp4", checks: CHECKS }), take(2, "failed", { error: "x" })], chosen: 2 };
+  assert.equal(cardModel(two, [la, two]).checks.take, 1);
+});
+
+// A stub DOM with just enough for h(), mediaEl and click handlers.
+function withDom(fn) {
+  const mk = (tag) => {
+    const el = { tag, attrs: {}, children: [], listeners: {}, style: {}, className: "", textContent: "",
+      setAttribute(k, v) { this.attrs[k] = v; }, getAttribute(k) { return this.attrs[k] ?? null; },
+      addEventListener(k, f) { (this.listeners[k] ||= []).push(f); },
+      append(...k) { this.children.push(...k); }, replaceChildren(...k) { this.children = [...k]; } };
+    Object.setPrototypeOf(el, globalThis.Node.prototype);
+    return el;
+  };
+  globalThis.Node = class {};
+  globalThis.document = { createElement: mk, createTextNode: (t) => ({ t }) };
+  return Promise.resolve().then(fn).finally(() => { delete globalThis.document; delete globalThis.Node; });
+}
+const all = (el, pred, out = []) => {
+  if (!el || typeof el !== "object") return out;
+  if (pred(el)) out.push(el);
+  for (const c of el.children ?? []) all(c, pred, out);
+  return out;
+};
+const textOf = (el) => (el.textContent ?? "") + (el.children ?? []).map((c) => (c.t ?? textOf(c))).join("");
+const buttons = (el) => all(el, (x) => x.tag === "button");
+const byText = (el, t) => buttons(el).find((b) => textOf(b) === t);
+const click = (el) => { for (const f of el.listeners.click ?? []) f({}); };
+const stubActions = (calls = []) => new Proxy({ preview: (f) => `blob:${f}`, draft: () => "" }, {
+  get: (o, k) => (k in o ? o[k] : (...a) => { calls.push([k, ...a]); }),
+});
+
+test("card DOM: Animate with ComfyUI beside Make 3D, disabled with its title until set up", () => withDom(() => {
+  const la = asset({ id: "HF-01", approved: true, takes: [take(1, "done", { file: "a.png" })], chosen: 1 });
+  const calls = [];
+  let el = card(cardModel(la, [la], { i2v: NOT_READY }), { layout: "script" }, stubActions(calls));
+  const labels = buttons(el).map(textOf);
+  assert.equal(labels[labels.indexOf("Make 3D in Blender") + 1], "Animate with ComfyUI");
+  const an = byText(el, "Animate with ComfyUI");
+  assert.equal(an.disabled, true);
+  assert.equal(an.attrs.title, "Set up the image-to-video workflow (see Probe)");
+  el = card(cardModel(la, [la], { i2v: READY }), { layout: "script" }, stubActions(calls));
+  const on = byText(el, "Animate with ComfyUI");
+  assert.ok(!on.disabled);
+  assert.equal(on.attrs.title, undefined);
+  click(on);
+  assert.deepEqual(calls.at(-1), ["animate", "HF-01"]);
+}));
+
+test("card DOM: Remove this version opens a confirm row; Remove and Cancel", () => withDom(() => {
+  const la = asset({ id: "HF-01", approved: true });
+  const b = asset({ id: "HF-02", kind: "blender", tool: "blender", sourceId: "HF-01" });
+  const calls = [];
+  let el = card(cardModel(b, [la, b]), { layout: "script" }, stubActions(calls));
+  const rm = byText(el, "Remove this version");
+  assert.match(rm.className, /ghost/);
+  click(rm);
+  assert.deepEqual(calls.at(-1), ["askRemove", "HF-02"]);
+  assert.equal(byText(el, "Remove"), undefined);
+  el = card(cardModel(b, [la, b], { confirmRemove: true }), { layout: "script" }, stubActions(calls));
+  const row = all(el, (x) => String(x.className).split(" ").includes("confirm"))[0];
+  assert.ok(row);
+  assert.match(textOf(row), /Remove HF-02 from the review\? Its takes stay on disk\./);
+  click(byText(row, "Remove"));
+  assert.deepEqual(calls.at(-1), ["removeVersion", "HF-02"]);
+  click(byText(row, "Cancel"));
+  assert.deepEqual(calls.at(-1), ["cancelRemove"]);
+  assert.equal(byText(el, "Remove this version"), undefined);
+  // Disabled while a take runs.
+  const busy = { ...b, takes: [take(1, "running")], chosen: 1 };
+  el = card(cardModel(busy, [la, busy]), { layout: "script" }, stubActions(calls));
+  assert.equal(byText(el, "Remove this version").disabled, true);
+}));
+
+test("card DOM: a blender take's checks show the last still and the notes", () => withDom(() => {
+  const la = asset({ id: "HF-01", approved: true });
+  const b = asset({ id: "HF-02", kind: "blender", tool: "blender", sourceId: "HF-01",
+    takes: [take(1, "done", { file: "a.mp4", checks: CHECKS })], chosen: 1 });
+  const el = card(cardModel(b, [la, b]), { layout: "script" }, stubActions());
+  const box = all(el, (x) => String(x.className).split(" ").includes("checks3d"))[0];
+  assert.ok(box);
+  const img = all(box, (x) => x.tag === "img")[0];
+  assert.equal(img.src, "blob:S:\\f\\HF-02_t1_check2.png");
+  const items = all(box, (x) => x.tag === "li").map(textOf);
+  assert.equal(items.length, 2);
+  assert.match(items[0], /^Check 1 \(fixed\): Made the top slab thicker/);
+  assert.equal(items[1], "Check 2 (matched): Matches the drawing.");
+}));
 
 // ---- Score and sound effects ----
 import { audioModel } from "../js/ui/audio.js";
@@ -788,4 +961,46 @@ test("mix: the player is keyed on the file and the mix run, so a new run gets a 
   assert.equal(keepPlayer({ key: a, el }, a), true);
   assert.equal(keepPlayer({ key: a, el }, b), false);
   assert.equal(keepPlayer({ key: a, el: null }, a), false);
+});
+
+test("mix: one Re-record line makes it Join anyway (1 not OK)", () => {
+  const j = step(mm(mstate(), { narration: narr([nrow("01.1", "rerecord"), nrow("01.2", "ok")]) }), "VOICEOVER");
+  assert.equal(j.run.label, "Join anyway (1 not OK)");
+  assert.equal(j.flagged, "Not OK: 01.1 rerecord");
+});
+
+test("mix: a ticked missing line still locks Join", async () => {
+  const { withRerecord } = await import("../js/pacing.js");
+  const n = withRerecord(narr([nrow("01.1", "missing"), nrow("01.2", "ok")]), { lines: { "01.1": { rerecord: { at: 5 } } } });
+  const j = step(mm(mstate(), { narration: n }), "VOICEOVER");
+  assert.match(j.lock, /^Record these first: 01\.1/);
+});
+
+test("cardModel checks: each label carries its verdict; a third-round fix was not applied", () => {
+  const la = asset({ id: "HF-01", approved: true });
+  const checks = [
+    { round: 1, still: "S:\\f\\c1.png", verdict: "blank", note: "all navy" },
+    { round: 2, still: "S:\\f\\c2.png", verdict: "fix", note: "moved the camera" },
+    { round: 3, still: "S:\\f\\c3.png", verdict: "fix", note: "thicker slab" },
+  ];
+  const b = asset({ id: "HF-02", kind: "blender", tool: "blender", sourceId: "HF-01", takes: [take(1, "done", { file: "a.mp4", checks })], chosen: 1 });
+  assert.deepEqual(cardModel(b, [la, b]).checks.notes.map((n) => n.label), ["Check 1 (blank)", "Check 2 (fixed)", "Check 3 (not applied)"]);
+  const m = { ...b, takes: [take(1, "done", { file: "a.mp4", checks: [checks[0], checks[1], { ...checks[2], verdict: "matches" }] })] };
+  assert.equal(cardModel(m, [la, m]).checks.notes[2].label, "Check 3 (matched)");
+});
+
+test("live jobs: a job whose shot was removed offers neither Run again nor Check again", () => {
+  const m = jobsModel({ jobs: [
+    job({ id: "a", status: "failed", tool: "blender", assetId: "HF-09" }),
+    job({ id: "b", status: "interrupted", tool: "comfyui", assetId: "HF-10", jobRef: "p1" }),
+    job({ id: "c", status: "failed", tool: "blender", assetId: "HF-11" }),
+  ], log: null, retried: new Set(), gone: new Map([["a", "HF-09 was removed from the review."], ["b", "HF-10 was removed from the review."]]) });
+  const by = Object.fromEntries(m.rows.map((r) => [r.id, r]));
+  assert.equal(by.a.canRetry, false);
+  assert.equal(by.a.retryNote, "HF-09 was removed from the review.");
+  assert.equal(by.b.canCheck, false);
+  assert.equal(by.b.canRetry, false);
+  assert.equal(by.b.retryNote, "HF-10 was removed from the review.");
+  assert.equal(by.c.canRetry, true);
+  assert.equal(by.c.retryNote, null);
 });

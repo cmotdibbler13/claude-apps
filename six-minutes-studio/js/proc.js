@@ -85,3 +85,18 @@ export function runJsonLines(host, cmd, args = [], { cwd, name = cmd, onProgress
     }
   });
 }
+
+
+// Closes a process Studio started and everything it started (ComfyUI Desktop's Python server, Pinokio's app):
+// taskkill /T asks the tree to close, /F forces it if that fails. Without a pid, the process alone.
+export async function killTree(host, p) {
+  if (!p) return;
+  const pid = p.pid;
+  if (pid != null) {
+    try {
+      const r = await runProcess(host, "taskkill", ["/PID", String(pid), "/T"], { timeout: 10000 });
+      if (r.code !== 0) await runProcess(host, "taskkill", ["/PID", String(pid), "/T", "/F"], { timeout: 10000 });
+    } catch { /* taskkill missing or timed out: fall back below */ }
+  }
+  try { await p.kill(); } catch { /* already gone */ }
+}

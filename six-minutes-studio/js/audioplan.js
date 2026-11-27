@@ -10,8 +10,8 @@ You get the narration script, its word count, an estimated narration length in s
 
 The score: one instrumental piece for the whole film.
 - Write one prompt for a music generator: the style, the instruments, the tempo (bpm), then "Energy arc:" followed by timed sections as mm:ss, for example "Energy arc: 0:00 sparse low drone; 0:06 pulse enters; 2:40 builds; 5:50 resolves under the end card".
-- Time the sections from estimated times: the script read at about 150 words a minute, after a 6 second cold-open hold, with the end card at the finish.
-- durationS is the whole film in seconds (the 6 second hold, the narration and the end card), a whole number from 3 to 600.
+- Time the sections from estimated times: the script read at about 150 words a minute, with a 6 second hold for the title card at the end of the cold open (the first section), and the end card at the finish.
+- durationS is the whole film in seconds (the narration, the 6 second title-card hold and the end card), a whole number from 3 to 600.
 - No vocals and no lyrics.
 
 The sound effects: one cue for each sound effect on the approved list in the handover, in the order given there (it may be prose or a table). Do not add cues that are not on the list.
@@ -74,7 +74,7 @@ function length(id, v) {
 }
 
 const LINE_ID = /^\d+(\.\d+)?$/;
-const FILM_OFFSET_S = 6; // the cold-open hold: film time = voiceover time + 6
+const FILM_OFFSET_S = 0; // the title hold is in the voiceover itself: film time = voiceover time
 function lineId(v) {
   if (v == null || v === "") return null;
   if (typeof v !== "string" || !LINE_ID.test(v.trim())) throw new Error("A line id looks like 05 or 05.2.");
@@ -211,7 +211,7 @@ export async function editItem(store, id, patch = {}) {
 // "5" and "05" are the same clip: each dot part that is all digits is compared as a number.
 const idKey = (v) => String(v ?? "").trim().split(".").map((p) => (/^\d+$/.test(p) ? String(Number(p)) : p)).join(".");
 
-// Fill start times from the voiceover timings: the cue's clip start plus the 6 second hold.
+// Fill start times from the voiceover timings: the cue's clip start (the title hold is in the voiceover, so this is film time).
 // Only cues with a line id whose clip is in the timings, and never one Jon set himself. Returns the ids filled.
 export async function proposeStarts(store, timingsRows, lineScript) {
   void lineScript; // the line id alone names the clip; the script is accepted for callers that hold it

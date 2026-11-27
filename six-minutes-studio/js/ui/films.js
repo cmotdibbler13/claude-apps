@@ -24,11 +24,11 @@ export function filmRow(film, jobs = []) {
   };
 }
 
-export function filmsModel({ root, films = [], jobs = [], error = null }) {
+export function filmsModel({ root, films = [], jobs = [], error = null, tools = null }) {
   if (error) return { failed: true, unreachable: false, message: `Couldn't load your films: ${error}`, rows: [], empty: false };
   if (!root) return { unreachable: true, message: UNREACHABLE, rows: [], empty: false };
   const rows = films.map((f) => filmRow(f, jobs));
-  return { unreachable: false, message: null, rows, empty: rows.length === 0 };
+  return { unreachable: false, message: null, rows, empty: rows.length === 0, tools: tools || null };
 }
 
 const MARK = { done: "\u2713 ", now: "\u25CF ", none: "" };
@@ -49,7 +49,8 @@ export function render(el, model, actions) {
   const head = [
     h("h1", { text: "Your films" }),
     h("p", { class: "lede", text: "Each film shows where it is in your three parts, and anything waiting on you is in brass." }),
-  ];
+    model.tools ? h("p", { class: "hist tools", text: model.tools }) : null,
+  ].filter(Boolean);
   if (model.unreachable || model.failed) {
     el.replaceChildren(...head, h("div", { class: "panel warn" },
       h("p", { text: model.message }), btn("Try again", () => actions.retryRoot())));

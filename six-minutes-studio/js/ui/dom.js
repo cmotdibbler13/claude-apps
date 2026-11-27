@@ -24,6 +24,18 @@ function append(el, kids) {
 export const btn = (label, onclick, { ghost = false, disabled = false, cls = "" } = {}) =>
   h("button", { type: "button", class: `btn${ghost ? " ghost" : ""}${cls ? " " + cls : ""}`, disabled, onclick }, label);
 
+// The ▶ on a take: play, then pause, then carry on from the same place. actions.isPaused(file) says which.
+export function playToggle(file, active, label, actions, playTitle = "Play this take") {
+  const paused = active && !!actions.isPaused?.(file);
+  const going = active && !paused;
+  const verb = going ? "Pause" : paused ? "Resume" : "Play";
+  return h("button", { type: "button", class: `nplay${active ? " on" : ""}`, "aria-label": `${verb} ${label}`,
+    title: going ? "Pause" : paused ? "Carry on from here" : playTitle, onclick: () => actions.playTake(file) }, going ? "\u275A\u275A" : "\u25B6");
+}
+
+// A player is kept across re-renders while it plays the same file from the same run.
+export const playerKey = (file, at) => `${file ?? ""}#${at ?? ""}`;
+
 export const basename = (p) => String(p ?? "").split(/[\\/]/).filter(Boolean).pop() ?? "";
 
 // An <img> or <video> whose blob URL arrives later from preview(file); failures show as text.

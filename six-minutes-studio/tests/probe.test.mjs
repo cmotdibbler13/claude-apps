@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FakeHost } from "./fake-host.mjs";
+import { AUTOCUE_FILES } from "../js/autocue-bundle.js";
 import { makeChecks, runChecks } from "../js/ui/probe.js";
 
 const settings = { videoModel: "kling3_0", imageModel: "gpt_image_2", blenderPath: "C:\\Program Files\\Blender Foundation\\Blender 4.2\\blender.exe" };
@@ -121,7 +122,7 @@ test("Stable Audio check: connection refused says how to start it; the Music mod
   host.fs.list = async () => [];
   const r = saCheck(await runChecks(host, () => {}, saSettings));
   assert.equal(r.ok, false);
-  assert.equal(r.detail, "Off: press Start Stable Audio on a film's Review");
+  assert.equal(r.detail, "Off: press Start now below, or Start Stable Audio on a film's Review");
 
   const h2 = new FakeHost();
   h2.spawnScript((cmd, args, o, p) => {
@@ -159,8 +160,9 @@ async function srHost({ files = [".venv\\Scripts\\python.exe", "fit.py", "measur
   await host.fs.mkdir(ACD);
   for (const f of files) await host.fs.write(`${SRD}\\${f}`, "x");
   if (version !== null) await host.fs.write(SRD + "\\VERSION", version + "\n");
-  if (join) await host.fs.write(ACD + "\\voiceover_join.py", "x");
-  if (lineScript) await host.fs.write(ACD + "\\line_script.py", "x");
+  if (join) await host.fs.write(ACD + "\\voiceover_join.py", join === "old" ? "old" : AUTOCUE_FILES["voiceover_join.py"]);
+  if (lineScript) await host.fs.write(ACD + "\\line_script.py", AUTOCUE_FILES["line_script.py"]);
+  await host.fs.write(ACD + "\\take_checks.py", "def decode(path, rate=RATE):\n");
   return host;
 }
 const srSettings = (o = {}) => ({ ...settings, stemRemixerDir: SRD, autocueDir: ACD, ...o });
@@ -181,7 +183,49 @@ test("Stem Remixer check fails with the settings text when the folder or a file 
   assert.equal(unset.detail, want);
   const noFit = named(await runChecks(await srHost({ files: [".venv\\Scripts\\python.exe", "measure.py"] }), () => {}, srSettings()), "Stem Remixer");
   assert.equal(noFit.ok, false);
-  assert.equal(noFit.detail, want);
+  assert.equal(noFit.detail, `fit.py isn't in ${SRD}. Press Update in Stem Remixer (1.9.0 or newer).`);
+  const noPy = named(await runChecks(await srHost({ files: ["fit.py", "measure.py"] }), () => {}, srSettings()), "Stem Remixer");
+  assert.equal(noPy.detail, `Stem Remixer's Python isn't at ${SRD}\\.venv\\Scripts\\python.exe. Run Install.cmd in ${SRD}, then Probe again.`);
+});
+
+test("Probe re-reads settings before running, so a setting added while the app is open counts", async () => {
+  const { mountProbe } = await import("../js/ui/probe.js");
+  const host = new FakeHost();
+  host.spawnScript((cmd, args, o, p) => { p.out("ok"); p.exit(0); });
+  host.fs.list = async () => [];
+  const settings = { ...srSettings({ stemRemixerDir: null }) };
+  const rows = [];
+  const list = { replaceChildren() {}, append(li) { rows.push(li); } };
+  const button = {};
+  globalThis.document ??= { createElement: () => ({ append() {}, set textContent(v) { this.t = v; }, className: "" }) };
+  let reloaded = 0;
+  mountProbe(host, button, list, () => settings, async () => { reloaded++; settings.stemRemixerDir = SRD; });
+  await button.onclick();
+  assert.equal(reloaded, 1);
+});
+
+test("a neutral result shows as a neutral row, not a red failure; Probe tells the app when it's done", async () => {
+  const { probeRow, mountProbe } = await import("../js/ui/probe.js");
+  const mk = () => { const el = { kids: [], className: "", textContent: "", append(...k) { this.kids.push(...k); } }; return el; };
+  const saved = globalThis.document;
+  globalThis.document = { createElement: mk };
+  try {
+    const n = probeRow({ name: "Animate workflow", ok: false, neutral: true, detail: "Not set up (only needed for Animate with ComfyUI): x" });
+    assert.equal(n.className, "neutral");
+    assert.equal(n.kids[0].textContent, "Optional");
+    const f = probeRow({ name: "Blender", ok: false, detail: "exit 1" });
+    assert.equal(f.className, "fail");
+    assert.equal(f.kids[0].textContent, "Fail");
+    assert.equal(probeRow({ name: "curl", ok: true, detail: "ok" }).className, "pass");
+    const host = new FakeHost();
+    host.spawnScript((cmd, args, o, p) => { p.out("ok"); p.exit(0); });
+    host.fs.list = async () => [];
+    const button = {};
+    let done = null;
+    mountProbe(host, button, { replaceChildren() {}, append() {} }, () => srSettings(), null, () => ({}), (results) => { done = results; });
+    await button.onclick();
+    assert.ok(Array.isArray(done) && done.some((r) => r.name === "Animate workflow"));
+  } finally { globalThis.document = saved; }
 });
 
 test("Stem Remixer check fails on a version below 1.9.0", async () => {
@@ -191,16 +235,42 @@ test("Stem Remixer check fails on a version below 1.9.0", async () => {
   assert.equal(named(await runChecks(await srHost({ version: "1.10.0" }), () => {}, srSettings()), "Stem Remixer").ok, true);
 });
 
-test("Autocue join check passes when voiceover_join.py is in autocueDir", async () => {
+test("Autocue join check passes when the join files match Studio's copy; missing or old offers Install", async () => {
   const ok = named(await runChecks(await srHost(), () => {}, srSettings()), "Autocue join");
   assert.equal(ok.ok, true);
+  assert.equal(ok.detail, "Join script up to date");
   const no = named(await runChecks(await srHost({ join: false }), () => {}, srSettings()), "Autocue join");
-  assert.equal(no.ok, false);
-  assert.match(no.detail, /voiceover_join\.py/);
+  assert.deepEqual([no.ok, no.detail, no.install], [false, "The join script isn't installed. Press Install join script below.", true]);
+  const old = named(await runChecks(await srHost({ join: "old" }), () => {}, srSettings()), "Autocue join");
+  assert.deepEqual([old.ok, old.detail, old.install], [false, "The join script is out of date. Press Install join script below.", true]);
+  const noLine = named(await runChecks(await srHost({ lineScript: false }), () => {}, srSettings()), "Autocue join");
+  assert.equal(noLine.install, true);
 });
 
-test("Autocue join check also needs line_script.py, which voiceover_join.py imports", async () => {
-  const no = named(await runChecks(await srHost({ lineScript: false }), () => {}, srSettings()), "Autocue join");
-  assert.equal(no.ok, false);
-  assert.match(no.detail, /line_script\.py/);
+test("Animate workflow row: ready, or says what is missing", async () => {
+  const host = new FakeHost();
+  host.spawnScript((cmd, args, o, p) => { p.out("{}"); p.exit(0); });
+  host.fs.list = async () => [];
+  const wf = "S:\\Youtube video ideas\\ComfyUI workflows\\animate_i2v.json";
+  const nodes = { image: ["1", "image"], prompt: ["2", "text"], output: ["3", "filename_prefix"] };
+  const get = async (s) => (await runChecks(host, () => {}, s)).find((r) => r.name === "Animate workflow");
+  const names = makeChecks(comfySettings()).map((c) => c.name);
+  assert.equal(names[names.indexOf("ComfyUI") + 1], "Animate workflow");
+  const miss = await get(comfySettings({ i2v: { workflow: wf, nodes } }));
+  assert.equal(miss.ok, false);
+  // Not a failure: animation is optional, so the row is neutral and says why.
+  assert.equal(miss.neutral, true);
+  assert.equal(miss.detail, "Not set up (only needed for Animate with ComfyUI): animate_i2v.json isn't in ComfyUI workflows");
+  host.files.set(wf, "{}");
+  const nonodes = await get(comfySettings({ i2v: { workflow: wf, nodes: { prompt: ["2", "text"] } } }));
+  assert.equal(nonodes.ok, false);
+  assert.equal(nonodes.neutral, true);
+  assert.match(nonodes.detail, /^Not set up \(only needed for Animate with ComfyUI\): comfy\.i2v\.nodes needs image, prompt and output/);
+  const ok = await get(comfySettings({ i2v: { workflow: wf, nodes } }));
+  assert.equal(ok.ok, true);
+  assert.equal(ok.detail, "ready");
+  assert.ok(!ok.neutral);
+  // Other failures stay failures.
+  const comfy = (await runChecks(host, () => {}, comfySettings({ i2v: { workflow: wf, nodes } }))).find((r) => r.name === "Stem Remixer");
+  assert.ok(!comfy.neutral);
 });
