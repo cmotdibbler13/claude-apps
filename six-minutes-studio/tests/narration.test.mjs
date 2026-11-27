@@ -23,11 +23,16 @@ test("parse parity: name, sections, notes, multi-line, empty lines dropped", () 
   const p = parseLineScript(SCRIPT);
   assert.equal(p.name, "china_clay");
   assert.deepEqual(p.lines, [
-    { id: "01", section: "Opening", text: "It began in Cornwall, and it did not stop." },
-    { id: "02", section: "Opening", text: "Second line." },
-    { id: "04", section: "Middle", text: "Fourth." },
+    { id: "01", section: "Opening", text: "It began in Cornwall, and it did not stop.", toCamera: false },
+    { id: "02", section: "Opening", text: "Second line.", toCamera: false },
+    { id: "04", section: "Middle", text: "Fourth.", toCamera: false },
   ]);
   assert.equal(parseLineScript("[1]\nhi").name, null);
+});
+
+test("a '> To Camera ' note marks a line to camera; other notes do not", () => {
+  const p = parseLineScript("[a]\nOne.\n> slowly\n[b]\nTwo.\n>  To Camera \n[c]\nThree.\n> to camera please\n");
+  assert.deepEqual(p.lines.map((l) => l.toCamera), [false, true, false]);
 });
 
 async function put(host, p, data) {

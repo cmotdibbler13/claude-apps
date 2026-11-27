@@ -25,7 +25,7 @@ export function parseLineScript(text) {
     if (line.startsWith(">")) cur.notes.push(line.slice(1).trim());
     else cur.text = `${cur.text} ${line}`.trim();
   }
-  return { name, lines: lines.filter((l) => l.text).map(({ id, section: s, text }) => ({ id, section: s, text })) };
+  return { name, lines: lines.filter((l) => l.text).map(({ id, section: s, text, notes }) => ({ id, section: s, text, toCamera: notes.some((n) => n.trim().toLowerCase() === "to camera") })) };
 }
 
 const PATTERNS = [
