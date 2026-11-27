@@ -1,6 +1,5 @@
 // Takes: start a first take or a redo with a note, mirror job progress onto takes, approvals.
 import { askJson } from "./claude.js";
-import { writeBlenderScript } from "./tools/blender.js";
 import { join, filmKey } from "./paths.js";
 import { deriveWaiting } from "./shots.js";
 import { mixHolders, mixJobDone, syncMixHolder, MIX_IDS, runLabel } from "./mixplan.js";
@@ -15,7 +14,7 @@ const find = (state, id) => state.assets.find((a) => a.id === id);
 // Everything that has takes: b-roll shots, then the score, then the sound-effect cues, then the
 // voiceover join, score fit and mix preview (VOICEOVER, FIT, MIX: one take per run).
 export const holders = (d) => [...d.assets ?? [], ...(d.audio?.score ? [d.audio.score] : []), ...(d.audio?.sfx ?? []), ...mixHolders(d)];
-const META = ["lengthS", "peakDb", "meanDb", "quiet"];
+const META = ["lengthS", "peakDb", "meanDb", "quiet", "checks", "script"];
 const nameOf = (id) => (id === "SCORE" ? "Score" : id);
 const takeName = (id, n) => (MIX_IDS.has(id) ? `${runLabel(id)} run ${n}` : `${nameOf(id)} take ${n}`);
 // Every change to the shots also rewrites what the film is waiting on Jon for, in the same update.
@@ -71,18 +70,20 @@ export async function startTake(ctx, assetId, { note } = {}) {
   const base = join(store.dir, "studio", "media", `${asset.id}_t${n}`);
   let take, input;
 
-  // All Claude work happens before any write.
+  // All Claude work happens before any write. A Blender take does its Claude work inside the job
+  // (script, check stills, render), so it only needs the drawing and the previous take here.
   if (asset.tool === "blender") {
-    let previous;
-    if (prev?.script) { try { previous = await host.fs.read(prev.script, "utf8"); } catch { /* no earlier script to show */ } }
-    let frames;
-    const script = await writeBlenderScript(host, store, asset, n, {
-      note: hasNote ? note : undefined, previous, onFrames: (f) => { frames = f; },
-    });
     const src = find(store.state, asset.sourceId);
     const sourceFile = src.takes.find((t) => t.n === src.chosen)?.file;
-    take = { n, script };
-    input = { kind: "blender", script, sourceFile, out: base + ".mp4", frames };
+    take = { n };
+    input = {
+      kind: "blender", asset: { id: asset.id, desc: asset.desc, line: asset.line }, take: n,
+      sourceFile, base: join(store.dir, "studio", "blender", `${asset.id}_t${n}`), out: base + ".mp4",
+    };
+    if (hasNote) input.note = note;
+    if (prev?.script) input.previousScript = prev.script;
+    const lastStill = (prev?.checks ?? []).filter((c) => c?.still).at(-1)?.still;
+    if (prev?.script && lastStill) input.previousStill = lastStill;
   } else {
     let prompt = asset.draftPrompt;
     if (hasNote || prev) {

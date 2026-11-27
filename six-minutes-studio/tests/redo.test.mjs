@@ -74,12 +74,37 @@ test("blender shot cannot start until source line art is approved", async () => 
   await assert.rejects(() => startTake(ctx, "HF-02"), /approved/);
   await approve(ctx, "HF-01");
   assert.equal(canStart(store.state.assets[1], store.state.assets), true);
-  host.claudeScript(() => ({ script: "print(1)", frames: 48 }));
+  let asked = 0;
+  host.claudeScript(() => { asked++; });
   const t = await startTake(ctx, "HF-02");
-  assert.equal(t.script, DIR + "\\studio\\blender\\HF-02_t1.py");
+  assert.equal(asked, 0);
+  assert.equal(t.n, 1);
+  assert.equal(t.script, undefined);
   assert.deepEqual(jobs.list()[0].input, {
-    kind: "blender", script: t.script, sourceFile: "S:\\a.png", out: DIR + "\\studio\\media\\HF-02_t1.mp4", frames: 48,
+    kind: "blender", asset: { id: "HF-02", desc: "3D lighthouse", line: "L2" }, take: 1, sourceFile: "S:\\a.png",
+    base: DIR + "\\studio\\blender\\HF-02_t1", out: DIR + "\\studio\\media\\HF-02_t1.mp4",
   });
+});
+
+test("blender redo passes the note, previous script and last check still; done copies script and checks", async () => {
+  const src = hf({ takes: [{ n: 1, prompt: "p", status: "done", file: "S:\\a.png", at: 1 }], chosen: 1, approved: true });
+  const checks = [{ round: 1, still: "S:\\c1.png", verdict: "fix", note: "a" }, { round: 2, still: null, verdict: "fix", note: "b" }, { round: 3, still: "S:\\c3.png", verdict: "matches", note: "c" }];
+  const prev = { n: 1, status: "done", file: "S:\\t1.mp4", script: "S:\\t1.py", checks, at: 1 };
+  const meta = { script: DIR + "\\studio\\blender\\HF-02_t2.py", checks: [{ round: 1, still: "S:\\n1.png", verdict: "matches", note: "ok" }] };
+  const runners = { blender: { lane: "gpu", start: async (j) => ({ file: j.input.out, meta }) } };
+  const { ctx, store, jobs } = await setup([src, bl({ takes: [prev], chosen: 1 })], runners);
+  watchJobs(ctx);
+  await startTake(ctx, "HF-02", { note: "turn left" });
+  const input = jobs.list()[0].input;
+  assert.equal(input.note, "turn left");
+  assert.equal(input.previousScript, "S:\\t1.py");
+  assert.equal(input.previousStill, "S:\\c3.png");
+  assert.equal(input.base, DIR + "\\studio\\blender\\HF-02_t2");
+  await tick(); await tick();
+  const t = store.state.assets[1].takes[1];
+  assert.equal(t.status, "done");
+  assert.equal(t.script, meta.script);
+  assert.deepEqual(t.checks, meta.checks);
 });
 
 test("refuses a second take while one is running", async () => {
@@ -170,14 +195,19 @@ test("a 200-frame Blender render writes state.json and the jobs file only a few 
   const writes = { state: 0, jobs: 0 };
   const w = host.fs.write;
   host.fs.write = async (p, x) => { if (/state\.json\.tmp$/i.test(p)) writes.state++; if (/studio-jobs\.json\.tmp$/i.test(p)) writes.jobs++; return w(p, x); };
+  host.limitsScript(() => ({ images: { max: 5 } }));
+  host.files.set("S:\\a.png", "DRAWING");
+  let asks = 0;
+  host.claudeScript(() => (asks++ === 0 ? { script: "import bpy\n", frames: 200 } : { verdict: "matches", note: "ok" }));
   host.spawnScript((cmd, args, o, ctl) => {
+    if (args.includes("--still")) { host.files.set(args.at(-1), "png"); return ctl.exit(0); }
     for (let i = 1; i <= 200; i++) ctl.out(`Fra:${i} Mem:1M | Rendering\nFra:${i} Mem:1M | Sample 1/64\n`);
     host.files.set(args.at(-1), "x");
     ctl.exit(0);
   });
   const jobs = makeJobs(host, { runners: { blender: makeBlenderRunner() }, file: "S:\\Youtube video ideas\\.studio-jobs.json" });
   watchJobs({ host, store, jobs });
-  jobs.add({ film: DIR, assetId: "HF-02", take: 1, tool: "blender", input: { script: "s.py", sourceFile: "a.png", out: DIR + "\\studio\\media\\HF-02_t1.mp4", frames: 200 } });
+  jobs.add({ film: DIR, assetId: "HF-02", take: 1, tool: "blender", input: { kind: "blender", asset: { id: "HF-02", desc: "d", line: "l" }, take: 1, sourceFile: "S:\\a.png", base: DIR + "\\studio\\blender\\HF-02_t1", out: DIR + "\\studio\\media\\HF-02_t1.mp4" } });
   await new Promise((r) => setTimeout(r, 100)); await jobs.flush(); await tick();
   assert.equal(store.state.assets[0].takes[0].status, "done");
   assert.ok(writes.state <= 10, `state.json written ${writes.state} times`);
