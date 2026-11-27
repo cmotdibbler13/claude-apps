@@ -94,6 +94,22 @@ At `<root>\B-roll library\` (`S:\Youtube video ideas\B-roll library\`), with its
 - If the library or its catalogue can't be read or parsed, that step stops with the reason and nothing is written;
   the handover isn't written either.
 
+### From the library's README (Jon, 2026-11-27)
+- Layout: `broll_catalogue.md` (one table per film: ID, what it shows, period, tags, notes), `broll_catalogue.json`
+  (full details), `clips\<film>\`, `thumbs\BR-nnn.jpg`, `contact_sheets\` (one sheet per film, clip ids on each
+  frame), `BUILD.md`.
+- JSON fields to fill for each new entry: film, shot, status, aspect, description, setting, period, tags, prompt, job
+  ID, notes, size, source path, library path (named as the existing entries name them).
+- Status words: **approved** for the chosen take of each approved shot (Studio can't know the final cut yet);
+  the other finished takes of that shot get a **rejected** row, no copy, notes "not chosen in review" plus Jon's redo
+  note for that take if any (the skill's rule; "alternate" is left for Jon to set by hand).
+- Add a row to that film's table in the MD (a new table under a heading for the film if it has none yet).
+- Thumbnail `thumbs\BR-nnn.jpg`; then **refresh the film's contact sheet** in `contact_sheets\` (rebuilt from the
+  film's thumbnails with each BR id on its frame, in the existing sheets' style and naming; the old sheet is moved
+  aside first).
+- The originals stay where they are; for Studio films that's `<film>\studio\media\` (the README's "each film's
+  own `broll\` folder" is where older, pre-Studio films kept them).
+
 ## Pressing it again / changes after approval
 - The state records `part2 = { approvedAt, handover, library: [BR ids] }`.
 - If anything is unapproved or changed after that, the summary shows "Changed since the Part 2 handover" and the button
