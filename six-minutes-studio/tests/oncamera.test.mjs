@@ -79,7 +79,7 @@ test("missing photos: Make portraits disabled with the Probe copy", () => {
   const m = onCameraModel({ state: st({ presenter: { lines: [], look: LOOK } }), lineScript: LS, estimates: { portrait: 10 }, photosOk: false });
   assert.equal(m.buttons.portraits.enabled, false);
   assert.equal(m.buttons.portraits.why, NEED_PHOTOS);
-  assert.equal(NEED_PHOTOS, "Add presenter photos (see Probe)");
+  assert.equal(NEED_PHOTOS, "Add one or two photos of you first");
 });
 
 test("cost labels: two portraits a press, cost unknown, press again, getting the cost", () => {
@@ -229,7 +229,10 @@ test("On camera DOM: Suggest lines, untick, add a line, portraits button off wit
   assert.deepEqual(calls.at(-1), ["addLine", "03"]);
   const mp = byText(el, "Make portraits (≈20 credits)");
   assert.equal(mp.disabled, true);
-  assert.match(textOf(el), /Add presenter photos \(see Probe\)/);
+  assert.match(textOf(el), /Add one or two photos of you first/);
+  assert.ok(byText(el, "Choose presenter photos…"), "a button to choose the photos sits beside the copy");
+  const input = all(el, (x) => x.tag === "input" && x.type === "file")[0];
+  assert.ok(input && input.multiple && /image\/jpeg/.test(input.accept));
 }));
 
 test("clip card DOM: Make clip with its cost, Keep anyway, stale copy", () => withDom(() => {

@@ -212,7 +212,7 @@ export async function startPortraits(ctx) {
   const { host, store, jobs } = ctx;
   const photos = [];
   for (const p of (ctx.settings?.presenter?.photos ?? []).slice(0, 2)) if (filled(p) && (await host.fs.exists(p))) photos.push(p);
-  if (!photos.length) throw new Error("Add presenter photos (see Probe)");
+  if (!photos.length) throw new Error("Add one or two photos of you first");
   const look = store.state.presenter?.look;
   if (!look || !filled(look.outfit) || !filled(look.set)) throw new Error("Choose an outfit and a set first");
   const isBusy = (h) => busy(h ?? {}) || starting(store, "PORTRAIT");

@@ -1,11 +1,12 @@
 // Review, On camera step: the lines Jon says to camera, the look, the portraits and the clips (one card per line).
 import { h, btn, mediaEl } from "./dom.js";
 import { foldable } from "./fold.js";
+import { photoPicker } from "./photopick.js";
 import { scriptCameraIds, cameraLineState, lineLengthS, MAX_CLIP_S, TOO_LONG } from "../presenter.js";
 
 export const FROM_LABEL = { script: "from the script", claude: "suggested", jon: "added by you" };
 export const NOT_IN_SCRIPT = "Not in the script any more";
-export const NEED_PHOTOS = "Add presenter photos (see Probe)";
+export const NEED_PHOTOS = "Add one or two photos of you first";
 export const NO_LOOK = "Choose an outfit and a set first";
 export const PRESS_AGAIN = "Press again to spend credits";
 export const STALE_PORTRAIT = "Made with an earlier portrait";
@@ -108,6 +109,7 @@ export function onCameraModel({ state, lineScript = null, transcript = null, est
     }),
     approvedN: portrait?.n ?? null,
     portraitError: ui.portraitError ?? null,
+    photosError: ui.photosError ?? null,
     buttons: { portraits: pb },
   };
 }
@@ -181,7 +183,9 @@ function portraitsBlock(m, actions) {
   const b = m.buttons.portraits;
   return [
     h("div", { class: "row" }, btn(b.label, () => actions.makePortraits(), { disabled: !b.enabled }),
-      b.why ? h("span", { class: "locked", text: b.why }) : null),
+      b.why ? h("span", { class: "locked", text: b.why }) : null,
+      b.why === NEED_PHOTOS && actions.choosePhotos ? photoPicker("Choose presenter photos…", (files) => actions.choosePhotos(files)) : null),
+    m.photosError ? h("p", { class: "err", text: m.photosError }) : null,
     m.portraitError ? h("p", { class: "err", text: m.portraitError }) : null,
     m.portraits.length ? h("div", { class: "ocportraits" }, m.portraits.map((p) => h("figure", { class: `ocp${p.approved ? " ok" : ""}` },
       h("div", { class: "thumb" }, p.file ? mediaEl(p.file, false, actions.preview, `Portrait ${p.n}`) : h("div", { class: "ph", text: p.status }),

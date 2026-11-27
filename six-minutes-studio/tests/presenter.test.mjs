@@ -142,14 +142,14 @@ test("startPortraits: two takes and two jobs per press", async () => {
 test("startPortraits refused without photos or look", async () => {
   const a = await psetup([]);
   await setLook(a.ctx, LOOK);
-  await assert.rejects(() => startPortraits(a.ctx), /Add presenter photos \(see Probe\)/);
+  await assert.rejects(() => startPortraits(a.ctx), /Add one or two photos of you first/);
   const b = await psetup();
   await assert.rejects(() => startPortraits(b.ctx), /Choose an outfit and a set first/);
   assert.equal(b.jobs.list().length, 0);
   const c = await psetup();
   c.ctx.settings = { presenter: { photos: ["C:\\gone.jpg"] } };
   await setLook(c.ctx, LOOK);
-  await assert.rejects(() => startPortraits(c.ctx), /Add presenter photos/);
+  await assert.rejects(() => startPortraits(c.ctx), /Add one or two photos of you first/);
 });
 
 test("approving a new portrait marks finished clips stale; a running take keeps its own hfId", async () => {

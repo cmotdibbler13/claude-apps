@@ -25,6 +25,7 @@ import { makeStableAudioStarter, makeStableAudioRunner } from "./tools/stableaud
 import { makeComfyStarter } from "./tools/comfystart.js";
 import { autostart, toolsLine } from "./autostart.js";
 import { makeCredits } from "./credits.js";
+import { savePresenterPhotos } from "./presenterphotos.js";
 import { makeElevenRunner } from "./tools/elevenlabs.js";
 import { planAudio, addCue, editItem, getEstimate, rewriteFromNote, startAudioTake, approveAudio, unapproveAudio, chooseAudio, proposeStarts } from "./audioplan.js";
 import { makeVoiceJoinRunner } from "./tools/voicejoin.js";
@@ -209,6 +210,22 @@ async function renderNow() {
     loadTranscript();
     loadOnCamera();
   }
+}
+
+// "Choose presenter photos…" (Probe and On camera): copy them under the root, list them in .studio-settings.json,
+// then re-read the settings so every runner sees the new photos at once.
+async function choosePresenterPhotos(files) {
+  if (!app.root || !app.host) throw new Error("Studio can't see your films folder yet.");
+  const paths = await savePresenterPhotos(app.host, app.root, files);
+  await reloadSettings();
+  return paths;
+}
+
+async function reloadSettings() {
+  if (!app.root || !app.settings) return;
+  const fresh = await loadSettings(app.host, app.root);
+  for (const k of Object.keys(app.settings)) if (!(k in fresh)) delete app.settings[k];
+  Object.assign(app.settings, fresh);
 }
 
 // ---- films ----
@@ -738,6 +755,7 @@ const onCameraActions = {
     await setLook(ctx(), onCameraModel({ state: app.store.state, lineScript: app.review.lineScript ?? null, ui: oc }).look.chosen);
     oc.lookPick = null; oc.own = {};
   }),
+  choosePhotos: ocAction("photosSaving", "photosError", async (oc, files) => { await choosePresenterPhotos(files); oc.photosOk = true; }),
   // The cost check comes first, so an unknown-cost first press shows "Press again…" without a "Making…" flash.
   makePortraits: (...a) => (app.review.oc.portraitPending || !paid("PORTRAIT", estimatesView().portrait) ? undefined : startPortraitsNow(...a)),
   approvePortrait: ocAction("approving", "portraitError", async (oc, n) => {
@@ -1073,12 +1091,8 @@ async function boot() {
   const desktop = await window.claude.use("desktop");
   desktop.app?.dock?.setIcon(drawIcon()).catch(() => {});
   // Probe re-reads .studio-settings.json and updates the one settings object every runner holds.
-  mountProbe(host, $("run-probe"), $("probe-results"), () => app.settings, async () => {
-    if (!app.root || !app.settings) return;
-    const fresh = await loadSettings(host, app.root);
-    for (const k of Object.keys(app.settings)) if (!(k in fresh)) delete app.settings[k];
-    Object.assign(app.settings, fresh);
-  }, () => ({ comfy: app.comfyStarter, stableAudio: app.starter }), () => refreshI2v());
+  mountProbe(host, $("run-probe"), $("probe-results"), () => app.settings, reloadSettings,
+    () => ({ comfy: app.comfyStarter, stableAudio: app.starter }), () => refreshI2v(), choosePresenterPhotos);
   await startWithAccess();
 }
 
