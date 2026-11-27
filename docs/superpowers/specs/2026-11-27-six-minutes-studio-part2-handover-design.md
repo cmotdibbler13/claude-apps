@@ -104,9 +104,9 @@ At `<root>\B-roll library\` (`S:\Youtube video ideas\B-roll library\`), with its
   the other finished takes of that shot get a **rejected** row, no copy, notes "not chosen in review" plus Jon's redo
   note for that take if any (the skill's rule; "alternate" is left for Jon to set by hand).
 - Add a row to that film's table in the MD (a new table under a heading for the film if it has none yet).
-- Thumbnail `thumbs\BR-nnn.jpg`; then **refresh the film's contact sheet** in `contact_sheets\` (rebuilt from the
-  film's thumbnails with each BR id on its frame, in the existing sheets' style and naming; the old sheet is moved
-  aside first).
+- Thumbnail `thumbs\BR-nnn.jpg`; then **refresh the film's contact sheet** in `contact_sheets\` (`contact_sheets\\<slug>.jpg`, e.g. `christmas_tree.jpg`; rebuilt from the film's
+  approved thumbnails with each BR id on its frame, in the existing sheets' layout; the old sheet is moved aside
+  first).
 - The originals stay where they are; for Studio films that's `<film>\studio\media\` (the README's "each film's
   own `broll\` folder" is where older, pre-Studio films kept them).
 
