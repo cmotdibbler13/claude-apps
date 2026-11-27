@@ -8,7 +8,11 @@ export async function makeHost(claude = globalThis.claude) {
   const sample = await claude.use("sample");
   const { fs, childProcess, shell, os } = desktop;
   const platform = await os.platform();
-  const sampleOpts = (o = {}) => (o.tier ? { modelTier: o.tier } : {});
+  const sampleOpts = (o = {}) => {
+    const r = o.tier ? { modelTier: o.tier } : {};
+    if (o.images?.length) r.images = o.images;
+    return r;
+  };
 
   // Permissions are only asked for on first real use (a click), never at load.
   const allowed = async (name) => {
@@ -97,6 +101,7 @@ export async function makeHost(claude = globalThis.claude) {
     claude: sample ? {
       json: (input, opts) => sample.json(input, sampleOpts(opts)),
       text: async (input, opts) => (await sample(input, sampleOpts(opts))).text,
+      ...(typeof sample.limits === "function" ? { limits: () => sample.limits() } : {}),
     } : null,
     async notify(body) {
       if (await allowed("notifications")) await desktop.notification.show({ body });
