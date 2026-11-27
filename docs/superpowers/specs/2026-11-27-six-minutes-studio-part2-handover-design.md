@@ -142,7 +142,7 @@ At `<root>\B-roll library\` (`S:\Youtube video ideas\B-roll library\`), with its
   tables have.
 
 ## Pressing it again / changes after approval
-- The state records `part2 = { approvedAt, handover, library: [BR ids] }`.
+- The state records `part2 = { approvedAt, handover, brIds: [BR ids], topic, message, sig }`.
 - If anything is unapproved or changed after that, the summary shows "Changed since the Part 2 handover" and the button
   reads **Write the handover again**: the old `part2_handover.md` moves aside as `part2_handover_<date>.md`, new
   approved clips are added to the library, existing entries are left alone.
