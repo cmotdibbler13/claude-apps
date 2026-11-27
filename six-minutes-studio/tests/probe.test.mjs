@@ -222,3 +222,24 @@ test("Autocue join check passes when the join files match Studio's copy; missing
   const noLine = named(await runChecks(await srHost({ lineScript: false }), () => {}, srSettings()), "Autocue join");
   assert.equal(noLine.install, true);
 });
+
+test("Animate workflow row: ready, or says what is missing", async () => {
+  const host = new FakeHost();
+  host.spawnScript((cmd, args, o, p) => { p.out("{}"); p.exit(0); });
+  host.fs.list = async () => [];
+  const wf = "S:\\Youtube video ideas\\ComfyUI workflows\\animate_i2v.json";
+  const nodes = { image: ["1", "image"], prompt: ["2", "text"], output: ["3", "filename_prefix"] };
+  const get = async (s) => (await runChecks(host, () => {}, s)).find((r) => r.name === "Animate workflow");
+  const names = makeChecks(comfySettings()).map((c) => c.name);
+  assert.equal(names[names.indexOf("ComfyUI") + 1], "Animate workflow");
+  const miss = await get(comfySettings({ i2v: { workflow: wf, nodes } }));
+  assert.equal(miss.ok, false);
+  assert.equal(miss.detail, "animate_i2v.json isn't in ComfyUI workflows");
+  host.files.set(wf, "{}");
+  const nonodes = await get(comfySettings({ i2v: { workflow: wf, nodes: { prompt: ["2", "text"] } } }));
+  assert.equal(nonodes.ok, false);
+  assert.match(nonodes.detail, /^comfy\.i2v\.nodes needs image, prompt and output/);
+  const ok = await get(comfySettings({ i2v: { workflow: wf, nodes } }));
+  assert.equal(ok.ok, true);
+  assert.equal(ok.detail, "ready");
+});

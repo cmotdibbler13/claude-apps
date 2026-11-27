@@ -83,3 +83,16 @@ test("voiceover and mix settings default, and merge from the file", async () => 
   s = await loadSettings(host, ROOT);
   assert.deepEqual([s.autocuePython, s.stemRemixerDir, s.endCardS, s.mixMusicDb, s.mixSfxDb], ["python", "C:\\Apps\\Stem Remixer", 14, -28, -18]);
 });
+
+test("comfy.i2v defaults its workflow and merges user nodes", async () => {
+  const host = new FakeHost();
+  host.dirs.add(ROOT);
+  const d = await loadSettings(host, ROOT);
+  assert.equal(d.comfy.i2v.workflow, ROOT + "\\ComfyUI workflows\\animate_i2v.json");
+  assert.deepEqual(d.comfy.i2v.nodes, {});
+  await host.fs.write(ROOT + "\\.studio-settings.json", JSON.stringify({ comfy: { i2v: { nodes: { image: ["1", "image"] }, seconds: 3 } } }));
+  const s = await loadSettings(host, ROOT);
+  assert.deepEqual(s.comfy.i2v.nodes, { image: ["1", "image"] });
+  assert.equal(s.comfy.i2v.seconds, 3);
+  assert.equal(s.comfy.i2v.workflow, ROOT + "\\ComfyUI workflows\\animate_i2v.json");
+});

@@ -13,6 +13,8 @@ export const DEFAULT_SETTINGS = {
       prompt: ["364", "text"], width: ["372", "value"], height: ["360", "value"], length: ["362", "value"],
       fps: ["361", "value"], seed: ["339", "noise_seed"], output: ["9999", "filename_prefix"],
     },
+    // Image-to-video (animate a drawing): its own workflow and node map. seconds/fps/lengthUnit fall back to the above.
+    i2v: { workflow: null, nodes: {} },
     lengthUnit: "seconds", width: 1920, height: 1088, seconds: 5, fps: 24, expectedSeconds: 240,
   },
   // Started when Studio opens (each can be turned off).
@@ -32,6 +34,9 @@ function withDefaults(root, v = {}) {
   const c = isObj(v.comfy) ? v.comfy : {};
   const comfy = { ...d.comfy, ...c, nodes: { ...d.comfy.nodes, ...(isObj(c.nodes) ? c.nodes : {}) } };
   if (!comfy.workflow) comfy.workflow = join(root, "ComfyUI workflows", "broll_ltx.json");
+  const ci = isObj(c.i2v) ? c.i2v : {};
+  comfy.i2v = { ...d.comfy.i2v, ...ci, nodes: { ...d.comfy.i2v.nodes, ...(isObj(ci.nodes) ? ci.nodes : {}) } };
+  if (!comfy.i2v.workflow) comfy.i2v.workflow = join(root, "ComfyUI workflows", "animate_i2v.json");
   const stableAudio = { ...d.stableAudio, ...(isObj(v.stableAudio) ? v.stableAudio : {}) };
   // "autostart": false (or true) switches both; an object sets each.
   const autostart = typeof v.autostart === "boolean" ? { comfy: v.autostart, stableAudio: v.autostart }

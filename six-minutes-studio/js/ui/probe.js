@@ -2,6 +2,7 @@
 import { runProcess } from "../proc.js";
 import { DEFAULT_SETTINGS } from "../settings.js";
 import { autocueJoinState, installAutocueJoin } from "../autocueinstall.js";
+import { i2vReady } from "../tools/comfyui.js";
 import { stableAudioState, MSG_MUSIC } from "../tools/stableaudio.js";
 import { join } from "../paths.js";
 import { MSG_SET_STEM_REMIXER, stemPython } from "../tools/stemfit.js";
@@ -30,6 +31,13 @@ const comfyCheck = (comfy) => async (host) => {
   if (!comfy.workflow) throw new Error("Workflow path not set yet; open Films first");
   if (!(await host.fs.exists(comfy.workflow))) throw new Error(`Workflow not found: ${comfy.workflow}`);
   return typeof version === "string" && version ? `ComfyUI ${version}` : "running";
+};
+
+// Animate workflow: the image-to-video workflow file and its image, prompt and output nodes.
+const animateCheck = (comfy) => async (host) => {
+  const r = await i2vReady(host, comfy);
+  if (!r.ok) throw new Error(r.why);
+  return "ready";
 };
 
 // Stable Audio: the page title says Small SFX and /gradio_api/info lists /generate. Never starts it.
@@ -92,6 +100,7 @@ export const makeChecks = (settings = DEFAULT_SETTINGS) => [
   { name: "ffmpeg", run: cmdCheck("ffmpeg", ["-version"]) },
   { name: "curl", run: cmdCheck("curl", ["--version"]) },
   { name: "ComfyUI", run: comfyCheck(settings.comfy ?? DEFAULT_SETTINGS.comfy) },
+  { name: "Animate workflow", run: animateCheck(settings.comfy ?? DEFAULT_SETTINGS.comfy) },
   { name: "Stem Remixer", run: stemRemixerCheck(settings.stemRemixerDir) },
   { name: "Autocue join", run: autocueJoinCheck(settings.autocueDir ?? DEFAULT_SETTINGS.autocueDir) },
   { name: "Stable Audio", run: stableAudioCheck({ ...DEFAULT_SETTINGS.stableAudio, ...(settings.stableAudio ?? {}) }) },
