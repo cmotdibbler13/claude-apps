@@ -62,8 +62,12 @@ test("handoverProse: data carries notes; validates lists", async () => {
   assert.ok(h.seen[0].text.includes("too fast") && h.seen[0].text.includes("Slow pacing at 02:10"));
   await rejects(handoverProse(host({ decisions: [], openItems: ["a"] }), data));
   await rejects(handoverProse(host({ decisions: ["a"], openItems: [""] }), data));
-  await rejects(handoverProse(host({ decisions: ["a"], openItems: ["x".repeat(301)] }), data));
-  await rejects(handoverProse(host({ decisions: ["a"], openItems: Array(41).fill("a") }), data));
+  await rejects(handoverProse(host({ decisions: ["a"], openItems: ["x".repeat(601)] }), data));
+});
+test("handoverProse: a big film's long lists are kept; no open items is fine", async () => {
+  const many = Array.from({ length: 42 }, (_, i) => `Decision ${i + 1}`);
+  assert.deepEqual(await handoverProse(host({ decisions: many, openItems: [] }), data), { decisions: many, openItems: [] });
   await rejects(handoverProse(host({ decisions: ["a"] }), data));
+  await rejects(handoverProse(host({ decisions: [], openItems: [] }), data));
   await rejects(handoverProse(host({ decisions: "a", openItems: ["a"] }), data));
 });

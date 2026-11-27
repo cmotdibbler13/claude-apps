@@ -65,13 +65,14 @@ You get: notes [{id, take, note}] (Jon's own redo and pacing notes), choices (sh
 "His decisions": what Jon decided, one short line each, from the choices and his notes.
 "Open items": what is still unresolved or needs a look next, one short line each, from the warnings and any note that asks for something.
 British English, plain. Use Jon's words where possible: quote his notes rather than paraphrase them. Invent nothing.
-Each list has 1 to 40 lines, each a non-empty string of 300 characters or fewer.
+"decisions" has at least one line; "openItems" may be empty when nothing is open. Each line is a non-empty string of 600 characters or fewer.
 Reply with JSON only: {"decisions":[...],"openItems":[...]}.`;
 
-const lines = (v, name) => {
+// No upper limit: a film with many shots and notes has many decisions (42 for a 39-shot film).
+const lines = (v, name, min) => {
   if (!Array.isArray(v)) throw new Error(`${name} must be a list.`);
-  if (v.length < 1 || v.length > 40) throw new Error(`${name} must have 1 to 40 lines (got ${v.length}).`);
-  for (const s of v) if (typeof s !== "string" || !s.trim() || s.length > 300) throw new Error(`${name} lines must be non-empty strings of 300 characters or fewer.`);
+  if (v.length < min) throw new Error(`${name} must have at least ${min} line.`);
+  for (const s of v) if (typeof s !== "string" || !s.trim() || s.length > 600) throw new Error(`${name} lines must be non-empty strings of 600 characters or fewer.`);
 };
 
 export async function handoverProse(host, { notes, choices, warnings }) {
@@ -81,8 +82,8 @@ export async function handoverProse(host, { notes, choices, warnings }) {
     tier: "default",
     validate: (v) => {
       if (!isObj(v)) throw new Error("Claude's answer is not an object.");
-      lines(v.decisions, "decisions");
-      lines(v.openItems, "openItems");
+      lines(v.decisions, "decisions", 1);
+      lines(v.openItems, "openItems", 0);
     },
   });
   return { decisions: r.decisions, openItems: r.openItems };
