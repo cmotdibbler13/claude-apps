@@ -101,7 +101,7 @@ const presenterPhotosCheck = (presenter) => async (host) => {
 // B-roll library: the catalogue Approve Part 2 adds to reads, and the next BR number it would give.
 const libraryCheck = (root) => async (host) => {
   const cat = await readCatalogue(host, root);
-  const n = cat.entries.length;
+  const n = cat.entries.filter((e) => e && e.in_library !== false).length;
   return `${n} ${n === 1 ? "clip" : "clips"}, next BR-${String(nextBrNumber(cat.entries, cat.md)).padStart(3, "0")}`;
 };
 

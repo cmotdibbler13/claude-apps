@@ -18,7 +18,7 @@ export function handedOverText(at) {
   return `Part 2 handed over ${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-// ui: { running, steps: [text], error, warnings } from the app's press.
+// ui: { running, steps: [text], error, warnings, copied } from the app's press; elsewhere: another film's run.
 export function part2Model({ state, ui = {} }) {
   const r = part2Readiness(state);
   const p2 = state?.part2 ?? null;
@@ -26,12 +26,14 @@ export function part2Model({ state, ui = {} }) {
   const steps = ui.steps ?? [];
   return {
     label: running ? APPROVING : p2 ? AGAIN : APPROVE,
-    disabled: running || !r.ready,
-    lock: r.ready ? null : leftText(r.left),
+    disabled: running || !r.ready || !!ui.elsewhere,
+    // Another film's press is writing to the shared library: that says why, before what's left here.
+    lock: !running && ui.elsewhere ? ui.elsewhere : r.ready ? null : leftText(r.left),
     // The steps while it runs, and after a failure (so Jon sees where it stopped).
     steps: running || (ui.error && steps.length) ? [...steps] : null,
     error: running ? null : ui.error ?? null,
-    done: p2 && !running ? { when: handedOverText(p2.approvedAt), warnings: [...(ui.warnings ?? [])], message: p2.message ?? null } : null,
+    done: p2 && !running ? { when: handedOverText(p2.approvedAt), warnings: [...(ui.warnings ?? [])], message: p2.message ?? null,
+      copyLabel: ui.copied ? "Copied" : "Copy" } : null,
     changed: p2 && part2Changed(state) ? CHANGED : null,
   };
 }
@@ -49,7 +51,7 @@ export function part2Bar(m, actions) {
     const box = h("textarea", { class: "p2msg", rows: "3", "aria-label": "Part 3 opening message" });
     box.readOnly = true;
     box.value = m.done.message;
-    kids.push(h("div", { class: "p2copy" }, box, btn("Copy", () => actions.copyMessage(box.value, box), { ghost: true })));
+    kids.push(h("div", { class: "p2copy" }, box, btn(m.done.copyLabel, () => actions.copyMessage(box.value, box), { ghost: true })));
   }
   return h("div", { class: "p2" }, kids);
 }

@@ -185,3 +185,19 @@ test("Probe B-roll library: fails with the reason when the catalogue can't be re
   assert.equal(r.ok, false);
   assert.match(r.detail, /isn't valid JSON/);
 });
+
+test("another film's run: disabled with its sentence; Copied shows from ui", () => {
+  let m = part2Model({ state: ready(), ui: { elsewhere: "Part 2 is already being written for Skara Brae." } });
+  assert.equal(m.disabled, true);
+  assert.equal(m.label, APPROVE);
+  assert.equal(m.lock, "Part 2 is already being written for Skara Brae.");
+  m = part2Model({ state: handed(ready()), ui: { copied: true } });
+  assert.equal(m.done.copyLabel, "Copied");
+  assert.equal(part2Model({ state: handed(ready()) }).done.copyLabel, "Copy");
+});
+
+test("Probe B-roll library counts only clips in the library", async () => {
+  const h = new FakeHost();
+  h.files.set(`${LIB}\\broll_catalogue.json`, JSON.stringify({ entries: [{ id: "BR-001" }, { id: "BR-002", in_library: false }, { id: "BR-003", in_library: true }] }));
+  assert.deepEqual(await libRow(h), { ok: true, detail: "2 clips, next BR-004" });
+});

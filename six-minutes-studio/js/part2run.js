@@ -98,7 +98,18 @@ function proseData(state, warnings) {
   return { notes, choices, warnings };
 }
 
-export async function approvePart2(ctx, { onStep } = {}) {
+// The library is shared across films: one press at a time, whichever film it is for.
+let inFlight = null;
+export const part2InFlight = () => (inFlight ? { ...inFlight } : null);
+export const alreadyText = (dir) => `Part 2 is already being written for ${baseOf(dir)}.`;
+
+export async function approvePart2(ctx, opts = {}) {
+  if (inFlight) throw new Error(alreadyText(inFlight.dir));
+  inFlight = { dir: ctx.store.dir };
+  try { return await run(ctx, opts); } finally { inFlight = null; }
+}
+
+async function run(ctx, { onStep } = {}) {
   const { host, store, settings = {}, root, lineScript = null } = ctx;
   const step = (n, text) => { try { onStep?.({ step: n, text }); } catch { /* reporting must not stop the run */ } };
   const state = structuredClone(store.state);

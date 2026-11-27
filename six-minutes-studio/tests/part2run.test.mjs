@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { FakeHost } from "./fake-host.mjs";
 import { openFilm } from "../js/store.js";
-import { approvePart2, part2Changed, part2Sig } from "../js/part2run.js";
+import { approvePart2, part2Changed, part2Sig, part2InFlight } from "../js/part2run.js";
 import { PART1_INSTRUCTIONS, LIBRARY_INSTRUCTIONS, HANDOVER_INSTRUCTIONS } from "../js/part2prose.js";
 
 const ROOT = "S:\\Youtube video ideas";
@@ -438,4 +438,22 @@ test("no thumbnail to put on the contact sheet: no sheet is attempted, only the 
   assert.deepEqual(sheets, []);
   assert.equal(r.warnings.length, 2);
   assert.ok(r.warnings.every((w) => /^The thumbnail for BR-01[35] couldn't be made: /.test(w)), JSON.stringify(r.warnings));
+});
+
+test("one run at a time across films: a second press is refused while the first is going; cleared after", async () => {
+  const { ctx } = await setup();
+  const other = await setup();
+  assert.equal(part2InFlight(), null);
+  const first = approvePart2(ctx);
+  assert.deepEqual(part2InFlight(), { dir: DIR });
+  await assert.rejects(approvePart2(ctx), { message: "Part 2 is already being written for Christmas Tree." });
+  await assert.rejects(approvePart2(other.ctx), { message: "Part 2 is already being written for Christmas Tree." });
+  assert.deepEqual(part2InFlight(), { dir: DIR }, "a refused press leaves the running one's record");
+  await first;
+  assert.equal(part2InFlight(), null);
+  // After a failure too.
+  const bad = await setup({ json: "{ nope" });
+  await assert.rejects(approvePart2(bad.ctx), /isn't valid JSON/);
+  assert.equal(part2InFlight(), null);
+  await approvePart2(other.ctx);
 });
