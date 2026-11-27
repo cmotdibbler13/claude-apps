@@ -1,5 +1,6 @@
 // Review view, Voiceover and mix: join the voiceover, fit the score, make the mix preview, approve it.
 // mixModel is pure; mixSection builds the DOM from it. Each step is ready only when the one before it is done.
+import { foldable } from "./fold.js";
 import { h, btn, basename, playerKey } from "./dom.js";
 import { OUT_OF_DATE, REJOIN, fitStale, mixStale, joinStale, pacingStale } from "../mixplan.js";
 import { canApply, NOT_OK } from "../pacingchain.js";
@@ -303,7 +304,7 @@ function stepBody(s, m, actions) {
 
 export function mixSection(m, actions) {
   if (!m) return null;
-  return h("section", { class: "mix", "aria-label": "Voiceover and mix" },
+  return foldable(h("section", { class: "mix", "aria-label": "Voiceover and mix" },
     h("div", { class: "h2row" }, h("h2", { text: "Voiceover and mix" })),
     h("ol", { class: "msteps" }, m.steps.map((s, i) => h("li", { class: `mstep m-${s.state}` },
       h("div", { class: "mhead" }, h("span", { class: "mnum", text: String(i + 1) }), h("h3", { text: s.title }),
@@ -311,7 +312,7 @@ export function mixSection(m, actions) {
       statusLine(s),
       s.lock && s.state !== "locked" && s.state !== "running" ? h("p", { class: "mstatus locked", text: s.lock }) : null,
       stepBody(s, m, actions),
-      s.error ? h("p", { class: "err", text: s.error }) : null))));
+      s.error ? h("p", { class: "err", text: s.error }) : null)))), "Voiceover and mix");
 }
 
 const CHIP = { locked: "Waiting", ready: "Ready", running: "Running", done: "Done", stale: "Out of date", failed: "Failed", interrupted: "Interrupted" };

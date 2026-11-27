@@ -1,5 +1,6 @@
 // Review view, b-roll section: shot cards in script order (or a grid), takes, approve, redo with a note.
 import { h, btn, toolLabel, mediaEl, playToggle } from "./dom.js";
+import { foldable } from "./fold.js";
 import { orderByScript } from "../shots.js";
 import { canStart, has3d } from "../redo.js";
 import { join } from "../paths.js";
@@ -99,7 +100,7 @@ function narrationSection(n, actions) {
       r.flag ? h("span", { class: "nflag", text: r.flag }) : null,
       r.notes ? h("span", { class: "nnote", text: r.notes }) : null))));
   }
-  return h("section", { class: "narration", "aria-label": "Narration" }, kids);
+  return foldable(h("section", { class: "narration", "aria-label": "Narration" }, kids), "Narration");
 }
 
 export function reviewModel({ film, state, layout = "script", making = false, listError = null, cardErrors = new Map(), pending = new Set(), noteFor = null, openError = null, prefError = null, narration = null, playing = null, paused = false, audio, sa = null, audioUi = {}, mixUi = {} }) {
@@ -235,10 +236,10 @@ export function render(el, model, actions) {
   ].filter(Boolean);
   if (model.needsShotList) {
     el.replaceChildren(...head, ...(model.narration ? [narrationSection(model.narration, actions)] : []), ...audioSections(model.audio, actions), mixSection(model.mix, actions),
-      h("div", { class: "h2row" }, h("h2", { text: "B-roll" })), h("div", { class: "panel" },
+      foldable(h("section", { class: "broll", "aria-label": "B-roll" }, h("div", { class: "h2row" }, h("h2", { text: "B-roll" })), h("div", { class: "panel" },
       h("p", { text: "This film has no shot list yet. Claude reads the script and part1_handover.md and plans the b-roll." }),
       btn(model.making ? "Making the shot list\u2026" : "Make shot list", () => actions.makeShotList(), { disabled: model.making }),
-      model.listError ? h("p", { class: "err", text: model.listError }) : null));
+      model.listError ? h("p", { class: "err", text: model.listError }) : null)), "B-roll"));
     return;
   }
   const s = model.summary;
@@ -250,5 +251,6 @@ export function render(el, model, actions) {
   const body = model.layout === "grid"
     ? h("div", { class: "cards" }, model.cards.map((c) => card(c, model, actions)))
     : h("div", { class: "script" }, model.cards.map((c) => h("div", { class: "shot" }, h("blockquote", { class: "line", text: c.line }), card(c, model, actions))));
-  el.replaceChildren(...head, ...(model.narration ? [narrationSection(model.narration, actions)] : []), ...audioSections(model.audio, actions), mixSection(model.mix, actions), sum, h("div", { class: "h2row" }, h("h2", { text: "B-roll" }), toggle), body);
+  el.replaceChildren(...head, ...(model.narration ? [narrationSection(model.narration, actions)] : []), ...audioSections(model.audio, actions), mixSection(model.mix, actions), sum,
+    foldable(h("section", { class: "broll", "aria-label": "B-roll" }, h("div", { class: "h2row" }, h("h2", { text: "B-roll" }), toggle), body), "B-roll"));
 }
