@@ -87,6 +87,14 @@ const autocueJoinCheck = (dir) => async (host) => {
   return "Join script up to date";
 };
 
+// Presenter photos: one or two pictures of Jon, listed in presenter.photos.
+const presenterPhotosCheck = (presenter) => async (host) => {
+  const photos = Array.isArray(presenter?.photos) ? presenter.photos : [];
+  if (photos.length < 1 || photos.length > 2) throw new Error("Add presenter.photos in .studio-settings.json");
+  for (const p of photos) if (!(await host.fs.exists(p))) throw new Error(`Not found: ${p}`);
+  return `${photos.length} photos`;
+};
+
 const toolsCheck = (server, want) => async (host) => {
   if (!host.mcp) throw new Error("connector access is not available");
   const tools = await host.mcp.listTools(server);
@@ -111,12 +119,13 @@ export const makeChecks = (settings = DEFAULT_SETTINGS) => [
     async run(host) {
       if (!host.mcp) throw new Error("connector access is not available");
       const tools = await host.mcp.listTools("Higgsfield");
-      const want = ["generate_video", "generate_image", "jobs_wait", "models_explore"];
+      const want = ["generate_video", "generate_image", "jobs_wait", "models_explore", "media_upload", "media_confirm", "estimate_image_cost", "estimate_video_cost"];
       const missing = want.filter((t) => !tools.includes(t));
       if (missing.length) throw new Error(`missing: ${missing.join(", ")}`);
       return `${tools.length} tools`;
     },
   },
+  { name: "Presenter photos", run: presenterPhotosCheck(settings.presenter) },
   { name: "ElevenLabs tools", run: toolsCheck("ElevenLabs", ["creative_create_flow", "creative_add_flow_node", "creative_run_flow_nodes", "creative_get_flow_run_status"]) },
   {
     name: "Claude answers JSON",

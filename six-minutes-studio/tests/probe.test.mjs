@@ -274,3 +274,36 @@ test("Animate workflow row: ready, or says what is missing", async () => {
   const comfy = (await runChecks(host, () => {}, comfySettings({ i2v: { workflow: wf, nodes } }))).find((r) => r.name === "Stem Remixer");
   assert.ok(!comfy.neutral);
 });
+
+test("Higgsfield tools check wants upload and estimate tools", async () => {
+  const host = new FakeHost();
+  host.fs.list = async () => [];
+  host.spawnScript((c, a, o, p) => { p.out("ok"); p.exit(0); });
+  host.mcpTools = { Higgsfield: ["generate_video", "generate_image", "jobs_wait", "models_explore"] };
+  const r = (await runChecks(host, () => {}, settings)).find((x) => x.name === "Higgsfield tools");
+  assert.equal(r.ok, false);
+  assert.match(r.detail, /media_upload, media_confirm, estimate_image_cost, estimate_video_cost/);
+});
+
+test("Presenter photos row", async () => {
+  const run = async (photos, files = []) => {
+    const host = new FakeHost();
+    host.fs.list = async () => [];
+    host.spawnScript((c, a, o, p) => { p.out("ok"); p.exit(0); });
+    for (const f of files) { await host.fs.mkdir(f.replace(/[\\/][^\\/]*$/, "")); await host.fs.write(f, "x"); }
+    const s = photos === undefined ? settings : { ...settings, presenter: { photos } };
+    return (await runChecks(host, () => {}, s)).find((x) => x.name === "Presenter photos");
+  };
+  let r = await run(undefined);
+  assert.deepEqual([r.ok, r.detail], [false, "Add presenter.photos in .studio-settings.json"]);
+  r = await run([]);
+  assert.equal(r.detail, "Add presenter.photos in .studio-settings.json");
+  r = await run(["C:\\p\\a.jpg"], ["C:\\p\\a.jpg"]);
+  assert.deepEqual([r.ok, r.detail], [true, "1 photos"]);
+  r = await run(["C:\\p\\a.jpg", "C:\\p\\b.jpg"], ["C:\\p\\a.jpg", "C:\\p\\b.jpg"]);
+  assert.equal(r.detail, "2 photos");
+  r = await run(["C:\\p\\a.jpg", "C:\\p\\b.jpg"], ["C:\\p\\a.jpg"]);
+  assert.deepEqual([r.ok, r.detail], [false, "Not found: C:\\p\\b.jpg"]);
+  r = await run(["a", "b", "c"]);
+  assert.equal(r.ok, false);
+});
