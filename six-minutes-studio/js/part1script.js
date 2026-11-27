@@ -150,6 +150,7 @@ function rawSentences(text) {
   const re = /[.?!]+["'”’)\]]*(?=\s)/g;
   for (let m; (m = re.exec(t)); ) {
     const end = m.index + m[0].length;
+    if (/^\s*\p{Ll}/u.test(t.slice(end))) continue; // lower case follows: not a sentence end
     if (m[0][0] === ".") {
       const before = t.slice(start, m.index).split(/\s+/).pop().replace(/^["'“‘(\[]+/, "");
       if (m[0] === "." && NOT_AN_END.test(before)) continue;
@@ -202,8 +203,11 @@ export function lineScriptText(script, { prefix, picks = [] } = {}) {
       lastSection = ln.section;
     }
     out.push(`[${ln.id}]  (clip ${two(ln.clip)})`, ln.text);
+    const seen = new Set();
     for (const p of script?.pronunciations ?? []) {
-      if (p?.name && ln.text.includes(p.name)) out.push(`> ${p.name} = "${p.say}"`);
+      if (!p?.name || seen.has(p.name) || !ln.text.includes(p.name)) continue;
+      seen.add(p.name);
+      out.push(`> ${p.name} = "${p.say}"`);
     }
     if (picks.includes(ln.id)) out.push("> to camera");
     out.push("");

@@ -109,3 +109,25 @@ test("lineScriptText round trips through parseLineScript", () => {
   assert.deepEqual(p.lines.map((l) => [l.id, l.text, l.section]), want.map((l) => [l.id, l.text, l.section]));
   assert.deepEqual(p.lines.filter((l) => l.toCamera).map((l) => l.id), ["01.2"]);
 });
+
+test("splitSentences does not end at a lower-case continuation", () => {
+  assert.deepEqual(splitSentences("“Why did it fall down the hill?” asked the vicar slowly. Nobody knew why it fell."),
+    ["“Why did it fall down the hill?” asked the vicar slowly.", "Nobody knew why it fell."]);
+  assert.deepEqual(splitSentences("The works closed down in 1985... and nobody noticed for years."),
+    ["The works closed down in 1985... and nobody noticed for years."]);
+});
+
+test("splitSentences abbreviation guard with periods", () => {
+  for (const t of ["Mr. Smith arrived.", "They lived at No. 10 Downing Street.", "St. Austell grew.", "It cost £4.7 million."]) {
+    assert.deepEqual(splitSentences(t), [t], t);
+  }
+  // "What a sight!" alone is 3 words and would join the next, so use a longer first sentence
+  assert.deepEqual(splitSentences("What a sight it was! Everyone came to see it."), ["What a sight it was!", "Everyone came to see it."]);
+});
+
+test("lineScriptText emits one note per name per line", () => {
+  const s = { ...LS, pronunciations: [{ name: "Kenwyn", say: "KEN-win" }, { name: "Kenwyn", say: "other" }] };
+  const text = lineScriptText(s, { prefix: "china_clay" });
+  assert.equal(text.split('> Kenwyn = "KEN-win"').length - 1, 1);
+  assert.ok(!text.includes('"other"'));
+});
