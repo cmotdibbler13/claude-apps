@@ -107,3 +107,11 @@ test("part 1 state sets part1 and the waiting text", async () => {
   assert.equal(by.Plain.waiting, "old");
   assert.equal(by.Broken.part1, null);
 });
+
+test("part 1 done: state.waiting is kept", async () => {
+  const h = new FakeHost();
+  await film(h, "Done", { "handover\\part1_handover.md": "x", "studio\\state.json": JSON.stringify({ waiting: "Shot list ready", part1: { setup: {}, drafts: [{ n: 1 }] } }) });
+  const [f] = await scanFilms(h, ROOT);
+  assert.equal(f.parts[1], "done");
+  assert.equal(f.waiting, "Shot list ready");
+});

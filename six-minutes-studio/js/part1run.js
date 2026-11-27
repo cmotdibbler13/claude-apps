@@ -235,6 +235,12 @@ export async function createFilm(host, root, input, { taken = [] } = {}) {
   if (problem) throw new Error(problem);
   const ep = String(episode ?? "").trim();
   if (!/^\d{1,4}$/.test(ep)) throw new Error("The episode number is digits only, such as 008.");
+  if (!name) {
+    if (!(await host.fs.exists(folder))) throw new Error(`That folder isn't there: ${folder}`);
+    let existing = null;
+    try { existing = JSON.parse(await host.fs.read(join(folder, "studio", "state.json"), "utf8")); } catch { /* none or unreadable: no Part 1 to protect */ }
+    if (existing?.part1) throw new Error("This film already has a script started. Open it from Films.");
+  }
   const dir = name ? join(root, name) : folder;
   if (name) await host.fs.mkdir(dir);
   const store = await openFilm(host, dir);

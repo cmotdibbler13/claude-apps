@@ -200,3 +200,20 @@ test("createFilm: failed checks create nothing", async () => {
   await assert.rejects(createFilm(host, root, { ...base }, { taken: [] }), /Choose a folder/);
   assert.equal(await host.fs.exists(`${root}\\Y`), false);
 });
+
+test("createFilm: refuses a missing folder and one with a script already started", async () => {
+  const host = new FakeHost();
+  const root = "S:\\Youtube video ideas";
+  const base = { brief: BRIEF, topic: "T", prefix: "t", episode: "1" };
+  await assert.rejects(createFilm(host, root, { ...base, folder: DIR }, { taken: [] }), new RegExp(`^Error: That folder isn't there: ${DIR.replace(/\\/g, "\\\\")}$`));
+  assert.equal(await host.fs.exists(DIR), false);
+  await host.fs.mkdir(DIR);
+  await assert.rejects(createFilm(host, root, { ...base, folder: DIR, prefix: "Bad" }, { taken: [] }), /lower-case/);
+  assert.equal(await host.fs.exists(`${DIR}\\studio`), false);
+  const store = await openFilm(host, DIR);
+  await store.update((s) => { s.part1 = { setup: {}, drafts: [{ n: 1 }], picks: [], pickNotes: [], approvedAt: "x" }; });
+  await assert.rejects(createFilm(host, root, { ...base, folder: DIR }, { taken: [] }), /^Error: This film already has a script started\. Open it from Films\.$/);
+  const st = JSON.parse(await host.fs.read(`${DIR}\\studio\\state.json`, "utf8"));
+  assert.deepEqual(st.part1.drafts, [{ n: 1 }]);
+  assert.equal(st.part1.approvedAt, "x");
+});
