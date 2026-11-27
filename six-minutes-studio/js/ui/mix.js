@@ -2,7 +2,7 @@
 // mixModel is pure; mixSection builds the DOM from it. Each step is ready only when the one before it is done.
 import { h, btn, basename, playerKey } from "./dom.js";
 import { OUT_OF_DATE, REJOIN, fitStale, mixStale, joinStale, pacingStale } from "../mixplan.js";
-import { canApply } from "../pacingchain.js";
+import { canApply, NOT_OK } from "../pacingchain.js";
 import { marksSig, takeSig } from "../pacing.js";
 import { pacingModel, pacingSection } from "./pacing.js";
 import { countsLine, NO_LINE_SCRIPT } from "../narration.js";
@@ -13,8 +13,6 @@ import { LOST } from "../redo.js";
 const WPM = 150;
 const live = (s) => s === "queued" || s === "running";
 const VERB = { VOICEOVER: "Joining…", FIT: "Fitting…", MIX: "Mixing…" };
-// Lines the join takes only when Jon presses Join anyway: their check found a problem, never ran, or is older than the checker.
-const NOT_OK = new Set(["flagged", "unchecked", "outdated", "error", "rerecord"]);
 const COUNT_WORD = { 2: "Two", 3: "Three", 4: "Four", 5: "Five" };
 export const MARKS_CHANGED = "Pause marks changed: press Apply pauses.";
 export { joinStale };

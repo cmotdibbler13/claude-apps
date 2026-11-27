@@ -3,6 +3,7 @@
 import { startJoin, startFit, startMix, waitJob } from "./mixplan.js";
 import { buildPauses, marksSig, takeSig, toUnpaused } from "./pacing.js";
 
+// Lines the join takes only when Jon presses Join anyway: their check found a problem, never ran, or is older than the checker.
 export const NOT_OK = new Set(["flagged", "unchecked", "outdated", "error", "rerecord"]);
 const live = (s) => s === "queued" || s === "running";
 const SLOT = { VOICEOVER: "voiceover", FIT: "fit", MIX: "mix" };

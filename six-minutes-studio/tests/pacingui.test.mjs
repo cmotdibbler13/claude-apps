@@ -13,7 +13,7 @@ function withDom(fn) {
       addEventListener(k, f) { (this.listeners[k] ||= []).push(f); },
       removeEventListener(k, f) { this.listeners[k] = (this.listeners[k] || []).filter((g) => g !== f); },
       append(...k) { this.children.push(...k); },
-      scrolled: 0, scrollIntoView() { this.scrolled++; } };
+      scrolled: 0, scrollIntoView() { this.scrolled++; }, scrollTop: 0, rect: { top: 0, bottom: 0 }, getBoundingClientRect() { return this.rect; } };
     Object.setPrototypeOf(el, globalThis.Node.prototype);
     el.classList = {
       add: (c) => { const s = new Set(el.className.split(" ").filter(Boolean)); s.add(c); el.className = [...s].join(" "); },
@@ -224,15 +224,24 @@ test("followPlayer moves .now with playback and scrolls only when the line chang
   const lis = all(list, (e) => e.tag === "li");
   const audio = document.createElement("audio");
   audio.currentTime = 0; audio.paused = true;
+  // The list shows 0..100 px; line 01.2 sits below it (120..160), 01.1 above it after scrolling.
+  list.rect = { top: 0, bottom: 100 };
+  lis[0].rect = { top: 10, bottom: 50 }; lis[1].rect = { top: 120, bottom: 160 }; lis[2].rect = { top: 170, bottom: 210 };
   const off = followPlayer(audio, list);
   assert.ok(lis.every((li) => !hasClass(li, "now")));
   audio.currentTime = 1; fire(audio, "timeupdate");
   assert.ok(hasClass(lis[0], "now"));
+  assert.equal(list.scrollTop, 0); // already in view
   audio.currentTime = 2; fire(audio, "timeupdate");
-  assert.equal(lis[0].scrolled, 1);
   audio.currentTime = 4; fire(audio, "timeupdate");
   assert.ok(!hasClass(lis[0], "now"));
   assert.ok(hasClass(lis[1], "now"));
+  assert.equal(list.scrollTop, 60); // only the list scrolled, by the overflow
+  lis[0].rect = { top: -30, bottom: 10 };
+  audio.currentTime = 1; fire(audio, "timeupdate");
+  assert.equal(list.scrollTop, 30);
+  audio.currentTime = 4; fire(audio, "timeupdate");
+  assert.ok(lis.every((li) => li.scrolled === 0)); // never scrollIntoView: the page stays where Jon left it
   audio.currentTime = 3.2; fire(audio, "timeupdate"); // between lines: nothing lit
   assert.ok(lis.every((li) => !hasClass(li, "now")));
   off();
@@ -280,3 +289,17 @@ test("while the voiceover is joined again the list stays, without a player", () 
   assert.equal(pacingModel({ state: running, transcript: null, lineScript: LINES }), null);
   assert.equal(pacingModel({ state: { mix: {} }, transcript: TRANSCRIPT, lineScript: LINES }), null);
 });
+
+test("a freshly painted list gets the highlight at once but is not scrolled", () => withDom(async () => {
+  const { pacingSection, followPlayer } = await import("../js/ui/pacing.js");
+  const list = all(pacingSection(model(film()), {}), (e) => e.tag === "ul" && hasClass(e, "pace"))[0];
+  const lis = all(list, (e) => e.tag === "li");
+  list.rect = { top: 0, bottom: 100 };
+  lis[1].rect = { top: 120, bottom: 160 };
+  const audio = document.createElement("audio");
+  audio.currentTime = 4; audio.paused = false;
+  followPlayer(audio, list);
+  assert.ok(hasClass(lis[1], "now"));
+  assert.equal(list.scrollTop, 0);
+  assert.ok(lis.every((li) => li.scrolled === 0));
+}));

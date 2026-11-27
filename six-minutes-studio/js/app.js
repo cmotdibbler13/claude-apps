@@ -178,6 +178,8 @@ async function renderNow() {
           chain: { applying: r.applying ?? null, placing: !!r.placing, error: r.paceError ?? null, info: r.paceInfo ?? null } } },
     });
     r.paceSource = model.mix?.pacing?.source ?? null;
+    // No voiceover player in the review now (a rejoin is running, or the mix is current): stop the old one, unseen.
+    if (!model.mix?.pacing?.player && players.review.el) dropPlayer("review");
     paint("review", $("view-review"), model, reviewView, reviewActions);
     attachFollow();
     // A ‖ just opened: its menu takes the focus (Escape closes it).

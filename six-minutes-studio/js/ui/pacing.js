@@ -204,10 +204,19 @@ export function pacingSection(m, actions) {
     m.error ? h("p", { class: "err", text: m.error }) : null);
 }
 
-// Lights the line whose [start, end) holds the player's time. Returns a function that stops following.
+// Scrolls the list (only the list, never the page) so the line is inside it.
+function scrollInList(list, li) {
+  const a = list.getBoundingClientRect?.(), b = li.getBoundingClientRect?.();
+  if (!a || !b) return;
+  if (b.top < a.top) list.scrollTop -= a.top - b.top;
+  else if (b.bottom > a.bottom) list.scrollTop += Math.min(b.bottom - a.bottom, b.top - a.top);
+}
+
+// Lights the line whose [start, end) holds the player's time, scrolling the list when the line changes.
+// A freshly painted list is lit at once without scrolling. Returns a function that stops following.
 export function followPlayer(el, list) {
   let cur = null;
-  const sync = () => {
+  const sync = (scroll = true) => {
     const t = Number(el.currentTime) || 0;
     let hit = null;
     for (const li of list.children ?? []) {
@@ -221,11 +230,12 @@ export function followPlayer(el, list) {
     if (hit) {
       hit.classList.add("now");
       hit.setAttribute("aria-current", "true");
-      hit.scrollIntoView?.({ block: "nearest" });
+      if (scroll) scrollInList(list, hit);
     }
   };
-  el.addEventListener("timeupdate", sync);
-  el.addEventListener("seeked", sync);
-  if (!el.paused || Number(el.currentTime) > 0) sync();
-  return () => { el.removeEventListener("timeupdate", sync); el.removeEventListener("seeked", sync); };
+  const onTime = () => sync(true);
+  el.addEventListener("timeupdate", onTime);
+  el.addEventListener("seeked", onTime);
+  if (!el.paused || Number(el.currentTime) > 0) sync(false);
+  return () => { el.removeEventListener("timeupdate", onTime); el.removeEventListener("seeked", onTime); };
 }
