@@ -179,7 +179,7 @@ test("happy path: reads everything, then writes in order, and records part2", as
 
   // Order of the writes.
   const firstAt = (re) => h.events.findIndex((e) => re.test(e[e.length - 1]));
-  const order = [/clips\\christmas_trees\\christmas_trees_HF-01\.mp4$/, /thumbs\\BR-013\.jpg$/, /broll_catalogue\.json$/, /broll_catalogue\.md$/,
+  const order = [/clips\\christmas_trees\\christmas_trees_HF-01\.mp4$/, /thumbs\\BR-013\.jpg$/, /broll_catalogue\.md$/, /broll_catalogue\.json$/,
     /contact_sheets\\christmas_trees\.jpg$/, /sfx_cues\.json$/, /mix_settings\.json$/, /part2_handover\.md$/, /state\.json$/];
   const at = order.map(firstAt);
   assert.ok(at.every((i) => i >= 0), JSON.stringify(at));
@@ -220,6 +220,11 @@ test("a missing take: stops naming the file, nothing written", async () => {
   const b2 = snapshot(t.h);
   await assert.rejects(approvePart2(t.ctx), /Missing file: .*m\.wav/);
   assertUntouched(t.h, b2);
+  // A chosen take that isn't finished: the error names its file.
+  const st = sample();
+  st.assets[1].takes[0].status = "failed";
+  const u = await setup({ state: st });
+  await assert.rejects(approvePart2(u.ctx), (e) => e.message === `Missing file: ${M}\\HF-02_t1.mp4`);
 });
 
 test("a Claude failure: nothing written", async () => {
@@ -250,6 +255,11 @@ test("second run adds nothing new, skips the library call and moves the old hand
   assert.equal(await read(h, `${LIB}\\broll_catalogue.md`), md1);
   const { stampName } = await import("../js/libraryio.js");
   assert.equal(await read(h, stampName(`${DIR}\\handover\\part2_handover.md`, h.now())), hand1);
+  for (const f of ["sfx_cues.json", "mix_settings.json"]) {
+    const p = `${DIR}\\studio\\handover\\${f}`;
+    assert.equal(await read(h, stampName(p, h.now())), await read(h, p), `${f} moved aside, not overwritten`);
+  }
+  assert.ok(!(await has(h, stampName(`${LIB}\\broll_catalogue.json`, h.now()))), "no catalogue copy when nothing changed");
   assert.match(await read(h, `${DIR}\\handover\\part2_handover.md`), /HF-01 \(BR-013\)/);
   assert.equal(JSON.parse(json1).entries.length, 6);
   assert.equal(store.state.part2.approvedAt, h.now());
@@ -355,4 +365,47 @@ test("an unlabelled contact sheet is a warning; the font is passed", async () =>
   assert.match(sheets[0], /fontfile='C\\:\/Windows\/Fonts\/arial\.ttf'/);
   assert.deepEqual(r.warnings, ["The contact sheet was made without BR labels."]);
   assert.match(await read(h, r.handover), /- The contact sheet was made without BR labels\./);
+});
+
+test("a press interrupted after the JSON: the next press adds the missing MD rows and remakes the sheet and thumbs", async () => {
+  const { h, ctx } = await setup();
+  // First press: the JSON write is the commit point, then the sheet fails; simulate a lost MD and thumb too.
+  h.sheetFails = true;
+  await approvePart2(ctx);
+  h.sheetFails = false;
+  h.files.set(`${LIB}\\broll_catalogue.md`, MD);
+  h.files.delete(`${LIB}\\thumbs\\BR-015.jpg`);
+  assert.ok(!(await has(h, `${LIB}\\contact_sheets\\christmas_trees.jpg`)));
+  h.t += 3600_000;
+  h.claude_calls = [];
+  const r = await approvePart2(ctx);
+  assert.deepEqual(r.added, []);
+  assert.deepEqual(h.claude_calls, ["part1", "prose"]);
+  const md = await read(h, `${LIB}\\broll_catalogue.md`);
+  for (const id of ["BR-013", "BR-014", "BR-015"]) assert.equal(md.split(`| ${id} |`).length, 2, `${id} once in the MD`);
+  assert.match(md, /## Christmas Trees/);
+  assert.ok(await has(h, `${LIB}\\thumbs\\BR-015.jpg`));
+  assert.ok(h.events.some((e) => e[0] === "ffmpeg" && /thumbs\\BR-015\.jpg$/.test(e[1])));
+  assert.ok(await has(h, `${LIB}\\contact_sheets\\christmas_trees.jpg`));
+  assert.deepEqual(r.warnings, []);
+  // A third press with everything in place changes nothing in the library.
+  const md2 = md;
+  h.events = [];
+  await approvePart2(ctx);
+  assert.equal(await read(h, `${LIB}\\broll_catalogue.md`), md2);
+  assert.ok(!h.events.some((e) => /B-roll library/.test(e[e.length - 1])), JSON.stringify(h.events));
+});
+
+test("an MD write failure stops before the JSON; the next press finishes the job", async () => {
+  const { h, ctx } = await setup();
+  const write = h.fs.write;
+  h.fs.write = async (p, d) => { if (/broll_catalogue\.md\.tmp$/.test(p)) throw new Error("disk full"); return write(p, d); };
+  await assert.rejects(approvePart2(ctx), /disk full/);
+  assert.equal(await read(h, `${LIB}\\broll_catalogue.json`), FIXTURE, "the JSON is untouched");
+  h.fs.write = write;
+  h.t += 3600_000;
+  const r = await approvePart2(ctx);
+  assert.deepEqual(r.added, ["BR-013", "BR-014", "BR-015"]);
+  assert.match(await read(h, `${LIB}\\broll_catalogue.md`), /\| BR-015 \| HF-02 \| approved/);
+  assert.ok(await has(h, `${LIB}\\contact_sheets\\christmas_trees.jpg`));
 });

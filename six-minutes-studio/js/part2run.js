@@ -23,6 +23,8 @@ const doneTakes = (h) => (h?.takes ?? []).filter((t) => t.status === "done" && f
 const jobList = (jobs) => (Array.isArray(jobs) ? jobs : jobs?.list?.() ?? []);
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 const jsonText = (v) => JSON.stringify(v, null, 2) + "\n";
+// The one place a catalogue entry's thumbnail lives: <library>\thumbs\BR-nnn.jpg.
+const thumbOf = (paths, id) => join(paths.thumbs, `${id}.jpg`);
 
 function relTo(root, p) {
   const r = String(root).replace(/[\\/]+$/, "") + "\\";
@@ -91,7 +93,7 @@ function proseData(state, warnings) {
   }
   for (const [id, l] of Object.entries(state.mix?.pacing?.lines ?? {})) if (filled(l?.note)) notes.push({ id, take: null, note: l.note });
   if (filled(state.mix?.fit?.note)) notes.push({ id: "FIT", take: null, note: state.mix.fit.note });
-  for (const t of state.mix?.voiceover?.tightened ?? []) if (filled(t?.id ?? t)) choices.push(`Kept the tight cut on ${t?.id ?? t}`);
+  for (const t of state.mix?.voiceover?.tightened ?? []) if (filled(t?.id)) choices.push(`Stall tightened on ${t.id}`);
   if (!choices.length) choices.push("Everything approved.");
   return { notes, choices, warnings };
 }
@@ -120,7 +122,7 @@ export async function approvePart2(ctx, { onStep } = {}) {
   for (const a of live) {
     if (!a.approved || !LIBRARY_KINDS.has(a.kind) || onCameraConflict(a, state)) continue;
     const chosen = chosenTake(a);
-    if (!chosen) throw new Error(`Missing file: ${a.id} chosen take`);
+    if (!chosen) throw new Error(`Missing file: ${(a.takes ?? []).find((t) => t.n === a.chosen)?.file || `${a.id} chosen take`}`);
     const others = doneTakes(a).filter((t) => t.n !== chosen.n);
     lib.push({ a, chosen, others });
   }
@@ -169,7 +171,7 @@ export async function approvePart2(ctx, { onStep } = {}) {
       if (d.size !== s.size) throw new Error(`${dest} already exists in the library`);
       skip = true;
     }
-    copies.push({ from: p.copyFrom, dest, skip, thumb: join(cat.paths.dir, p.thumb), id: p.entry.id });
+    copies.push({ from: p.copyFrom, dest, skip, thumb: thumbOf(cat.paths, p.entry.id), id: p.entry.id });
   }
 
   let entries = [];
@@ -198,16 +200,35 @@ export async function approvePart2(ctx, { onStep } = {}) {
   await checkFiles(host, facts.files);
   const prose = await handoverProse(host, proseData(state, facts.warnings));
 
+  // Repair what an earlier, interrupted press left: this film's catalogued entries without an MD row, and
+  // its contact sheet when it, or a thumbnail of one of its clips, is missing. The JSON is the commit point.
+  const mine = (e) => e && (lower(e.source_path).startsWith(lower(filmFolder) + "\\") || lower(e.library_path).startsWith(lower(`B-roll library\\clips\\${slug}\\`)));
+  const inMd = new Set([...String(cat.md).matchAll(/^\|\s*(BR-\d+)\s*\|/gm)].map((m) => m[1]));
+  const mdRows = [...cat.entries.filter((e) => mine(e) && !inMd.has(e.id)), ...entries].map(mdRow);
+  const md = mdRows.length ? appendMd(cat.md, film, mdRows) : null;
   const doc = entries.length ? { ...cat.doc, [cat.key]: all } : null;
-  const md = entries.length ? appendMd(cat.md, film, entries.map(mdRow)) : null;
-  const clipsDir = join(cat.paths.clips, slug);
+  const onSheet = all.filter((e) => mine(e) && e.status !== "rejected" && e.in_library && filled(e.library_path));
+  const newIds = new Set(entries.map((e) => e.id));
+  const remakeThumbs = [];
+  for (const e of onSheet) {
+    if (newIds.has(e.id) || (await host.fs.exists(thumbOf(cat.paths, e.id)))) continue;
+    const copy = join(root, e.library_path);
+    const src = (await host.fs.exists(copy)) ? copy : join(root, e.source_path);
+    remakeThumbs.push({ id: e.id, from: src, thumb: thumbOf(cat.paths, e.id) });
+  }
   const sheet = join(cat.paths.sheets, `${slug}.jpg`);
+  const makeSheet = onSheet.length > 0 && (entries.length > 0 || remakeThumbs.length > 0 || !(await host.fs.exists(sheet)));
+  const clipsDir = join(cat.paths.clips, slug);
   const fontfile = await windowsFont(host);
   const now = host.now();
   const handoverDir = join(dir, "studio", "handover");
   const handover = join(dir, "handover", "part2_handover.md");
+  // Everything that can throw is worked out here, before the first write.
+  const cuesText = jsonText(sfxCues(state, jobs));
+  const mixText = jsonText(mixSettings(state, settings, jobs));
+  renderHandover(facts, prose);
 
-  // 3. Write, in order.
+  // 3. Write, in order: clips, thumbnails, MD, JSON (the commit point), sheet, hand-off files, handover.
   const added = entries.filter((e) => e.status === "approved").length;
   step(2, `Adding ${plural(added, "clip", "clips")}`);
   if (copies.length) await host.fs.mkdir(clipsDir);
@@ -215,40 +236,42 @@ export async function approvePart2(ctx, { onStep } = {}) {
 
   step(3, "Thumbnails and contact sheet");
   const warnings = [];
-  if (entries.length) {
-    if (copies.length) await host.fs.mkdir(cat.paths.thumbs);
-    for (const c of copies) {
-      await moveAside(host, c.thumb, now);
-      await makeThumb(host, c.from, c.thumb);
-    }
-    await copyAside(host, cat.paths.json, now);
-    await writeSafely(host, cat.paths.json, jsonText(doc));
+  if (copies.length || remakeThumbs.length) await host.fs.mkdir(cat.paths.thumbs);
+  for (const c of copies) {
+    await moveAside(host, c.thumb, now);
+    await makeThumb(host, c.from, c.thumb);
+  }
+  for (const r of remakeThumbs) {
+    try { await makeThumb(host, r.from, r.thumb); } catch (e) { warnings.push(`The thumbnail for ${r.id} couldn't be made: ${e?.message ?? e}`); }
+  }
+  if (md != null) {
     await copyAside(host, cat.paths.md, now);
     await writeSafely(host, cat.paths.md, md);
-
-    const prefix = lower(`B-roll library\\clips\\${slug}\\`);
+  }
+  if (doc) {
+    await copyAside(host, cat.paths.json, now);
+    await writeSafely(host, cat.paths.json, jsonText(doc));
+  }
+  if (makeSheet) {
     const items = [];
-    for (const e of all) {
-      if (!e || e.status === "rejected" || !e.in_library || !lower(e.library_path).startsWith(prefix)) continue;
-      const thumb = join(cat.paths.thumbs, `${e.id}.jpg`);
-      if (await host.fs.exists(thumb)) items.push({ thumb, id: e.id });
-    }
-    if (items.length) {
-      try {
-        await host.fs.mkdir(cat.paths.sheets);
-        await moveAside(host, sheet, now);
-        const r = await contactSheet(host, items, sheet, { fontfile });
-        if (!r.labelled) warnings.push(UNLABELLED);
-      } catch (e) {
-        warnings.push(`The contact sheet couldn't be made: ${e?.message ?? e}`);
-      }
+    for (const e of onSheet) if (await host.fs.exists(thumbOf(cat.paths, e.id))) items.push({ thumb: thumbOf(cat.paths, e.id), id: e.id });
+    try {
+      await host.fs.mkdir(cat.paths.sheets);
+      await moveAside(host, sheet, now);
+      const r = await contactSheet(host, items, sheet, { fontfile });
+      if (!r.labelled) warnings.push(UNLABELLED);
+    } catch (e) {
+      warnings.push(`The contact sheet couldn't be made: ${e?.message ?? e}`);
     }
   }
 
   step(4, "Hand-off files");
   await host.fs.mkdir(handoverDir);
-  await writeSafely(host, join(handoverDir, "sfx_cues.json"), jsonText(sfxCues(state, jobs)));
-  await writeSafely(host, join(handoverDir, "mix_settings.json"), jsonText(mixSettings(state, settings, jobs)));
+  for (const [name, text] of [["sfx_cues.json", cuesText], ["mix_settings.json", mixText]]) {
+    const f = join(handoverDir, name);
+    await moveAside(host, f, now);
+    await writeSafely(host, f, text);
+  }
 
   step(5, "Writing the handover");
   facts.warnings.push(...warnings);
