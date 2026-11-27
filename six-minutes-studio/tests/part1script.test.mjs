@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { clipList, words, NUMBER_WORDS, sameWords, scriptStats, scriptWarnings, mmss } from "../js/part1script.js";
+import { splitSentences, scriptLines, lineScriptText, clipList, words, NUMBER_WORDS, sameWords, scriptStats, scriptWarnings, mmss } from "../js/part1script.js";
+import { parseLineScript } from "../js/narration.js";
 
 const w = (n) => Array.from({ length: n }, () => "word").join(" ");
 const clip = (n) => ({ narration: w(n), spoken: w(n), cue: "", delivery: null, pronunciations: [] });
@@ -68,3 +69,43 @@ test("scriptWarnings texts", () => {
 });
 
 test("mmss", () => assert.equal(mmss(381), "6:21"));
+
+test("splitSentences joins short sentences and respects abbreviations", () => {
+  assert.deepEqual(splitSentences("Kenwyn. Do not demolish. The house stood empty."), ["Kenwyn. Do not demolish.", "The house stood empty."]);
+  assert.deepEqual(splitSentences("It was cold that winter. Nobody came."), ["It was cold that winter. Nobody came."]);
+  assert.deepEqual(splitSentences("Dr Snow mapped it. J. Bazalgette built it."), ["Dr Snow mapped it.", "J. Bazalgette built it."]);
+  assert.deepEqual(splitSentences("Yes. No. Stop. The tide came in over the sands."), ["Yes. No. Stop. The tide came in over the sands."]);
+  assert.deepEqual(splitSentences("Why did it fall? \"It fell,\" he said. Nobody knew why."), ["Why did it fall?", "\"It fell,\" he said. Nobody knew why."]);
+  assert.deepEqual(splitSentences("One clip only."), ["One clip only."]);
+});
+
+const LS = {
+  title: "China Clay",
+  pronunciations: [{ name: "Kenwyn", say: "KEN-win" }, { name: "Truro", say: "TROO-roh" }],
+  sections: [
+    { name: "Cold open", clips: [
+      { narration: "", spoken: "Kenwyn. Do not demolish. The house stood empty.", cue: "", delivery: null, pronunciations: [] },
+      { narration: "", spoken: "It was cold in Truro that winter. Nobody came.", cue: "", delivery: null, pronunciations: [] },
+    ] },
+    { name: "The pit", clips: [{ narration: "", spoken: "Then the pit closed down.", cue: "", delivery: null, pronunciations: [] }] },
+  ],
+};
+
+test("scriptLines ids, sections and text", () => {
+  assert.deepEqual(scriptLines(LS).map((l) => [l.id, l.clip, l.section, l.sectionIndex]), [
+    ["01.1", 1, "1 · COLD OPEN", 0], ["01.2", 1, "1 · COLD OPEN", 0], ["02.1", 2, "1 · COLD OPEN", 0], ["03.1", 3, "2 · THE PIT", 1],
+  ]);
+});
+
+test("lineScriptText round trips through parseLineScript", () => {
+  const text = lineScriptText(LS, { prefix: "china_clay", picks: ["01.2"] });
+  assert.equal(text.split("\n")[0], "# China Clay — line-by-line recording script (4 lines)");
+  assert.match(text, /\[01\.1\]  \(clip 01\)\n/);
+  assert.match(text, /> Kenwyn = "KEN-win"\n/);
+  assert.match(text, /> Truro = "TROO-roh"\n/);
+  const p = parseLineScript(text);
+  const want = scriptLines(LS);
+  assert.equal(p.name, "china_clay");
+  assert.deepEqual(p.lines.map((l) => [l.id, l.text, l.section]), want.map((l) => [l.id, l.text, l.section]));
+  assert.deepEqual(p.lines.filter((l) => l.toCamera).map((l) => l.id), ["01.2"]);
+});

@@ -137,3 +137,76 @@ export function scriptWarnings(stats, runtimeTarget) {
   }
   return out;
 }
+
+// ---------- line script ----------
+
+const NOT_AN_END = /^(?:St|Mr|Mrs|Ms|Dr|Prof|No|[A-Z])$/;
+
+// Sentences end at . ? ! (plus closing quotes or brackets) then whitespace, except after an abbreviation.
+function rawSentences(text) {
+  const t = String(text ?? "").trim();
+  const out = [];
+  let start = 0;
+  const re = /[.?!]+["'”’)\]]*(?=\s)/g;
+  for (let m; (m = re.exec(t)); ) {
+    const end = m.index + m[0].length;
+    if (m[0][0] === ".") {
+      const before = t.slice(start, m.index).split(/\s+/).pop().replace(/^["'“‘(\[]+/, "");
+      if (m[0] === "." && NOT_AN_END.test(before)) continue;
+    }
+    out.push(t.slice(start, end).trim());
+    start = end;
+  }
+  const rest = t.slice(start).trim();
+  if (rest) out.push(rest);
+  return out;
+}
+
+const SHORT_WORDS = 3;
+
+export function splitSentences(text) {
+  const raw = rawSentences(text);
+  const out = [];
+  for (let i = 0; i < raw.length; i++) {
+    let cur = raw[i];
+    while (words(cur).length <= SHORT_WORDS && i + 1 < raw.length) cur = `${cur} ${raw[++i]}`;
+    out.push(cur);
+  }
+  if (out.length > 1 && words(out[out.length - 1]).length <= SHORT_WORDS) {
+    const last = out.pop();
+    out[out.length - 1] = `${out[out.length - 1]} ${last}`;
+  }
+  return out;
+}
+
+const two = (n) => String(n).padStart(2, "0");
+const sectionHeading = (si, name) => `${si + 1} · ${String(name ?? "").toUpperCase()}`;
+
+export function scriptLines(script) {
+  const out = [];
+  for (const { n, section, sectionIndex, clip } of clipList(script)) {
+    splitSentences(clip?.spoken).forEach((text, i) => {
+      out.push({ id: `${two(n)}.${i + 1}`, clip: n, section: sectionHeading(sectionIndex, section?.name), sectionIndex, text });
+    });
+  }
+  return out;
+}
+
+export function lineScriptText(script, { prefix, picks = [] } = {}) {
+  const lines = scriptLines(script);
+  const out = [`# ${script?.title ?? ""} — line-by-line recording script (${lines.length} lines)`, `# name: ${prefix}`, ""];
+  let lastSection = null;
+  for (const ln of lines) {
+    if (ln.section !== lastSection) {
+      out.push(`## ${ln.section}`, "");
+      lastSection = ln.section;
+    }
+    out.push(`[${ln.id}]  (clip ${two(ln.clip)})`, ln.text);
+    for (const p of script?.pronunciations ?? []) {
+      if (p?.name && ln.text.includes(p.name)) out.push(`> ${p.name} = "${p.say}"`);
+    }
+    if (picks.includes(ln.id)) out.push("> to camera");
+    out.push("");
+  }
+  return out.join("\n");
+}
