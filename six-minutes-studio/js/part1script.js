@@ -220,7 +220,7 @@ export function lineScriptText(script, { prefix, picks = [] } = {}) {
 const cell = (v) => String(v ?? "").replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
 const table = (head, rows) => [`| ${head.join(" | ")} |`, `|${head.map(() => "---").join("|")}|`, ...rows.map((r) => `| ${r.map(cell).join(" | ")} |`)];
 
-const NOTE_HEADINGS = [
+export const NOTE_HEADINGS = [
   ["corrections", "Corrections to the brief"],
   ["myths", "Myths kept out or hedged"],
   ["softer", "Softer-sourced lines"],

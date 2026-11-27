@@ -86,9 +86,12 @@ export async function briefsIn(host, dir) {
   return out.sort((a, b) => b.mtimeMs - a.mtimeMs);
 }
 
+export const BRIEF_TYPE = "Save the brief as Markdown or text in the film's folder first.";
+export const briefTypeOk = (name) => /\.(md|txt)$/i.test(String(name ?? ""));
+
 export async function addBrief(host, dir, { name, bytes }) {
   const m = /^(.*?)(\.[^.]*)?$/.exec(String(name ?? ""));
-  if (!/^\.(md|txt)$/i.test(m[2] ?? "")) throw new Error("Save the brief as Markdown or text in the film's folder first.");
+  if (!/^\.(md|txt)$/i.test(m[2] ?? "")) throw new Error(BRIEF_TYPE);
   let path = join(dir, name), n = 1;
   while (await host.fs.exists(path)) { n += 1; path = join(dir, `${m[1]}_${n}${m[2]}`); }
   await host.fs.write(path, bytes);

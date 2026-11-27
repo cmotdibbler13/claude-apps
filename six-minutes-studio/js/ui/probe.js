@@ -105,6 +105,24 @@ const libraryCheck = (root) => async (host) => {
   return `${n} ${n === 1 ? "clip" : "clips"}, next BR-${String(nextBrNumber(cat.entries, cat.md)).padStart(3, "0")}`;
 };
 
+// Part 1: the reference script Claude reads for voice and structure (the first of referenceScripts that exists).
+export const MSG_NO_REFERENCE = "None of the referenceScripts in .studio-settings.json is there. Set referenceScripts to one or more finished scripts.";
+const referenceCheck = (paths) => async (host) => {
+  for (const p of Array.isArray(paths) ? paths : []) {
+    try { if (p && (await host.fs.exists(p))) return p; } catch { /* try the next */ }
+  }
+  throw new Error(MSG_NO_REFERENCE);
+};
+
+// Part 1: approved pronunciations. Missing is a warning: Studio starts the file at the first Part 1 approval.
+export const MSG_NO_PRONUNCIATIONS = "No pronunciations file yet: Studio starts one when you approve a Part 1.";
+const pronunciationsCheck = (file) => async (host) => {
+  let there = false;
+  try { there = !!(await host.fs.exists(file)); } catch { /* treat as missing */ }
+  if (!there) throw Object.assign(new Error(MSG_NO_PRONUNCIATIONS), { warn: true });
+  return file;
+};
+
 const toolsCheck = (server, want) => async (host) => {
   if (!host.mcp) throw new Error("connector access is not available");
   const tools = await host.mcp.listTools(server);
@@ -138,6 +156,8 @@ export const makeChecks = (settings = DEFAULT_SETTINGS, root = ROOT) => [
   },
   { name: "Presenter photos", run: presenterPhotosCheck(settings.presenter) },
   { name: "B-roll library", run: libraryCheck(root || ROOT) },
+  { name: "Reference script", run: referenceCheck(settings.referenceScripts ?? DEFAULT_SETTINGS.referenceScripts) },
+  { name: "Pronunciations", run: pronunciationsCheck(settings.pronunciationsFile || join(root || ROOT, "pronunciations.md")) },
   { name: "ElevenLabs tools", run: toolsCheck("ElevenLabs", ["creative_create_flow", "creative_add_flow_node", "creative_run_flow_nodes", "creative_get_flow_run_status"]) },
   {
     name: "Claude answers JSON",
@@ -157,7 +177,7 @@ export async function runChecks(host, onResult = () => {}, settings = DEFAULT_SE
   for (const c of makeChecks(settings, root)) {
     let r;
     try { r = { name: c.name, ok: true, detail: await c.run(host) }; }
-    catch (e) { r = { name: c.name, ok: false, detail: String(e?.message ?? e), install: !!e?.install, ...(e?.neutral ? { neutral: true } : {}), ...(e?.start ? { start: e.start } : {}) }; }
+    catch (e) { r = { name: c.name, ok: false, detail: String(e?.message ?? e), install: !!e?.install, ...(e?.neutral ? { neutral: true } : {}), ...(e?.warn ? { warn: true } : {}), ...(e?.start ? { start: e.start } : {}) }; }
     out.push(r);
     onResult(r);
   }
@@ -166,8 +186,8 @@ export async function runChecks(host, onResult = () => {}, settings = DEFAULT_SE
 
 export function probeRow(r) {
   const li = document.createElement("li");
-  li.className = r.ok ? "pass" : r.neutral ? "neutral" : "fail";
-  const st = document.createElement("span"); st.className = "st"; st.textContent = r.ok ? "Pass" : r.neutral ? "Optional" : "Fail";
+  li.className = r.ok ? "pass" : r.neutral ? "neutral" : r.warn ? "warn" : "fail";
+  const st = document.createElement("span"); st.className = "st"; st.textContent = r.ok ? "Pass" : r.neutral ? "Optional" : r.warn ? "Warning" : "Fail";
   const nm = document.createElement("span"); nm.textContent = r.name;
   const d = document.createElement("span"); d.className = "detail"; d.textContent = r.detail;
   li.append(st, nm, d);

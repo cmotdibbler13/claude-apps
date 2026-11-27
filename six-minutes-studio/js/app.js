@@ -34,6 +34,11 @@ import { makeMixdownRunner } from "./tools/mixdown.js";
 import { startFit, startMix, useStemRemixerExport, approveMix, parseCsv, openFitInStemRemixer, stemExportDir, pastedPath, goodFrame } from "./mixplan.js";
 import { mountProbe } from "./ui/probe.js";
 import { approvePart2, part2InFlight, alreadyText } from "./part2run.js";
+import { createFilm, currentDraft, part1Busy, writeScript, redoOne, editClip, editLists, restoreDraft, setPicks, approvePart1 } from "./part1run.js";
+import { filmFolders, takenPrefixes, briefsIn, addBrief } from "./part1setup.js";
+import { clipList } from "./part1script.js";
+import * as newFilmView from "./ui/newfilm.js";
+import { part1Model, listRows, listFromRows, LISTS } from "./ui/part1.js";
 import * as filmsView from "./ui/films.js";
 import * as jobsView from "./ui/jobs.js";
 import * as reviewView from "./ui/review.js";
@@ -148,7 +153,7 @@ function paint(name, el, model, view, actions) {
   const refocus = document.activeElement?.id === "note-box" || (name === "review" && app.review.focusNote);
   // An audio prompt, length or cue box Jon is typing in keeps its caret across the re-render.
   const act = document.activeElement;
-  const keep = act?.id?.startsWith("au-") || act?.id?.startsWith("pace-") || act?.id?.startsWith("oc-own-") ? { id: act.id, start: act.selectionStart ?? null, end: act.selectionEnd ?? null } : null;
+  const keep = act?.id?.startsWith("au-") || act?.id?.startsWith("pace-") || act?.id?.startsWith("oc-own-") || act?.id?.startsWith("nf-") || act?.id?.startsWith("p1-") ? { id: act.id, start: act.selectionStart ?? null, end: act.selectionEnd ?? null } : null;
   rendering = true;
   try { view.render(el, model, actions); } finally { rendering = false; }
   const ta = refocus ? $("note-box") : null;
@@ -179,7 +184,9 @@ async function renderNow() {
   $("state-banner").hidden = !se;
   $("state-banner").textContent = se ? jobsView.stateErrorBanner(se.film, se.message) : "";
 
-  if (app.view === "films") {
+  if (app.view === "films" && app.nf) {
+    paint("films", $("view-films"), newFilmModelNow(), newFilmView, newFilmActions);
+  } else if (app.view === "films") {
     paint("films", $("view-films"), filmsView.filmsModel({ root: app.root, films: app.films, jobs: list, error: app.bootError,
       tools: app.comfyStarter ? toolsLine({ comfy: app.comfyStarter, stableAudio: app.starter }) : null }), filmsView, filmsActions);
   } else if (app.view === "jobs") {
@@ -189,6 +196,7 @@ async function renderNow() {
   } else if (app.view === "review") {
     const r = app.review;
     const model = reviewView.reviewModel({
+      part1: part1Now(),
       film: app.film, state: app.store?.state, layout: app.layout, making: r.making, listError: r.listError,
       cardErrors: r.cardErrors, pending: r.pending, noteFor: r.noteFor, openError: app.openError, prefError: r.prefError ?? null, i2v: r.i2v ?? null, removeFor: r.removeFor ?? null, narration: r.narration ?? null, playing: app.playing, paused: !!app.paused,
       audio: app.store?.state?.audio ?? null,
@@ -285,6 +293,9 @@ function startRoot() {
 const filmsActions = {
   retryRoot: () => { startRoot(); },
   openReview: (dir) => { openReview(dir); },
+  // A film still on Part 1 opens the same review, which shows the Part 1 step.
+  openScript: (dir) => { openReview(dir); },
+  newFilm: () => { openNewFilm(); },
 };
 
 function resetReview() {
@@ -924,7 +935,179 @@ async function copyMessage(text, box) {
   }
 }
 
+// ---- New film (Films page) ----
+// app.nf: the open form ({ form, folders, briefs, taken, pending, error, busy }), or null.
+function newFilmModelNow() {
+  const nf = app.nf;
+  return newFilmView.newFilmModel({ folders: nf.folders, briefs: nf.briefs, form: nf.form, taken: nf.taken, films: app.films,
+    error: nf.error, busy: nf.busy, recordings: app.settings?.autocueRecordings ?? null, pending: nf.pending });
+}
+
+async function openNewFilm() {
+  if (!app.root || !app.host) return;
+  const nf = { form: {}, folders: null, briefs: [], taken: [], pending: null, error: null, busy: false };
+  app.nf = nf;
+  render();
+  try {
+    const [folders, taken] = await Promise.all([filmFolders(app.host, app.root), takenPrefixes(app.host, app.root, app.settings ?? {})]);
+    if (app.nf !== nf) return;
+    nf.folders = folders; nf.taken = taken;
+    await loadBriefs(nf);
+  } catch (e) { if (app.nf === nf) { nf.folders ??= []; nf.error = msg(e); } }
+  render();
+}
+
+async function loadBriefs(nf) {
+  const m = newFilmModelNow();
+  nf.briefs = m.isNew ? [] : await briefsIn(app.host, m.folder);
+  render();
+}
+
+const newFilmActions = {
+  setField(k, v) { if (!app.nf) return; app.nf.form[k] = v; app.nf.error = null; render(); },
+  setFolder(v) {
+    const nf = app.nf; if (!nf) return;
+    nf.form.folder = v; nf.form.brief = undefined; nf.error = null;
+    loadBriefs(nf).catch((e) => { nf.error = msg(e); render(); });
+  },
+  // A picked brief is copied into the chosen folder (never overwriting); for a new folder it waits for Create.
+  async addBrief(file) {
+    const nf = app.nf; if (!nf) return;
+    nf.error = newFilmView.briefPickProblem(file.name);
+    if (nf.error) { render(); return; }
+    const m = newFilmModelNow();
+    if (m.isNew) { nf.pending = file; nf.form.brief = undefined; render(); return; }
+    try {
+      const path = await addBrief(app.host, m.folder, file);
+      await loadBriefs(nf);
+      nf.form.brief = path;
+    } catch (e) { nf.error = msg(e); }
+    render();
+  },
+  cancel() { app.nf = null; render(); },
+  async create() {
+    const nf = app.nf; if (!nf || nf.busy) return;
+    const m = newFilmModelNow();
+    if (!m.canCreate) return;
+    const input = newFilmView.createInput(m);
+    const pending = m.isNew ? nf.pending : null;
+    if (pending) input.brief = join(app.root, input.newFolder, pending.name);
+    nf.busy = true; nf.error = null; render();
+    let dir;
+    try { dir = await createFilm(app.host, app.root, input, { taken: nf.taken }); }
+    catch (e) { nf.busy = false; nf.error = msg(e); render(); return; }
+    let briefError = null;
+    if (pending) { try { await addBrief(app.host, dir, pending); } catch (e) { briefError = `Couldn't copy the brief into the folder: ${msg(e)}`; } }
+    app.films = await scanFilms(app.host, app.root);
+    app.nf = null;
+    await openReview(dir);
+    if (briefError && app.film?.dir === dir) { p1ui().error = briefError; render(); }
+  },
+};
+
+// ---- Part 1 step (Review) ----
+// app.review.p1: what is open in the step and its last error. Errors clear on the next action.
+const p1ui = () => (app.review.p1 ??= { error: null, running: false, writing: false });
+const p1ctx = () => ({ host: app.host, store: app.store, settings: app.settings ?? {}, root: app.root });
+
+// Shown while the film has no Part 1 handover, and (once approved here) above the Part 2 sections.
+function part1Now() {
+  const state = app.store?.state;
+  if (!state?.part1 || !app.film) return null;
+  const u = p1ui();
+  if (app.film.parts?.[1] === "done" && !u.justApproved) return null;
+  return part1Model({ state, settings: app.settings ?? {}, busy: u.running || part1Busy(app.store.dir), error: u.error, ui: u });
+}
+
+// One Part 1 change at a time; a failure shows in the step. writing: a Claude call (shows "Writing…").
+async function p1Run(fn, { writing = false } = {}) {
+  const r = app.review, u = p1ui(), store = app.store;
+  if (u.running || !store) return false;
+  u.error = null; u.running = true; u.writing = writing;
+  render();
+  try { await fn(p1ctx()); return true; }
+  catch (e) { if (app.review === r) u.error = msg(e); return false; }
+  finally { u.running = false; u.writing = false; if (app.review === r) render(); }
+}
+
+const p1script = () => currentDraft(app.store?.state)?.script ?? null;
+const p1pickIds = () => (app.store?.state?.part1?.picks ?? []).map((x) => x.id);
+// Every action clears the last error; typing only updates what is held (no re-render needed).
+const p1 = (fn, redraw = true) => (...a) => { const u = p1ui(); u.error = null; const out = fn(u, ...a); if (redraw) render(); return out; };
+
+async function approvePart1Now() {
+  const u = p1ui(), r = app.review, dir = app.film?.dir;
+  u.approving = true;
+  const ok = await p1Run(async (c) => { const res = await approvePart1(c); u.openItems = res.openItems; u.justApproved = true; });
+  u.approving = false;
+  if (!ok || app.review !== r) { render(); return; }
+  // The handover is written: Films and the review move on to Part 2.
+  app.films = await scanFilms(app.host, app.root);
+  app.film = app.films.find((f) => f.dir === dir) ?? app.film;
+  r.lineScript = null; r.narration = null;
+  refreshNarration().finally(() => render());
+}
+
+const part1Actions = {
+  write: p1(() => { p1Run((c) => writeScript(c), { writing: true }); }),
+  openRevise: p1((u) => { u.revise = { note: "" }; }),
+  reviseNote: p1((u, v) => { if (u.revise) u.revise.note = v; }),
+  closeRevise: p1((u) => { u.revise = null; }),
+  revise: p1((u, note) => {
+    if (!String(note ?? "").trim()) return;
+    p1Run((c) => writeScript(c, { note: note.trim() }), { writing: true }).then((ok) => { if (ok) u.revise = null; render(); });
+  }),
+  toggleDrafts: p1((u) => { u.draftsOpen = !u.draftsOpen; }),
+  restore: p1((u, n) => { p1Run((c) => restoreDraft(c, n)).then((ok) => { if (ok) u.draftsOpen = false; render(); }); }),
+  openEdit: p1((u, n) => {
+    const c = clipList(p1script()).find((x) => x.n === n)?.clip;
+    if (!c) return;
+    u.redo = null;
+    u.editing = { n, narration: c.narration ?? "", spoken: c.spoken ?? "", cue: c.cue ?? "" };
+  }),
+  editField: p1((u, k, v) => { if (u.editing) u.editing[k] = v; }, false),
+  saveClip: p1((u) => {
+    const e = u.editing; if (!e) return;
+    p1Run((c) => editClip(c, e.n, { narration: e.narration, spoken: e.spoken, cue: e.cue })).then((ok) => { if (ok && u.editing === e) u.editing = null; render(); });
+  }),
+  closeClip: p1((u) => { u.editing = null; u.redo = null; }),
+  openRedo: p1((u, n) => { u.editing = null; u.redo = { n, note: "" }; }),
+  redoNote: p1((u, v) => { if (u.redo) u.redo.note = v; }),
+  redo: p1((u, n, note) => {
+    if (!String(note ?? "").trim()) return;
+    const r = u.redo;
+    p1Run((c) => redoOne(c, n, note.trim()), { writing: true }).then((ok) => { if (ok && u.redo === r) u.redo = null; render(); });
+  }),
+  openList: p1((u, kind) => { u.list = { kind, rows: listRows(kind, p1script()?.[kind] ?? []) }; }),
+  listField: p1((u, i, f, v) => { if (u.list?.rows[i]) u.list.rows[i][f] = v; }, false),
+  listAdd: p1((u) => { if (u.list && LISTS[u.list.kind].addable) u.list.rows.push({ ...LISTS[u.list.kind].blank }); }),
+  listRemove: p1((u, i) => { u.list?.rows.splice(i, 1); }),
+  closeList: p1((u) => { u.list = null; }),
+  saveList: p1((u) => {
+    const l = u.list; if (!l) return;
+    let items;
+    try { items = listFromRows(l.kind, l.rows, { script: p1script() }); } catch (e) { u.error = msg(e); return; }
+    p1Run((c) => editLists(c, { [l.kind]: items })).then((ok) => { if (ok && u.list === l) u.list = null; render(); });
+  }),
+  unpick: p1((u, id) => { p1Run((c) => setPicks(c, p1pickIds().filter((x) => x !== id))); }),
+  chooseLine: p1((u, id) => { u.addLine = id; }),
+  pick: p1((u, id) => {
+    if (!id) return;
+    p1Run((c) => setPicks(c, [...p1pickIds(), id])).then((ok) => { if (ok) u.addLine = ""; render(); });
+  }),
+  openEpisode: p1((u) => { u.episode = String(app.store?.state?.part1?.setup?.episode ?? ""); }),
+  episodeField: p1((u, v) => { u.episode = v; }, false),
+  closeEpisode: p1((u) => { u.episode = null; }),
+  saveEpisode: p1((u) => {
+    const ep = String(u.episode ?? "").trim();
+    if (!/^\d{1,4}$/.test(ep)) { u.error = "The episode number is digits only, such as 008."; return; }
+    p1Run((c) => editLists(c, { episode: ep })).then((ok) => { if (ok) u.episode = null; render(); });
+  }),
+  approve: p1(() => { approvePart1Now(); }),
+};
+
 const reviewActions = {
+  part1: part1Actions,
   makeShotList: () => { makeShotList(); },
   approvePart2: () => { approvePart2Now(); },
   copyMessage: (text, box) => { copyMessage(text, box); },

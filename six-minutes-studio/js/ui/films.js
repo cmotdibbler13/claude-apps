@@ -48,7 +48,7 @@ function row(r, actions) {
 
 export function render(el, model, actions) {
   const head = [
-    h("div", { class: "head", style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" } }, h("h1", { text: "Your films" }), btn("New film", () => actions.newFilm?.())),
+    h("div", { class: "head fhead" }, h("h1", { text: "Your films" }), btn("New film", () => actions.newFilm?.())),
     h("p", { class: "lede", text: "Each film shows where it is in your three parts, and anything waiting on you is in brass." }),
     model.tools ? h("p", { class: "hist tools", text: model.tools }) : null,
   ].filter(Boolean);
