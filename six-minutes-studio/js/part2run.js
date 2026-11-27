@@ -255,7 +255,8 @@ export async function approvePart2(ctx, { onStep } = {}) {
   if (makeSheet) {
     const items = [];
     for (const e of onSheet) if (await host.fs.exists(thumbOf(cat.paths, e.id))) items.push({ thumb: thumbOf(cat.paths, e.id), id: e.id });
-    try {
+    // No thumbnail made it (each already warned): leave the old sheet where it is.
+    if (items.length) try {
       await host.fs.mkdir(cat.paths.sheets);
       await moveAside(host, sheet, now);
       const r = await contactSheet(host, items, sheet, { fontfile });
@@ -281,7 +282,9 @@ export async function approvePart2(ctx, { onStep } = {}) {
 
   const ids = lib.map(({ a }) => brIds.get(a.id)).filter(Boolean);
   const sig = part2Sig(state);
-  await store.update((d) => { d.part2 = { approvedAt: now, handover, brIds: ids, sig }; });
+  const topic = facts.project.topic;
+  const message = openingMessage(topic, dir);
+  await store.update((d) => { d.part2 = { approvedAt: now, handover, brIds: ids, sig, topic, message }; });
   await store.log(`Part 2 approved: ${plural(added, "clip", "clips")} added to the B-roll library, handover written`);
-  return { brIds: ids, handover, added: entries.map((e) => e.id), warnings, message: openingMessage(facts.project.topic, dir) };
+  return { brIds: ids, handover, added: entries.map((e) => e.id), warnings, message };
 }

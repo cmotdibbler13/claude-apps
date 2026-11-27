@@ -187,7 +187,7 @@ test("happy path: reads everything, then writes in order, and records part2", as
 
   // part2 recorded, and the log line.
   const p2 = store.state.part2;
-  assert.deepEqual(Object.keys(p2), ["approvedAt", "handover", "brIds", "sig"]);
+  assert.deepEqual(Object.keys(p2), ["approvedAt", "handover", "brIds", "sig", "topic", "message"]);
   assert.equal(p2.approvedAt, h.now());
   assert.equal(p2.handover, `${DIR}\\handover\\part2_handover.md`);
   assert.deepEqual(p2.brIds, ["BR-013", "BR-015"]);
@@ -408,4 +408,34 @@ test("an MD write failure stops before the JSON; the next press finishes the job
   assert.deepEqual(r.added, ["BR-013", "BR-014", "BR-015"]);
   assert.match(await read(h, `${LIB}\\broll_catalogue.md`), /\| BR-015 \| HF-02 \| approved/);
   assert.ok(await has(h, `${LIB}\\contact_sheets\\christmas_trees.jpg`));
+});
+
+test("part2 records the topic and the opening message, for Review to show after a reload", async () => {
+  const { store, ctx } = await setup();
+  const r = await approvePart2(ctx);
+  assert.equal(store.state.part2.topic, "Christmas Trees");
+  assert.equal(store.state.part2.message, r.message);
+  assert.match(r.message, /^Part 3 of Six minutes on… Christmas Trees\. /);
+});
+
+test("no thumbnail to put on the contact sheet: no sheet is attempted, only the thumbnail warnings", async () => {
+  const { h, ctx } = await setup();
+  h.sheetFails = true;
+  await approvePart2(ctx);
+  h.sheetFails = false;
+  h.files.delete(`${LIB}\\thumbs\\BR-013.jpg`);
+  h.files.delete(`${LIB}\\thumbs\\BR-015.jpg`);
+  const prev = h._spawn;
+  const sheets = [];
+  h.spawnScript((cmd, args, o, p) => {
+    const out = args[args.length - 1];
+    if (/contact_sheets/.test(out)) sheets.push(out);
+    if (/thumbs\\BR-/.test(out)) { p.err("bad clip"); p.exit(1); return; }
+    return prev(cmd, args, o, p);
+  });
+  h.t += 3600_000;
+  const r = await approvePart2(ctx);
+  assert.deepEqual(sheets, []);
+  assert.equal(r.warnings.length, 2);
+  assert.ok(r.warnings.every((w) => /^The thumbnail for BR-01[35] couldn't be made: /.test(w)), JSON.stringify(r.warnings));
 });
