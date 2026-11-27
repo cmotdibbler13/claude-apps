@@ -167,7 +167,9 @@ test("part 1: approve locked with the reason", () => {
 test("part 1: busy shows Writing… (about a minute); a quick edit locks without it; the error shows", () => {
   assert.equal(part1Model({ state: state(), busy: true }).busyText, WRITING);
   assert.equal(WRITING, "Writing… (about a minute)");
-  assert.equal(part1Model({ state: state(), busy: true, ui: { writing: false } }).busyText, null);
+  assert.equal(part1Model({ state: state(), busy: true, ui: { running: true, writing: false } }).busyText, null);
+  // Back on the film while a call is still running: the review's ui is fresh, but the call shows.
+  assert.equal(part1Model({ state: state(), busy: true, ui: { error: null, running: false, writing: false } }).busyText, WRITING);
   assert.equal(part1Model({ state: state() }).busyText, null);
   assert.equal(part1Model({ state: state(), error: "boom" }).error, "boom");
 });

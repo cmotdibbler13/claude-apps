@@ -73,11 +73,19 @@ export async function filmFolders(host, root) {
   return out;
 }
 
+// Scripts and line scripts (also moved aside under stamped names) and Part 1 handover copies are never briefs.
+const STAMP = "(_\\d{4}-\\d{2}-\\d{2}-\\d{4}(_\\d+)?)?";
+const NOT_BRIEF = [
+  new RegExp(`_script${STAMP}\\.md$`, "i"),
+  new RegExp(`_line_script${STAMP}\\.txt$`, "i"),
+  /part1_handover.*\.md$/i,
+];
+
 export async function briefsIn(host, dir) {
   const out = [];
   for (const e of await listDir(host, dir)) {
     if (e.isDirectory) continue;
-    if (!/\.(md|txt)$/i.test(e.name) || /(_script\.md|_line_script\.txt)$/i.test(e.name)) continue;
+    if (!/\.(md|txt)$/i.test(e.name) || NOT_BRIEF.some((r) => r.test(e.name))) continue;
     const path = join(dir, e.name);
     let mtimeMs = 0;
     try { mtimeMs = (await host.fs.stat(path)).mtimeMs ?? 0; } catch { continue; }

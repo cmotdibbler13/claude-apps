@@ -102,7 +102,9 @@ export function part1Model({ state, settings = {}, busy = false, error = null, u
     runtime: setup.runtime ?? "",
     warnings,
     busy: !!busy,
-    busyText: busy && ui.writing !== false ? WRITING : null, // a quick edit locks the step without the Writing… line
+    // Only a quick edit this review is running locks the step without the Writing… line; a call already
+    // running when Jon came back to the film (ui fresh, not running) shows it.
+    busyText: busy && !(ui.running && ui.writing === false) ? WRITING : null,
     error: error ?? null,
     draft: draft ? draftLabel(draft, drafts.length - 1, drafts.length) : null,
     drafts: drafts.map((d, i) => ({ n: d.n, label: draftLabel(d, i, drafts.length), current: i === drafts.length - 1 })),

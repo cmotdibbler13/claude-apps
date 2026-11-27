@@ -115,3 +115,19 @@ test("part 1 defaults: reference scripts and pronunciations file", async () => {
   ]);
   assert.equal(s.pronunciationsFile, ROOT + "\\pronunciations.md");
 });
+
+test("referenceScripts: one path becomes a list, anything else not a list gives the default", async () => {
+  const host = new FakeHost();
+  await host.fs.mkdir(ROOT);
+  const file = ROOT + "\\.studio-settings.json";
+  await host.fs.write(file, JSON.stringify({ referenceScripts: "S:\\a.md" }));
+  assert.deepEqual((await loadSettings(host, ROOT)).referenceScripts, ["S:\\a.md"]);
+  const defaults = (await loadSettings(new FakeHost(), ROOT)).referenceScripts;
+  assert.ok(Array.isArray(defaults) && defaults.length > 0);
+  for (const v of [5, { a: 1 }, null, true]) {
+    await host.fs.write(file, JSON.stringify({ referenceScripts: v }));
+    assert.deepEqual((await loadSettings(host, ROOT)).referenceScripts, defaults);
+  }
+  await host.fs.write(file, JSON.stringify({ referenceScripts: ["S:\\b.md"] }));
+  assert.deepEqual((await loadSettings(host, ROOT)).referenceScripts, ["S:\\b.md"]);
+});

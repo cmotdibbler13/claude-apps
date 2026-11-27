@@ -172,7 +172,7 @@ test("createFilm: a new folder gets studio state with the setup", async () => {
   const host = new FakeHost();
   const root = "S:\\Youtube video ideas";
   await host.fs.mkdir(root);
-  const dir = await createFilm(host, root, { newFolder: "X", brief: `${root}\\b.md`, topic: " Storms ", prefix: "storms", episode: "009", runtime: "" }, { taken: [] });
+  const dir = await createFilm(host, root, { newFolder: "X", brief: `${root}\\b.md`, topic: " Storms ", prefix: "storms", episode: "009", runtime: "" }, { taken: [], briefPending: true });
   assert.equal(dir, `${root}\\X`);
   const st = JSON.parse(await host.fs.read(`${root}\\X\\studio\\state.json`, "utf8"));
   assert.deepEqual(st.part1, { setup: { folder: dir, brief: `${root}\\b.md`, topic: "Storms", prefix: "storms", episode: "009", runtime: "6:00–6:45", voice: "own" }, drafts: [], picks: [], pickNotes: [], approvedAt: null });
@@ -181,6 +181,7 @@ test("createFilm: a new folder gets studio state with the setup", async () => {
 test("createFilm: an existing folder is used as is", async () => {
   const host = new FakeHost();
   await host.fs.mkdir(DIR);
+  await host.fs.write(BRIEF, "The brief.");
   const dir = await createFilm(host, "S:\\Youtube video ideas", { folder: DIR, brief: BRIEF, topic: "T", prefix: "t", episode: "1", runtime: "5:00" }, { taken: [] });
   assert.equal(dir, DIR);
   assert.equal(JSON.parse(await host.fs.read(`${DIR}\\studio\\state.json`, "utf8")).part1.setup.runtime, "5:00");
@@ -216,6 +217,55 @@ test("createFilm: refuses a missing folder and one with a script already started
   const st = JSON.parse(await host.fs.read(`${DIR}\\studio\\state.json`, "utf8"));
   assert.deepEqual(st.part1.drafts, [{ n: 1 }]);
   assert.equal(st.part1.approvedAt, "x");
+});
+
+test("createFilm: refuses a brief that isn't there, unless it is about to be copied in", async () => {
+  const host = new FakeHost();
+  const root = "S:\\Youtube video ideas";
+  await host.fs.mkdir(root);
+  await host.fs.mkdir(DIR);
+  const base = { brief: BRIEF, topic: "T", prefix: "t", episode: "1" };
+  await assert.rejects(createFilm(host, root, { ...base, folder: DIR }, { taken: [] }), { message: `The brief isn't there: ${BRIEF}` });
+  assert.equal(await host.fs.exists(`${DIR}\\studio`), false);
+  const pending = `${root}\\New\\brief.md`;
+  await assert.rejects(createFilm(host, root, { ...base, newFolder: "New", brief: pending }, { taken: [] }), { message: `The brief isn't there: ${pending}` });
+  assert.equal(await host.fs.exists(`${root}\\New`), false);
+  assert.equal(await createFilm(host, root, { ...base, newFolder: "New", brief: pending }, { taken: [], briefPending: true }), `${root}\\New`);
+});
+
+test("revise keeps pronunciations Jon added by hand, with Claude's added after", async () => {
+  const { ctx, store } = await setup();
+  await writeScript(ctx);
+  await editLists(ctx, { pronunciations: [{ name: "Scapa", say: "SKAP-uh" }] });
+  const d = await writeScript(ctx, { note: "Make it punchier" });
+  assert.deepEqual(d.script.pronunciations, [{ name: "Scapa", say: "SKAP-uh" }, { name: "FitzRoy", say: "Fits-roy" }]);
+  // Jon's say for a name wins over Claude's (first wins).
+  await editLists(ctx, { pronunciations: [{ name: "FitzRoy", say: "Jon's way" }] });
+  const d2 = await writeScript(ctx, { note: "Again" });
+  assert.deepEqual(d2.script.pronunciations, [{ name: "FitzRoy", say: "Jon's way" }]);
+  assert.equal(store.state.part1.drafts.length, 5);
+});
+
+test("redoOne sends the pronunciations file text to Claude", async () => {
+  const { ctx, host } = await setup();
+  await host.fs.write("S:\\p.md", 'Scapa = "SKAP-uh"');
+  await writeScript(ctx);
+  host.seen = [];
+  await redoOne(ctx, 2, "shorter");
+  const call = host.seen.find((i) => i.startsWith(CLIP_INSTRUCTIONS));
+  assert.match(call, /SKAP-uh/);
+});
+
+test("setPicks clears the pick-again notes, and the handover no longer lists them", async () => {
+  const { ctx, store, host } = await setup();
+  await writeScript(ctx);
+  await editClip(ctx, 1, { narration: "Storm changed A. It sank the ship.", spoken: "Storm changed A. It sank the ship." });
+  assert.deepEqual(store.state.part1.pickNotes, ["To-camera line 01.1 changed: pick again"]);
+  await setPicks(ctx, ["01.1", "02.1"]);
+  assert.deepEqual(store.state.part1.pickNotes, []);
+  const r = await approvePart1(ctx);
+  assert.ok(!r.openItems.some((x) => /pick again/.test(x)));
+  assert.doesNotMatch(await host.fs.read(r.handover, "utf8"), /pick again/);
 });
 
 test("approve is refused while another Part 1 run is going", async () => {

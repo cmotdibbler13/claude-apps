@@ -180,6 +180,21 @@ test("redoClip sends the note, the clip number and the other clips, not the refe
   assert.equal(d.brief, input.brief);
 });
 
+test("redoClip carries the pronunciations file text and the script's list; later entries win", async () => {
+  const h = host(clip("It all began with a shipwreck."));
+  const script = { ...goodClips(), pronunciations: [{ name: "FitzRoy", say: "Fits-roy" }] };
+  await redoClip(h, { brief: "b", setup: input.setup, script, n: 2, note: "x", approvedPronunciations: 'Scapa = "SKAP-uh"' });
+  const d = dataOf(h.seen[0]);
+  assert.equal(d.approvedPronunciations, 'Scapa = "SKAP-uh"');
+  assert.deepEqual(d.pronunciations, [{ name: "FitzRoy", say: "Fits-roy" }]);
+  assert.match(CLIP_INSTRUCTIONS, /pronunciations: the pronunciations already in the script/);
+  assert.doesNotMatch(CLIP_INSTRUCTIONS, /approved pronunciations already in the script/);
+  for (const t of [CLIPS_INSTRUCTIONS, CLIP_INSTRUCTIONS]) assert.match(t, /When a name appears more than once, the later entry wins\./);
+  const none = host(clip("It all began with a shipwreck."));
+  await redoClip(none, { brief: "b", setup: input.setup, script: goodClips(), n: 2, note: "x" });
+  assert.equal(dataOf(none.seen[0]).approvedPronunciations, null);
+});
+
 test("redoClip validates the clip like any clip and retries once", async () => {
   const h = host(clip("Robert FitzRoy drew it.", "Robert drew it."), clip("Robert FitzRoy drew it."));
   const r = await redoClip(h, { brief: "b", setup: input.setup, script: goodClips(), n: 3, note: "Shorter." });

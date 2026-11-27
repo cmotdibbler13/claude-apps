@@ -957,9 +957,13 @@ async function openNewFilm() {
   render();
 }
 
+// Drops the result if the form closed or the folder changed while the briefs were read.
 async function loadBriefs(nf) {
   const m = newFilmModelNow();
-  nf.briefs = m.isNew ? [] : await briefsIn(app.host, m.folder);
+  const folder = nf.form.folder;
+  const briefs = m.isNew ? [] : await briefsIn(app.host, m.folder);
+  if (app.nf !== nf || nf.form.folder !== folder) return;
+  nf.briefs = briefs;
   render();
 }
 
@@ -994,14 +998,22 @@ const newFilmActions = {
     if (pending) input.brief = join(app.root, input.newFolder, pending.name);
     nf.busy = true; nf.error = null; render();
     let dir;
-    try { dir = await createFilm(app.host, app.root, input, { taken: nf.taken }); }
+    try { dir = await createFilm(app.host, app.root, input, { taken: nf.taken, briefPending: !!pending }); }
     catch (e) { nf.busy = false; nf.error = msg(e); render(); return; }
     let briefError = null;
     if (pending) { try { await addBrief(app.host, dir, pending); } catch (e) { briefError = `Couldn't copy the brief into the folder: ${msg(e)}`; } }
-    app.films = await scanFilms(app.host, app.root);
-    app.nf = null;
-    await openReview(dir);
-    if (briefError && app.film?.dir === dir) { p1ui().error = briefError; render(); }
+    try {
+      app.films = await scanFilms(app.host, app.root);
+      app.nf = null;
+      await openReview(dir);
+      if (briefError && app.film?.dir === dir) { p1ui().error = briefError; render(); }
+    } catch (e) {
+      // The film is made; show what went wrong in the form if it is still open.
+      if (app.nf === nf) nf.error = msg(e);
+    } finally {
+      nf.busy = false;
+      render();
+    }
   },
 };
 
@@ -1296,7 +1308,8 @@ const reviewActions = {
 
 // ---- boot ----
 async function boot() {
-  $("nav").onclick = (e) => { const v = e.target.closest("button")?.dataset.view; if (v) showView(v); };
+  // Choosing Films from the nav closes the New film form.
+  $("nav").onclick = (e) => { const v = e.target.closest("button")?.dataset.view; if (!v) return; if (v === "films") app.nf = null; showView(v); };
   const host = await makeHost().catch(() => null);
   if (!host) {
     for (const s of document.querySelectorAll("main > section[data-view]")) s.hidden = true;

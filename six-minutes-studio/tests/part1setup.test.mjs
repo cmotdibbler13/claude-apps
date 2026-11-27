@@ -39,6 +39,17 @@ test("briefsIn orders newest first and skips scripts", async () => {
   const got = await briefsIn(h, d);
   assert.deepEqual(got.map((b) => b.name).sort(), ["new.TXT", "old.md"]);
 });
+test("briefsIn skips moved-aside scripts and Part 1 handover copies", async () => {
+  const h = new FakeHost();
+  const d = `${ROOT}\\Film`;
+  await h.fs.mkdir(d);
+  for (const n of ["brief.md", "x_script_2026-11-27-1405.md", "x_script_2026-11-27-1405_2.md", "x_line_script_2026-11-27-1405.txt",
+    "x_line_script_2026-11-27-1405_3.txt", "part1_handover.md", "part1_handover_2026-11-27-1405.md", "x_script_notes.md"]) {
+    await h.fs.write(`${d}\\${n}`, "a");
+  }
+  const got = await briefsIn(h, d);
+  assert.deepEqual(got.map((b) => b.name).sort(), ["brief.md", "x_script_notes.md"]);
+});
 test("briefsIn sorts by mtime", async () => {
   const h = new FakeHost();
   const d = `${ROOT}\\Film`;

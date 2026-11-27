@@ -52,10 +52,11 @@ export function renderPart1Handover(f) {
   } else out.push("- None.");
   out.push("");
   out.push("## File index", "");
+  // Line scripts before the brief: Part 2 takes the first .txt path containing "line".
   out.push(`- Reading script: \`${f.files.script}\``);
-  out.push(`- Brief: \`${f.brief}\``);
   out.push(`- Line script (film folder): \`${f.files.lineScript}\``);
   if (f.files.autocueCopy) out.push(`- Line script (Autocue Studio folder): \`${f.files.autocueCopy}\``);
+  out.push(`- Brief: \`${f.brief}\``);
   out.push("");
   out.push("## Open items", "", ...bullets(f.openItems, "None."), "");
   out.push("## Next step", "", NEXT_STEP(f.prefix), "");

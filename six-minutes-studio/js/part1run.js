@@ -134,7 +134,7 @@ export function writeScript(ctx, { note } = {}) {
     if (note) Object.assign(args, { note, current: prev });
     const clips = await writeClips(host, args);
     const lists = await writeLists(host, { brief, setup: claudeSetup(setup), sections: clips.sections });
-    const script = { ...clips, ...lists, pronunciations: mergePronunciations([], clipPronunciations(clips)) };
+    const script = { ...clips, ...lists, pronunciations: mergePronunciations(prev?.pronunciations, clipPronunciations(clips)) };
     const s = await suggest(host, script);
     return saveDraft(ctx, { why: note ? "Revised from your note" : "Written", note: note || null, script, ...s });
   }));
@@ -147,7 +147,8 @@ export function redoOne(ctx, n, note) {
     const p = part1Of(ctx.store);
     const cur = needDraft(p);
     const brief = await readBrief(ctx, p.setup);
-    const clip = await redoClip(ctx.host, { brief, setup: claudeSetup(p.setup), script: cur.script, n, note });
+    const approvedPronunciations = await readOptional(ctx.host, ctx.settings?.pronunciationsFile);
+    const clip = await redoClip(ctx.host, { brief, setup: claudeSetup(p.setup), script: cur.script, n, note, approvedPronunciations });
     const script = structuredClone(cur.script);
     const target = clipList(script).find((c) => c.n === n);
     if (!target) throw new Error(`Clip ${two(n)} is not in the script.`);
@@ -216,13 +217,15 @@ export function setPicks(ctx, ids) {
       if (!byId.has(id)) throw new Error(`There is no line ${id}.`);
       picks.push(old.get(id) ?? { id, text: byId.get(id), from: "jon", why: "" });
     }
-    await ctx.store.update((s) => { s.part1.picks = picks; });
+    // Jon has now chosen: earlier "pick again" notes no longer apply.
+    await ctx.store.update((s) => { s.part1.picks = picks; s.part1.pickNotes = []; });
     return picks;
   });
 }
 
 // Starts a film: checks first (nothing is created on a failure), then makes the folder and the studio state.
-export async function createFilm(host, root, input, { taken = [] } = {}) {
+// briefPending: the brief is copied into the new folder right after (so it isn't there yet).
+export async function createFilm(host, root, input, { taken = [], briefPending = false } = {}) {
   const { folder, newFolder, brief, topic, prefix, runtime, episode } = input ?? {};
   const name = typeof newFolder === "string" ? newFolder.trim() : "";
   if (!!folder === !!name) throw new Error("Choose a folder.");
@@ -243,6 +246,7 @@ export async function createFilm(host, root, input, { taken = [] } = {}) {
     try { existing = JSON.parse(await host.fs.read(join(folder, "studio", "state.json"), "utf8")); } catch { /* none or unreadable: no Part 1 to protect */ }
     if (existing?.part1) throw new Error("This film already has a script started. Open it from Films.");
   }
+  if (!briefPending && !(await host.fs.exists(brief))) throw new Error(`The brief isn't there: ${brief}`);
   const dir = name ? join(root, name) : folder;
   if (name) await host.fs.mkdir(dir);
   const store = await openFilm(host, dir);

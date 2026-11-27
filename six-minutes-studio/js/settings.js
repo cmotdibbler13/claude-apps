@@ -51,7 +51,10 @@ function withDefaults(root, v = {}) {
   // "autostart": false (or true) switches both; an object sets each.
   const autostart = typeof v.autostart === "boolean" ? { comfy: v.autostart, stableAudio: v.autostart }
     : { ...d.autostart, ...(isObj(v.autostart) ? v.autostart : {}) };
-  const out = { ...d, ...v, comfy, stableAudio, presenter, autostart };
+  // referenceScripts: a single path becomes a list; anything else that isn't a list falls back to the default.
+  const referenceScripts = Array.isArray(v.referenceScripts) ? v.referenceScripts
+    : typeof v.referenceScripts === "string" ? [v.referenceScripts] : d.referenceScripts;
+  const out = { ...d, ...v, comfy, stableAudio, presenter, autostart, referenceScripts };
   if (!out.pronunciationsFile) out.pronunciationsFile = join(root, "pronunciations.md");
   return out;
 }

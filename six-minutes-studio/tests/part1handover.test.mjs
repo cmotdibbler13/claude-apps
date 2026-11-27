@@ -65,6 +65,9 @@ test("handover: Episode line, scanFilms, takenPrefixes, findLineScript, scriptCa
   assert.equal(film.parts[2], "now");
   assert.ok((await takenPrefixes(host, ROOT, ctx.settings)).includes("china_clay"));
   assert.equal(await findLineScript(host, DIR, text, ctx.settings), `${DIR}\\narration\\china_clay_line_script.txt`);
+  // File index: reading script, then the line scripts, then the brief (a brief named "…line….txt" can't be taken for the line script).
+  const index = text.split("## File index")[1].split("##")[0].trim().split("\n").map((l) => l.replace(/:.*/, ""));
+  assert.deepEqual(index, ["- Reading script", "- Line script (film folder)", "- Line script (Autocue Studio folder)", "- Brief"]);
   assert.equal(scriptCandidates(text, DIR)[0], `${DIR}\\china_clay_script.md`);
   assert.equal(store.state.part1.approvedAt, host.now());
   assert.ok((await store.readLog()).some((l) => l.text === "Part 1 approved (draft 3)"));

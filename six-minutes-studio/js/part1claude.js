@@ -16,7 +16,7 @@ Studio numbers the sections and clips, works out the timings and word counts, bu
 const INPUTS = `DATA gives you:
 - brief: the research brief, the only source of facts. Read all of it, including the caveats, the myths section and the source list; the caveats decide what the narration may state as fact.
 - reference: one of Jon's finished reading scripts. Use it for format and tone only: how clips, cues, readouts and delivery notes look and how the narration sounds. Never take its facts, wording, sections, graphics or shots into this film.
-- pronunciations: Jon's approved pronunciations (free text, usually one Name = "say" per line), or null.
+- pronunciations: Jon's approved pronunciations (free text, usually one Name = "say" per line), or null. When a name appears more than once, the later entry wins.
 - setup: topic, prefix, episode, runtimeTarget and voice.
 - previousError (only on a second try): why your last answer was refused. Fix exactly that and keep the rest.`;
 
@@ -128,7 +128,8 @@ DATA gives you:
 - setup: topic, prefix, episode, runtimeTarget and voice.
 - clips: the whole current script as context, every clip with its number n and section name. Do not repeat what the other clips say; keep the joins with the clips before and after smooth.
 - n: the number of the clip to rewrite. note: Jon's note for it. Follow the note; keep the clip's length near its current length unless the note says otherwise, and keep any HF-nn shots, title card or end card its cue carries unless the note asks to change them.
-- pronunciations: the approved pronunciations already in the script, [{name, say}].
+- approvedPronunciations: Jon's approved pronunciations (free text, usually one Name = "say" per line), or null. When a name appears more than once, the later entry wins.
+- pronunciations: the pronunciations already in the script, [{name, say}].
 - previousError (only on a second try): why your last answer was refused. Fix exactly that and keep the rest.
 
 ${NARRATION}
@@ -251,11 +252,11 @@ export async function writeLists(host, { brief, setup, sections }) {
   return { shots: r.shots, sfx: r.sfx, music: r.music, archive: r.archive, notes: r.notes };
 }
 
-export async function redoClip(host, { brief, setup, script, n, note }) {
+export async function redoClip(host, { brief, setup, script, n, note, approvedPronunciations }) {
   await checkSize(host, brief);
   const clips = numbered(script);
   if (!clips.some((c) => c.n === n)) throw new ClaudeError("invalid", `Clip ${two(n)} is not in the script.`);
-  const data = { brief, setup, clips, n, note, pronunciations: script?.pronunciations ?? [] };
+  const data = { brief, setup, clips, n, note, approvedPronunciations: approvedPronunciations ?? null, pronunciations: script?.pronunciations ?? [] };
   const r = await ask(host, CLIP_INSTRUCTIONS, data, (v) => checkClip(v, n));
   return { narration: r.narration, spoken: r.spoken, cue: r.cue, delivery: r.delivery, pronunciations: r.pronunciations };
 }
