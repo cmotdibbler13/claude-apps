@@ -214,3 +214,66 @@ export function lineScriptText(script, { prefix, picks = [] } = {}) {
   }
   return out.join("\n");
 }
+
+// ---------- reading script ----------
+
+const cell = (v) => String(v ?? "").replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+const table = (head, rows) => [`| ${head.join(" | ")} |`, `|${head.map(() => "---").join("|")}|`, ...rows.map((r) => `| ${r.map(cell).join(" | ")} |`)];
+
+const NOTE_HEADINGS = [
+  ["corrections", "Corrections to the brief"],
+  ["myths", "Myths kept out or hedged"],
+  ["softer", "Softer-sourced lines"],
+  ["conflicts", "Conflicting figures"],
+  ["timeSensitive", "Re-check before publishing"],
+  ["leftOut", "Left out on purpose"],
+  ["filmYourself", "Film it yourself"],
+  ["pronunciationTests", "Pronunciation test list"],
+  ["cutOrder", "Cut order"],
+];
+
+export function readingScriptText(script, { prefix, runtimeTarget, stats } = {}) {
+  const out = [];
+  out.push(`# ${script?.title ?? ""} — Reading Script`, "");
+  out.push(`Runtime target ${runtimeTarget} · ${stats.words} words in ${stats.clips} clips · Voice: Jon, own voice (Autocue Studio → Recordings\\${prefix}\\)`, "");
+  out.push(`Build: ${script?.buildLine ?? ""}`, "");
+
+  const graphics = (script?.key?.graphics ?? []).map((g) => `${g.name} (${g.what})`).join(", ");
+  let key = `**Key:** visual cues in [brackets]; HF-nn is a Higgsfield shot;`;
+  if (graphics) key += ` reusable graphics: ${graphics};`;
+  key += ` each numbered paragraph is one clip, ${prefix}_NN.wav.`;
+  if (script?.key?.extra) key += ` ${script.key.extra}`;
+  out.push(key, "");
+
+  let n = 0;
+  (script?.sections ?? []).forEach((section, si) => {
+    const t = stats.sectionTimes?.[si] ?? { startS: 0, endS: 0 };
+    out.push("---", "", `## SECTION ${si + 1} — ${String(section?.name ?? "").toUpperCase()} *(about ${mmss(t.startS)}–${mmss(t.endS)})*`, "");
+    for (const c of section?.clips ?? []) {
+      n++;
+      out.push(`**${two(n)}**${c?.delivery ? ` *${c.delivery}*` : ""}`, c?.narration ?? "", `[${c?.cue ?? ""}]`, "");
+    }
+  });
+
+  out.push("---", "");
+  out.push("## Higgsfield shot list", "", ...table(["Shot", "Used in", "Prompt"],
+    (script?.shots ?? []).map((s) => [s.id, (s.usedIn ?? []).map(two).join(", "), s.prompt])), "");
+  out.push("## Sound effects", "", ...table(["Cue", "Clip", "Prompt idea"],
+    (script?.sfx ?? []).map((s) => [s.cue, two(s.clip), s.idea])), "");
+  if (script?.music) out.push("## Music", "", script.music, "");
+  if ((script?.archive ?? []).length) {
+    out.push("## Archive and rights", "", ...table(["Item", "Licence", "Credit"], script.archive.map((a) => [a.item, a.licence, a.credit])), "");
+  }
+
+  out.push("## Notes for the build", "");
+  for (const [k, heading] of NOTE_HEADINGS) {
+    const items = script?.notes?.[k] ?? [];
+    if (!items.length) continue;
+    out.push(`### ${heading}`, "", ...items.map((i) => `- ${i}`), "");
+  }
+  out.push("### Timing", "",
+    `- Raw estimate: ${mmss(stats.rawS)}.`,
+    `- Expected finished length: ${mmss(stats.expectedS)} (raw × ${FINISH_FACTOR}).`,
+    `- Rule: ${SPEECH_S_PER_WORD.toFixed(2)} s per spoken word, ${CLIP_GAP_S} s between clips, ${SECTION_GAP_S} s between sections, plus the title hold after section 1 and the end card.`, "");
+  return out.join("\n");
+}

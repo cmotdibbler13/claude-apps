@@ -131,3 +131,46 @@ test("lineScriptText emits one note per name per line", () => {
   assert.equal(text.split('> Kenwyn = "KEN-win"').length - 1, 1);
   assert.ok(!text.includes('"other"'));
 });
+
+// ---------- reading script ----------
+
+import { readingScriptText } from "../js/part1script.js";
+
+const RS = {
+  title: "The Tunnel", buildLine: "Remotion, Higgsfield b-roll",
+  key: { graphics: [{ name: "MAP", what: "the coast" }, { name: "EGG", what: "cross-section" }], extra: "" },
+  sections: [
+    { name: "Cold open", clips: [clip(10), { ...clip(20), delivery: "slower", cue: "MAP moves" }] },
+    { name: "The tunnel", clips: [clip(30)] },
+  ],
+  pronunciations: [], shots: [{ id: "HF-01", usedIn: [1, 2], prompt: "dark | low-key tunnel" }],
+  sfx: [{ cue: "drip", clip: 3, idea: "slow drip" }], music: null, archive: [],
+  notes: { corrections: [], myths: [], softer: [], conflicts: [], timeSensitive: [], leftOut: [], filmYourself: [], pronunciationTests: [], cutOrder: [] },
+};
+const rsText = (s = RS) => readingScriptText(s, { prefix: "tunnel", runtimeTarget: "6:00–6:30", stats: scriptStats(s, SETTINGS) });
+
+test("reading script header lines", () => {
+  const l = rsText().split("\n");
+  assert.equal(l[0], "# The Tunnel — Reading Script");
+  assert.equal(l[2], "Runtime target 6:00–6:30 · 60 words in 3 clips · Voice: Jon, own voice (Autocue Studio → Recordings\\tunnel\\)");
+  assert.equal(l[4], "Build: Remotion, Higgsfield b-roll");
+  assert.match(l[6], /^\*\*Key:\*\* visual cues in \[brackets\]; HF-nn is a Higgsfield shot; reusable graphics: MAP \(the coast\), EGG \(cross-section\); each numbered paragraph is one clip, tunnel_NN.wav\.$/);
+});
+
+test("reading script section heading, delivery and tables", () => {
+  const t = rsText();
+  assert.match(t, /^## SECTION 2 — THE TUNNEL \*\(about 0:20–0:32\)\*$/m);
+  assert.match(t, /^\*\*02\*\* \*slower\*$/m);
+  assert.match(t, /^\*\*01\*\*$/m);
+  assert.match(t, /^\| HF-01 \| 01, 02 \| dark \\\| low-key tunnel \|$/m);
+  assert.match(t, /^\| drip \| 03 \| slow drip \|$/m);
+  assert.match(t, /^\[MAP moves\]$/m);
+  assert.match(t, /### Timing/);
+  assert.doesNotMatch(t, /## Music|## Archive/);
+});
+
+test("reading script omits headings for empty notes", () => {
+  assert.doesNotMatch(rsText(), /### (Corrections|Myths|Cut order)/);
+  const t = rsText({ ...RS, notes: { ...RS.notes, cutOrder: ["drop clip 5"] } });
+  assert.match(t, /### Cut order\n\n- drop clip 5/);
+});
