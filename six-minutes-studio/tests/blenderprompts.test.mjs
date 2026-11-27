@@ -14,6 +14,14 @@ test("script instructions carry the contract", () => {
   assert.match(s, /MUST NOT use the network/);
   assert.match(s, /MUST NOT read any file other than the source image/);
   assert.match(s, /"frames"/);
+  assert.match(s, /Do not bevel/);
+  assert.match(s, /view_layer\.update\(\)/);
+  assert.match(s, /Specular IOR Level/);
+  assert.match(s, /value_min/);
+  assert.match(s, /BOTH modes set scene\.render\.resolution_x = 1920, resolution_y = 1080 and resolution_percentage = 100/);
+  assert.match(s, /scene\.world is None/);
+  assert.match(s, /swings toward the camera/);
+  assert.ok(!s.includes("keyframe_new_interpolation_type"));
 });
 
 test("check instructions name the two images and the answer shape", () => {
@@ -45,6 +53,7 @@ test("validateCheck accepts good answers", () => {
   validateCheck({ verdict: "fix", note: "made the top slab thicker; moved the shelves up", script: "import bpy", frames: 216 });
   validateCheck({ verdict: "fix", note: "thicker lines", script: "import bpy" });
   validateCheck({ verdict: "blank", note: "camera was inside the slab", script: "import bpy" });
+  validateCheck({ verdict: "fix", note: "thicker lines", script: "import bpy", frames: null });
 });
 
 test("validateCheck rejects each bad shape", () => {
