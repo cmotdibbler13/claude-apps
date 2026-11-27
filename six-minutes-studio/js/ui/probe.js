@@ -5,6 +5,7 @@ import { autocueJoinState, installAutocueJoin } from "../autocueinstall.js";
 import { i2vReady } from "../tools/comfyui.js";
 import { stableAudioState, MSG_MUSIC } from "../tools/stableaudio.js";
 import { join } from "../paths.js";
+import { photoPicker } from "./photopick.js";
 import { MSG_SET_STEM_REMIXER, stemPython } from "../tools/stemfit.js";
 
 const ROOT = "S:\\Youtube video ideas\\";
@@ -87,6 +88,14 @@ const autocueJoinCheck = (dir) => async (host) => {
   return "Join script up to date";
 };
 
+// Presenter photos: one or two pictures of Jon, listed in presenter.photos.
+const presenterPhotosCheck = (presenter) => async (host) => {
+  const photos = Array.isArray(presenter?.photos) ? presenter.photos : [];
+  if (photos.length < 1 || photos.length > 2) throw new Error("Add presenter.photos in .studio-settings.json");
+  for (const p of photos) if (!(await host.fs.exists(p))) throw new Error(`Not found: ${p}`);
+  return `${photos.length} photos`;
+};
+
 const toolsCheck = (server, want) => async (host) => {
   if (!host.mcp) throw new Error("connector access is not available");
   const tools = await host.mcp.listTools(server);
@@ -111,12 +120,13 @@ export const makeChecks = (settings = DEFAULT_SETTINGS) => [
     async run(host) {
       if (!host.mcp) throw new Error("connector access is not available");
       const tools = await host.mcp.listTools("Higgsfield");
-      const want = ["generate_video", "generate_image", "jobs_wait", "models_explore"];
+      const want = ["generate_video", "generate_image", "jobs_wait", "models_explore", "media_upload", "media_confirm", "estimate_image_cost", "estimate_video_cost"];
       const missing = want.filter((t) => !tools.includes(t));
       if (missing.length) throw new Error(`missing: ${missing.join(", ")}`);
       return `${tools.length} tools`;
     },
   },
+  { name: "Presenter photos", run: presenterPhotosCheck(settings.presenter) },
   { name: "ElevenLabs tools", run: toolsCheck("ElevenLabs", ["creative_create_flow", "creative_add_flow_node", "creative_run_flow_nodes", "creative_get_flow_run_status"]) },
   {
     name: "Claude answers JSON",
@@ -157,7 +167,8 @@ export function probeRow(r) {
 // given, re-reads the file first, so a setting changed while the app is open counts straight away.
 // getStarters(): { comfy, stableAudio } — a check that finds the tool not running gets a Start now row.
 // onDone(results), when given, runs after each Probe (the app re-checks what depends on the settings).
-export function mountProbe(host, button, list, getSettings = () => DEFAULT_SETTINGS, reload = null, getStarters = () => ({}), onDone = null) {
+// choosePhotos(files), when given, adds a "Choose presenter photos…" row (saves them, then Probe runs again).
+export function mountProbe(host, button, list, getSettings = () => DEFAULT_SETTINGS, reload = null, getStarters = () => ({}), onDone = null, choosePhotos = null) {
   const run = async () => {
     button.disabled = true;
     list.replaceChildren();
@@ -168,10 +179,24 @@ export function mountProbe(host, button, list, getSettings = () => DEFAULT_SETTI
     if (results.some((r) => r.install)) list.append(installRow(host, settings.autocueDir ?? DEFAULT_SETTINGS.autocueDir, run));
     const starters = getStarters?.() ?? {};
     for (const r of results) if (r.start && starters[r.start]) list.append(startRow(host, r.name, starters[r.start], run));
+    if (choosePhotos) list.append(photosRow(choosePhotos, run));
     button.disabled = false;
     if (onDone) { try { await onDone(results); } catch { /* the app's follow-up never breaks Probe */ } }
   };
   button.onclick = run;
+}
+
+function photosRow(choosePhotos, rerun) {
+  const li = document.createElement("li");
+  li.className = "install";
+  const d = document.createElement("span"); d.className = "detail";
+  d.textContent = "Pick one or two pictures of you. Studio copies them into the Presenter photos folder and saves them in .studio-settings.json.";
+  li.append(photoPicker("Choose presenter photos…", async (files) => {
+    d.textContent = "Saving…";
+    try { const paths = await choosePhotos(files); d.textContent = `Saved ${paths.length} photo${paths.length === 1 ? "" : "s"}. Checking again…`; await rerun(); }
+    catch (e) { d.textContent = `Couldn't save: ${e?.message ?? e}`; }
+  }, { ghost: false }), d);
+  return li;
 }
 
 function startRow(host, name, starter, rerun) {

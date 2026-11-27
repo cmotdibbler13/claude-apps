@@ -25,6 +25,8 @@ export const DEFAULT_SETTINGS = {
     // Pinokio itself: opened first when it isn't running (Stable Audio starts through it).
     pinokioExe: "C:\\Users\\Jon\\AppData\\Local\\Programs\\Pinokio\\Pinokio.exe", pinokioUrl: "http://127.0.0.1:42000",
   },
+  // Photos of Jon (paths) used to make the presenter portrait.
+  presenter: { photos: [] },
 };
 
 const isObj = (v) => v && typeof v === "object" && !Array.isArray(v);
@@ -38,10 +40,12 @@ function withDefaults(root, v = {}) {
   comfy.i2v = { ...d.comfy.i2v, ...ci, nodes: { ...d.comfy.i2v.nodes, ...(isObj(ci.nodes) ? ci.nodes : {}) } };
   if (!comfy.i2v.workflow) comfy.i2v.workflow = join(root, "ComfyUI workflows", "animate_i2v.json");
   const stableAudio = { ...d.stableAudio, ...(isObj(v.stableAudio) ? v.stableAudio : {}) };
+  const presenter = { ...d.presenter, ...(isObj(v.presenter) ? v.presenter : {}) };
+  if (!Array.isArray(presenter.photos)) presenter.photos = [];
   // "autostart": false (or true) switches both; an object sets each.
   const autostart = typeof v.autostart === "boolean" ? { comfy: v.autostart, stableAudio: v.autostart }
     : { ...d.autostart, ...(isObj(v.autostart) ? v.autostart : {}) };
-  return { ...d, ...v, comfy, stableAudio, autostart };
+  return { ...d, ...v, comfy, stableAudio, presenter, autostart };
 }
 
 export async function loadSettings(host, root) {

@@ -96,3 +96,13 @@ test("comfy.i2v defaults its workflow and merges user nodes", async () => {
   assert.equal(s.comfy.i2v.seconds, 3);
   assert.equal(s.comfy.i2v.workflow, ROOT + "\\ComfyUI workflows\\animate_i2v.json");
 });
+
+test("presenter.photos defaults to [] and merges; non-array becomes []", async () => {
+  assert.deepEqual((await loadSettings(new FakeHost(), ROOT)).presenter, { photos: [] });
+  const host = new FakeHost();
+  await host.fs.mkdir(ROOT);
+  await host.fs.write(ROOT + "\\.studio-settings.json", JSON.stringify({ presenter: { photos: ["C:\\a.jpg"] } }));
+  assert.deepEqual((await loadSettings(host, ROOT)).presenter.photos, ["C:\\a.jpg"]);
+  await host.fs.write(ROOT + "\\.studio-settings.json", JSON.stringify({ presenter: { photos: "x" } }));
+  assert.deepEqual((await loadSettings(host, ROOT)).presenter.photos, []);
+});

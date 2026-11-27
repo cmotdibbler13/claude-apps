@@ -2,6 +2,11 @@
 // A generation costs credits, so generate is called at most once per start() and never retried.
 import { DEFAULT_SETTINGS } from "../settings.js";
 import { runProcess } from "../proc.js";
+import { uploadMedia } from "./hfmedia.js";
+import { clipAudioArgs, audioSigOf } from "./clipaudio.js";
+import { portraitParams, clipParams } from "../presenter.js";
+
+const FFMPEG_MS = 5 * 60 * 1000;
 
 const MIN_POLL_MS = 20_000;
 const CAP_MS = 30 * 60 * 1000;
@@ -36,7 +41,8 @@ function parseJobId(p) {
 
 const VIDEO_EXT = ["mp4", "mov", "webm"];
 const IMAGE_EXT = ["png", "jpg", "jpeg", "webp"];
-const allowedExt = (kind) => (kind === "lineart" ? IMAGE_EXT : VIDEO_EXT);
+const isImage = (kind) => kind === "lineart" || kind === "portrait";
+const allowedExt = (kind) => (isImage(kind) ? IMAGE_EXT : VIDEO_EXT);
 const urlExt = (url) => url.split(/[?#]/)[0].match(/\/[^/]*\.([a-z0-9]{2,5})$/i)?.[1].toLowerCase() ?? null;
 const isUrl = (v) => typeof v === "string" && /^https?:\/\//i.test(v);
 
@@ -62,7 +68,7 @@ const parentOf = (p) => String(p).replace(/[\\/][^\\/]*$/, "");
 
 const extOf = (url, kind) => {
   const ext = urlExt(url);
-  return allowedExt(kind).includes(ext) ? ext : kind === "lineart" ? "png" : "mp4";
+  return allowedExt(kind).includes(ext) ? ext : isImage(kind) ? "png" : "mp4";
 };
 
 export function makeHiggsfieldRunner({ settings = DEFAULT_SETTINGS, sleep = realSleep } = {}) {
@@ -107,16 +113,56 @@ export function makeHiggsfieldRunner({ settings = DEFAULT_SETTINGS, sleep = real
       if (BAD.has(status)) throw new Error(`Higgsfield job ${status}${error ? `: ${error}` : ""}`);
       if (OK.has(status) || (!status && anyUrl)) {
         if (!url) {
-          const what = job.input?.kind === "lineart" ? "image" : "video";
+          const what = isImage(job.input?.kind) ? "image" : "video";
           throw new Error(anyUrl ? `Higgsfield finished but returned no ${what} result URL.` : "Higgsfield finished but returned no result URL.");
         }
-        return download(host, url, job.input);
+        const r = await download(host, url, job.input);
+        // A portrait's Higgsfield job id is the media value later used as a clip's start_image.
+        if (job.input?.kind === "portrait") return { ...r, meta: { hfId: jobId } };
+        if (job.input?.kind === "presenter") {
+          // The cut audio is on disk beside the take, so a resumed job gets its signature too.
+          const { start, end, out } = job.input;
+          let audioSig;
+          try { audioSig = await audioSigOf(host, `${out}_audio.wav`, end - start); } catch { audioSig = undefined; }
+          return { ...r, meta: { hfId: jobId, ...(audioSig ? { audioSig } : {}) } };
+        }
+        return r;
       }
       // Every job has ended but none succeeded: say so now instead of polling to the 30 min cap.
       if (p?.all_terminal === true) throw new Error(`Higgsfield job ${status || "ended"} without a result${error ? `: ${error}` : ""}`);
       const after = Number(p?.poll_after_seconds ?? p?.jobs?.[0]?.poll_after_seconds);
       pollMs = Number.isFinite(after) ? after * 1000 : MIN_POLL_MS;
     }
+  }
+
+  async function generate(job, ctx, tool, params) {
+    const { host } = ctx;
+    const payload = await call(host, tool, { params }).catch((e) => {
+      const code = typeof e?.code === "string" ? e.code : null;
+      throw code && !DEFINITE.has(code) ? ambiguous(msg(e)) : new Error(msg(e));
+    });
+    if (payload && typeof payload === "object" && "unlim_choice" in payload) {
+      throw new Error("Higgsfield is asking which balance to use; open Higgsfield and choose, then Run again.");
+    }
+    const jobId = parseJobId(payload);
+    if (!jobId) throw new Error(`Higgsfield did not return a job id (not generating again). Response: ${excerpt(payload)}`);
+    ctx.setRef(jobId);
+    return waitAndDownload(job, ctx, jobId, { tolerateErrors: true });
+  }
+
+  // Cut the line's audio, upload it, then generate. Everything free happens first, so a failure
+  // in any of it spends no credits; generate_video is called once and never retried.
+  async function startPresenter(job, ctx) {
+    const { host } = ctx;
+    const { voiceover, start, end, seconds, hfId, prompt, out } = job.input;
+    const r = await runProcess(host, "ffmpeg", clipAudioArgs({ wav: voiceover, start, end, seconds, out }), { timeout: FFMPEG_MS });
+    const audio = `${out}_audio.wav`;
+    if (r.code !== 0 || !(await host.fs.exists(audio))) {
+      throw new Error(`ffmpeg couldn't cut this line's audio (code ${r.code}): ${String(r.stderr ?? "").trim().split(/\r?\n/).slice(-3).join(" ")}; not generating.`);
+    }
+    const audioId = await uploadMedia(host, audio, "audio");
+    const params = { ...clipParams({ seconds, prompt }), medias: [{ value: hfId, role: "start_image" }, { value: audioId, role: "audio_references" }] };
+    return generate(job, ctx, "generate_video", params);
   }
 
   return {
@@ -128,20 +174,17 @@ export function makeHiggsfieldRunner({ settings = DEFAULT_SETTINGS, sleep = real
       // A take folder that can't be made must fail before any credits are spent.
       if (typeof out !== "string" || !out) throw new Error("This job has no output path; not generating.");
       try { await host.fs.mkdir(parentOf(out)); } catch (e) { throw new Error(`Couldn't make the folder for this take (${msg(e)}); not generating.`); }
+      if (kind === "presenter") return startPresenter(job, ctx);
       const video = kind === "broll";
-      const params = { model: video ? settings.videoModel : settings.imageModel, prompt, aspect_ratio: "16:9", count: 1, use_unlim: false };
+      const portrait = kind === "portrait";
+      const params = portrait ? portraitParams(prompt) : { model: video ? settings.videoModel : settings.imageModel, prompt, aspect_ratio: "16:9", count: 1, use_unlim: false };
       if (video) { params.mode = "pro"; params.sound = false; }
-      const payload = await call(host, video ? "generate_video" : "generate_image", { params }).catch((e) => {
-        const code = typeof e?.code === "string" ? e.code : null;
-        throw code && !DEFINITE.has(code) ? ambiguous(msg(e)) : new Error(msg(e));
-      });
-      if (payload && typeof payload === "object" && "unlim_choice" in payload) {
-        throw new Error("Higgsfield is asking which balance to use; open Higgsfield and choose, then Run again.");
+      if (portrait) {
+        // Uploads are free and happen before generate, so a failure here is a plain failure.
+        params.medias = [];
+        for (const photo of job.input.photos ?? []) params.medias.push({ value: await uploadMedia(host, photo, "image"), role: "image_references" });
       }
-      const jobId = parseJobId(payload);
-      if (!jobId) throw new Error(`Higgsfield did not return a job id (not generating again). Response: ${excerpt(payload)}`);
-      ctx.setRef(jobId);
-      return waitAndDownload(job, ctx, jobId, { tolerateErrors: true });
+      return generate(job, ctx, video ? "generate_video" : "generate_image", params);
     },
 
     async resume(job, ctx) {

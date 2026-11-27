@@ -7,6 +7,8 @@ import { join } from "../paths.js";
 import { countsLine, STATUS_LABEL, NO_LINE_SCRIPT } from "../narration.js";
 import { audioModel, audioSections } from "./audio.js";
 import { mixModel, mixSection } from "./mix.js";
+import { onCameraModel, onCameraSection, costLabel, STALE_PORTRAIT, ON_CAMERA } from "./oncamera.js";
+import { clipLock, lineLengthS, clipSeconds, onCameraConflict, VOICEOVER_CHANGED } from "../presenter.js";
 
 const busyTake = (t) => t.status === "queued" || t.status === "running";
 const isBusy = (a) => a.takes.some(busyTake);
@@ -44,10 +46,22 @@ export function summarize(assets = []) {
   return { approved: assets.filter((a) => a.approved).length, total: assets.length, regenerating: assets.filter(isBusy).length };
 }
 
-export function cardModel(asset, assets, { pending = false, error = null, i2v = null, confirmRemove = false } = {}) {
+// A presenter clip's cost for its padded length: estimates.clips[seconds] (undefined while fetched, null when unknown).
+function clipCost(asset, transcript, estimates) {
+  const len = lineLengthS(transcript, asset.lineId);
+  return len == null ? undefined : estimates?.clips?.[clipSeconds(len)];
+}
+
+// state/transcript: the film's state and the last good join's transcript (clip locks, the on-camera conflict).
+// estimates/confirm: clip costs and the card whose unknown-cost press is waiting for a second press.
+export function cardModel(asset, assets, { pending = false, error = null, i2v = null, confirmRemove = false, state = null, transcript = null, transcriptAt, estimates = null, confirm = null } = {}) {
   const chosen = chosenOf(asset);
   const busy = isBusy(asset);
-  const locked = !canStart(asset, assets);
+  const presenter = asset.kind === "presenter";
+  const lock = presenter ? clipLock(asset, state ?? { assets }, transcript, transcriptAt) : null;
+  const locked = presenter ? lock !== null : !canStart(asset, assets);
+  const conflict = !presenter && !!state && onCameraConflict(asset, state);
+  const removable = DERIVED.has(asset.kind) || conflict;
   const running = asset.takes.find(busyTake);
   const runTool = running?.tool ?? asset.tool;
   const tool = toolLabel(running ? runTool : asset.tool);
@@ -72,7 +86,7 @@ export function cardModel(asset, assets, { pending = false, error = null, i2v = 
       disabled: !free,
     } : null,
     locked,
-    lockText: locked ? `Approve ${asset.sourceId} first` : null,
+    lockText: presenter ? lock : locked ? `Approve ${asset.sourceId} first` : null,
     sourceId: asset.sourceId ?? null,
     sourceFile: srcTake?.status === "done" ? srcTake.file ?? null : null,
     file: chosen?.status === "done" ? chosen.file ?? null : null,
@@ -89,11 +103,25 @@ export function cardModel(asset, assets, { pending = false, error = null, i2v = 
     showAnimate: asset.kind === "lineart" && !hasDerived(assets, asset.id, "animated"),
     canAnimate: free && asset.kind === "lineart" && !hasDerived(assets, asset.id, "animated") && !!i2v?.ok,
     animateWhy: i2v?.ok ? null : MSG_I2V_SETUP,
-    removable: DERIVED.has(asset.kind),
-    canRemove: free && DERIVED.has(asset.kind),
-    confirmRemove: confirmRemove && DERIVED.has(asset.kind) ? removeConfirmText(asset.id) : null,
+    removable,
+    removeLabel: conflict ? "Remove" : "Remove this version",
+    canRemove: free && removable,
+    confirmRemove: confirmRemove && removable ? removeConfirmText(asset.id) : null,
+    conflict: conflict ? ON_CAMERA : null,
+    clip: presenter ? clipModel(asset, clipCost(asset, transcript, estimates), confirm === asset.id, free) : null,
     checks: asset.tool === "blender" ? checksOf(asset) : null,
     error,
+  };
+}
+
+function clipModel(asset, est, confirming, free) {
+  return {
+    makeLabel: costLabel("Make clip", est, confirming),
+    redoLabel: costLabel("Redo with note", est, confirming),
+    costReady: est !== undefined,
+    stale: asset.staleReason === "portrait" ? STALE_PORTRAIT : null,
+    voiceover: asset.voiceoverChanged ? VOICEOVER_CHANGED : null,
+    canKeep: free && !!asset.voiceoverChanged,
   };
 }
 
@@ -135,18 +163,29 @@ function narrationSection(n, actions) {
   return foldable(h("section", { class: "narration", "aria-label": "Narration" }, kids), "Narration");
 }
 
-export function reviewModel({ film, state, layout = "script", making = false, listError = null, cardErrors = new Map(), pending = new Set(), noteFor = null, openError = null, prefError = null, i2v = null, removeFor = null, narration = null, playing = null, paused = false, audio, sa = null, audioUi = {}, mixUi = {} }) {
+// lineScript/transcript: the film's parsed line script and last good join's transcript (On camera, clip locks).
+// onCamera: { estimates, photosOk, ui } for the On camera step (oncamera.onCameraModel).
+export function reviewModel({ film, state, layout = "script", making = false, listError = null, cardErrors = new Map(), pending = new Set(), noteFor = null, openError = null, prefError = null, i2v = null, removeFor = null, narration = null, playing = null, paused = false, audio, sa = null, audioUi = {}, mixUi = {}, lineScript = null, transcript = null, transcriptAt, onCamera = {} }) {
   if (openError) return { openFailed: true, dir: openError.dir, title: openError.title, message: `Couldn't open ${openError.title}: ${openError.message}` };
   if (!film) return { noFilm: true };
   const assets = state?.assets ?? [];
   const ordered = orderByScript(assets);
+  const shots = ordered.filter((a) => a.kind !== "presenter");
+  const oc = onCamera ?? {};
+  const cardFor = (a) => cardModel(a, assets, { pending: pending.has(a.id), error: cardErrors.get(a.id) ?? null, i2v, confirmRemove: removeFor === a.id,
+    state, transcript, transcriptAt, estimates: oc.estimates ?? null, confirm: oc.ui?.confirm ?? null });
+  const onCam = lineScript || state?.presenter?.lines?.length ? {
+    ...onCameraModel({ state, lineScript, transcript, estimates: oc.estimates ?? {}, photosOk: !!oc.photosOk, ui: oc.ui ?? {} }),
+    // In line-script order (lineIndex is the line script's), not among the b-roll.
+    clips: ordered.filter((a) => a.kind === "presenter").sort((a, b) => a.lineIndex - b.lineIndex).map(cardFor),
+  } : null;
   return {
     noFilm: false,
     paused: !!playing && !!paused, // a take paused part way: its button shows ▶ to carry on
     title: film.title,
     eyebrow: `${film.title} / Part 2 assets / review`,
     layout: layout === "grid" ? "grid" : "script",
-    needsShotList: assets.length === 0,
+    needsShotList: shots.length === 0,
     preferComfy: !!state?.prefs?.preferComfy,
     preferDisabled: making || pending.size > 0,
     prefError,
@@ -155,9 +194,10 @@ export function reviewModel({ film, state, layout = "script", making = false, li
     narration: narrationModel(narration, playing),
     audio: audioModel(audio === undefined ? state?.audio : audio, { pending, cardErrors, noteFor, playing, sa, ...audioUi }),
     mix: mixModel({ state, narration, pending, cardErrors, noteFor, playing, settings: mixUi.settings ?? {}, jobs: mixUi.jobs ?? [], ui: mixUi.ui ?? {}, pacingUi: mixUi.pacing ?? {} }),
-    summary: summarize(assets),
+    summary: summarize(shots), // b-roll only: clips are counted in On camera
     noteFor,
-    cards: ordered.map((a) => cardModel(a, assets, { pending: pending.has(a.id), error: cardErrors.get(a.id) ?? null, i2v, confirmRemove: removeFor === a.id })),
+    onCamera: onCam,
+    cards: shots.map(cardFor),
   };
 }
 
@@ -207,7 +247,7 @@ function controls(c, model, actions) {
     ta.value = actions.draft();
     ta.addEventListener("input", () => actions.setDraft(ta.value));
     return [ta, h("div", { class: "row" },
-      btn("Redo with note", () => actions.redo(c.id, ta.value), { disabled: !c.canRedo }),
+      btn(c.clip ? c.clip.redoLabel : "Redo with note", () => actions.redo(c.id, ta.value), { disabled: !c.canRedo || (c.clip && !c.clip.costReady) }),
       btn("Cancel", () => actions.closeNote(), { ghost: true }))];
   }
   const takes = c.takes.length > 1 ? h("div", { class: "takes" }, c.takes.map((t) =>
@@ -217,7 +257,9 @@ function controls(c, model, actions) {
       onclick: () => { if (!o.pressed) actions.setTool(c.id, o.tool); } }, o.label))) : null;
   const row = [takes];
   if (c.locked) row.push(h("span", { class: "locked", text: c.lockText }));
-  else if (c.canMakeFirst || (!c.takes.length && (c.busy || c.pending))) row.push(btn("Make first take", () => actions.first(c.id), { disabled: !c.canMakeFirst }));
+  else if (c.canMakeFirst || (!c.takes.length && (c.busy || c.pending))) {
+    row.push(btn(c.clip ? c.clip.makeLabel : "Make first take", () => actions.first(c.id), { disabled: !c.canMakeFirst || (c.clip && !c.clip.costReady) }));
+  }
   else if (c.approved) row.push(h("span", { class: "ok-tag", text: "\u2713 Approved" }), btn("Undo", () => actions.unapprove(c.id), { ghost: true, disabled: !c.canUndo }));
   else row.push(btn("Approve", () => actions.approve(c.id), { disabled: !c.canApprove }), btn("Redo\u2026", () => actions.openNote(c.id), { ghost: true, disabled: !c.canRedo }));
   if (c.can3d) row.push(btn("Make 3D in Blender", () => actions.make3d(c.id), { ghost: true }));
@@ -227,7 +269,8 @@ function controls(c, model, actions) {
     row.push(b);
   }
   if (c.file) row.push(btn("Open full size", () => actions.openFull(c.file), { ghost: true }));
-  if (c.removable && !c.confirmRemove) row.push(btn("Remove this version", () => actions.askRemove(c.id), { ghost: true, disabled: !c.canRemove }));
+  if (c.clip?.voiceover) row.push(btn("Keep anyway", () => actions.keepAnyway(c.id), { ghost: true, disabled: !c.clip.canKeep }));
+  if (c.removable && !c.confirmRemove) row.push(btn(c.removeLabel, () => actions.askRemove(c.id), { ghost: true, disabled: !c.canRemove }));
   const confirm = c.confirmRemove ? h("div", { class: "row confirm", role: "group", "aria-label": `Remove ${c.id}` },
     h("span", { text: c.confirmRemove }),
     btn("Remove", () => actions.removeVersion(c.id), { disabled: !c.canRemove }),
@@ -253,11 +296,16 @@ export function card(c, model, actions) {
         c.sourceFile ? mediaEl(c.sourceFile, isVideo(c.sourceFile), actions.preview, `${c.sourceId} source`) : null,
         h("span", { text: `From ${c.sourceId}` })) : null,
       c.checks ? checksBox(c.checks, c.id, actions) : null,
+      c.conflict ? h("div", { class: "cnote", text: c.conflict }) : null,
+      c.clip?.stale ? h("div", { class: "cnote", text: c.clip.stale }) : null,
+      c.clip?.voiceover ? h("div", { class: "cnote", text: c.clip.voiceover }) : null,
       c.history.length ? h("div", { class: "hist" }, "History: ", c.history.join("; ")) : null,
       c.pending ? h("div", { class: "hist", text: "Working\u2026" }) : null,
       c.error ? h("div", { class: "err", text: c.error }) : null,
       controls(c, model, actions)));
 }
+
+const onCameraEl = (model, actions) => (model.onCamera ? [onCameraSection(model.onCamera, actions, (c) => card(c, model, actions))] : []);
 
 export function render(el, model, actions) {
   if (model.openFailed) {
@@ -286,6 +334,7 @@ export function render(el, model, actions) {
   ].filter(Boolean);
   if (model.needsShotList) {
     el.replaceChildren(...head, ...(model.narration ? [narrationSection(model.narration, actions)] : []), ...audioSections(model.audio, actions), mixSection(model.mix, actions),
+      ...onCameraEl(model, actions),
       foldable(h("section", { class: "broll", "aria-label": "B-roll" }, h("div", { class: "h2row" }, h("h2", { text: "B-roll" })), h("div", { class: "panel" },
       h("p", { text: "This film has no shot list yet. Claude reads the script and part1_handover.md and plans the b-roll." }),
       btn(model.making ? "Making the shot list\u2026" : "Make shot list", () => actions.makeShotList(), { disabled: model.making }),
@@ -301,6 +350,7 @@ export function render(el, model, actions) {
   const body = model.layout === "grid"
     ? h("div", { class: "cards" }, model.cards.map((c) => card(c, model, actions)))
     : h("div", { class: "script" }, model.cards.map((c) => h("div", { class: "shot" }, h("blockquote", { class: "line", text: c.line }), card(c, model, actions))));
-  el.replaceChildren(...head, ...(model.narration ? [narrationSection(model.narration, actions)] : []), ...audioSections(model.audio, actions), mixSection(model.mix, actions), sum,
+  el.replaceChildren(...head, ...(model.narration ? [narrationSection(model.narration, actions)] : []), ...audioSections(model.audio, actions), mixSection(model.mix, actions),
+    ...onCameraEl(model, actions), sum,
     foldable(h("section", { class: "broll", "aria-label": "B-roll" }, h("div", { class: "h2row" }, h("h2", { text: "B-roll" }), toggle), body), "B-roll"));
 }

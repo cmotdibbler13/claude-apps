@@ -1,7 +1,8 @@
 // Takes: start a first take or a redo with a note, mirror job progress onto takes, approvals.
 import { askJson } from "./claude.js";
 import { join, filmKey } from "./paths.js";
-import { deriveWaiting } from "./shots.js";
+import { deriveWaiting, onCameraConflict } from "./shots.js";
+import { clipLock, clipPrompt, clipSeconds, lineLengthS, checkClipAudio } from "./presenter.js";
 import { mixHolders, mixJobDone, syncMixHolder, MIX_IDS, runLabel } from "./mixplan.js";
 
 const REWRITE_INSTRUCTIONS = `You improve one image or video generation prompt for a Six Minutes On... documentary film (dark, calm, precise, British English).
@@ -13,14 +14,15 @@ const filled = (v) => typeof v === "string" && v.trim() !== "";
 const find = (state, id) => state.assets.find((a) => a.id === id);
 // Everything that has takes: b-roll shots, then the score, then the sound-effect cues, then the
 // voiceover join, score fit and mix preview (VOICEOVER, FIT, MIX: one take per run).
-export const holders = (d) => [...d.assets ?? [], ...(d.audio?.score ? [d.audio.score] : []), ...(d.audio?.sfx ?? []), ...mixHolders(d)];
-const META = ["lengthS", "peakDb", "meanDb", "quiet", "checks", "script"];
+export const holders = (d) => [...d.assets ?? [], ...(d.audio?.score ? [d.audio.score] : []), ...(d.audio?.sfx ?? []), ...mixHolders(d), ...(d.presenter?.portraits ? [d.presenter.portraits] : [])];
+const META = ["lengthS", "peakDb", "meanDb", "quiet", "checks", "script", "hfId", "audioSig"];
 const nameOf = (id) => (id === "SCORE" ? "Score" : id);
 const takeName = (id, n) => (MIX_IDS.has(id) ? `${runLabel(id)} run ${n}` : `${nameOf(id)} take ${n}`);
 // Every change to the shots also rewrites what the film is waiting on Jon for, in the same update.
 const save = (store, fn) => store.update((d) => { fn(d); d.waiting = deriveWaiting(d.assets); });
 
-export function canStart(asset, assets) {
+export function canStart(asset, assets, state, transcript, transcriptAt) {
+  if (asset.kind === "presenter") return !!state && clipLock(asset, state, transcript, transcriptAt) === null;
   if (asset.tool !== "blender" && asset.kind !== "animated") return true;
   const src = assets.find((a) => a.id === asset.sourceId);
   return !!src && !!src.approved;
@@ -79,7 +81,7 @@ export async function removeVersion(ctx, id) {
   const { store } = ctx;
   const a = find(store.state, id);
   if (!a) throw new Error(`Unknown shot ${id}`);
-  if (a.kind !== "blender" && a.kind !== "animated") throw new Error(`${id} is not a 3D or animated version.`);
+  if (a.kind !== "blender" && a.kind !== "animated" && !onCameraConflict(a, store.state)) throw new Error(`${id} is not a 3D or animated version.`);
   const inProgress = () => busy(a) || starting(store, id);
   if (inProgress()) throw new Error(`${id} has a take in progress.`);
   await save(store, (d) => {
@@ -99,14 +101,17 @@ export async function startTake(ctx, assetId, { note } = {}) {
   const { host, store, jobs } = ctx;
   const asset = find(store.state, assetId);
   if (!asset) throw new Error(`Unknown shot ${assetId}`);
-  if (!canStart(asset, store.state.assets)) throw new Error(`${asset.id} needs its source line art approved first.`);
+  if (asset.kind === "presenter") {
+    const lock = clipLock(asset, store.state, ctx.transcript, ctx.transcriptAt);
+    if (lock) throw new Error(lock);
+  } else if (!canStart(asset, store.state.assets)) throw new Error(`${asset.id} needs its source line art approved first.`);
   if (asset.takes.some((t) => t.status === "queued" || t.status === "running")) {
     throw new Error(`${asset.id} already has a take in progress.`);
   }
   const hasNote = filled(note);
   const n = asset.takes.length + 1;
   const prev = previousTake(asset);
-  const base = join(store.dir, "studio", "media", `${asset.id}_t${n}`);
+  const base = join(store.dir, "studio", asset.kind === "presenter" ? "presenter" : "media", `${asset.id}_t${n}`);
   let take, input;
   const nextPrompt = async () => {
     let prompt = asset.draftPrompt;
@@ -128,7 +133,20 @@ export async function startTake(ctx, assetId, { note } = {}) {
 
   // All Claude work happens before any write. A Blender take does its Claude work inside the job
   // (script, check stills, render), so it only needs the drawing and the previous take here.
-  if (asset.kind === "animated") {
+  if (asset.kind === "presenter") {
+    // No Claude rewrite: the prompt is the spec's, with Jon's note on the end. The take records the portrait it
+    // starts from, so approving another portrait later can tell this clip was made with an earlier one.
+    const vo = store.state.mix?.voiceover;
+    if (!vo?.wav) throw new Error("Join the voiceover first");
+    const s = ctx.transcript.sentences.find((x) => x.sentence === asset.lineId);
+    const hfId = store.state.presenter.portrait.hfId;
+    const prompt = clipPrompt(note);
+    take = { n, prompt, portraitHfId: hfId };
+    input = {
+      kind: "presenter", lineId: asset.lineId, voiceover: vo.wav, start: s.start, end: s.end,
+      seconds: clipSeconds(lineLengthS(ctx.transcript, asset.lineId)), hfId, prompt, out: base,
+    };
+  } else if (asset.kind === "animated") {
     // Like a ComfyUI b-roll take, but it starts from the drawing's chosen take.
     const src = find(store.state, asset.sourceId);
     const sourceFile = src.takes.find((t) => t.n === src.chosen)?.file;
@@ -278,14 +296,37 @@ function applyJobs(d, dir, list, lines, pending) {
 }
 
 // ctx.onError(message) reports a failed state write (null once a later reconcile succeeds).
+// Finished voiceover runs and finished clip takes, by id#take#job: a new one means the clips' audio needs a check.
+const doneKeys = (d) => {
+  const keys = new Set();
+  const vo = d.mix?.voiceover;
+  for (const t of vo?.takes ?? []) if (t.status === "done") keys.add(`VOICEOVER#${t.n}#${t.jobId}`);
+  for (const a of d.assets ?? []) if (a.kind === "presenter") for (const t of a.takes ?? []) if (t.status === "done") keys.add(`${a.id}#${t.n}#${t.jobId}`);
+  return keys;
+};
+
 export function watchJobs(ctx) {
   const { store, jobs, onError = () => {} } = ctx;
   let chain = Promise.resolve();
   let queued = false;
+  // One clip-audio check at a time; a request while one runs makes it run once more afterwards.
+  let checking = false, again = false;
+  const check = async () => {
+    if (!ctx.host) return;
+    if (checking) { again = true; return; }
+    checking = true;
+    try {
+      do {
+        again = false;
+        try { await checkClipAudio(ctx); } catch (e) { try { await store.log(`Clip audio check failed: ${String(e?.message ?? e)}`); } catch { /* ignore */ } }
+      } while (again);
+    } finally { checking = false; }
+  };
   const run = async () => {
     queued = false;
     if (!applyJobs(structuredClone(store.state), store.dir, jobs.list(), [], store.pending)) return;
     const lines = [];
+    const before = doneKeys(store.state);
     try {
       await store.update((d) => {
         lines.length = 0;
@@ -298,6 +339,7 @@ export function watchJobs(ctx) {
     }
     try { onError(null); } catch { /* ignore */ }
     for (const l of lines) await store.log(l);
+    if ([...doneKeys(store.state)].some((k) => !before.has(k))) check(); // not awaited: the cuts must not hold up the chain
   };
   const sync = () => {
     if (queued) return; // one pending reconcile covers every change since it was queued
@@ -331,8 +373,12 @@ export async function choose(ctx, assetId, n) {
   const a = find(store.state, assetId);
   if (!a) throw new Error(`Unknown shot ${assetId}`);
   if (!a.takes.some((t) => t.n === n)) throw new Error(`${assetId} has no take ${n}.`);
-  await save(store, (d) => { const x = find(d, assetId); x.chosen = n; x.approved = false; });
+  const clip = a.kind === "presenter";
+  // A clip's out-of-step flag belongs to the take it was found on: clear it and check the new take (in the
+  // background, as after a join).
+  await save(store, (d) => { const x = find(d, assetId); x.chosen = n; x.approved = false; if (clip) { delete x.voiceoverChanged; delete x.voiceoverSig; } });
   await store.log(`${assetId} take ${n} chosen`);
+  if (clip) checkClipAudio(ctx).catch((e) => Promise.resolve(store.log(`Clip audio check failed: ${String(e?.message ?? e)}`)).catch(() => {}));
 }
 
 const TOOL_LABEL = { higgsfield: "Higgsfield", comfyui: "ComfyUI" };

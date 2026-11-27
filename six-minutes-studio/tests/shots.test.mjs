@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FakeHost } from "./fake-host.mjs";
 import { openFilm } from "../js/store.js";
-import { buildShotList, orderByScript } from "../js/shots.js";
+import { buildShotList, orderByScript, deriveWaiting } from "../js/shots.js";
 import { ClaudeError } from "../js/claude.js";
 
 const DIR = "S:\\Youtube video ideas\\Film A";
@@ -102,4 +102,74 @@ test("a plan with an animated shot is refused (animated versions come only from 
   ]);
   await assert.rejects(buildShotList(h, store, input), (e) => e.code === "invalid" && /bad kind/.test(e.message));
   assert.deepEqual(store.state.assets, []);
+});
+
+const CAM = "I have walked this shore a hundred times, and it still surprises me.";
+const tc = (o = {}) => ({ id: "TC-01", kind: "presenter", lineId: "L3", line: CAM, takes: [], chosen: 0, approved: false, ...o });
+
+test("sameLine matches by normalised text, containment only for 4+ words", async () => {
+  const { sameLine } = await import("../js/shots.js");
+  assert.equal(sameLine(CAM, "i have walked this shore a hundred times and it still surprises me"), true);
+  assert.equal(sameLine(`${CAM} And then it rained all night.`, CAM), true);
+  assert.equal(sameLine("Hello there.", "Oh, hello there. Again."), false);
+  assert.equal(sameLine("", ""), false);
+  assert.equal(sameLine("Different line entirely here now.", CAM), false);
+});
+
+test("instructions carry the to-camera sentence and data has cameraLines", async () => {
+  const { SHOT_INSTRUCTIONS } = await import("../js/shots.js");
+  assert.ok(SHOT_INSTRUCTIONS.includes("Plan no shot on these to-camera lines: Jon is on camera for the whole line."));
+  const { h, store } = await mk([shot({})]);
+  let sent = null;
+  h.claudeScript((kind, text) => { sent = text; return [shot({})]; });
+  const cameraLines = [{ id: "L3", text: CAM }];
+  await buildShotList(h, store, { ...input, cameraLines });
+  const data = JSON.parse(sent.split("DATA (JSON):\n")[1].split("\n\nAnswer with JSON only.")[0]);
+  assert.deepEqual(data.cameraLines, cameraLines);
+});
+
+test("validator refuses a shot on a camera line, naming the id", async () => {
+  const { h, store } = await mk([shot({ line: CAM })]);
+  await assert.rejects(buildShotList(h, store, { ...input, cameraLines: [{ id: "L3", text: CAM }] }), (e) => e.code === "invalid" && /L3/.test(e.message));
+  assert.deepEqual(store.state.assets, []);
+  const ok = await mk([shot({ line: "Another line altogether." })]);
+  await buildShotList(ok.h, ok.store, { ...input, cameraLines: [{ id: "L3", text: CAM }] });
+  assert.equal(ok.store.state.assets.length, 1);
+});
+
+test("onCameraConflict: true for non-presenter asset on a chosen camera line", async () => {
+  const { onCameraConflict } = await import("../js/shots.js");
+  const state = { assets: [tc(), { id: "HF-01", kind: "broll", line: CAM }, { id: "HF-02", kind: "broll", line: "Other." }] };
+  assert.equal(onCameraConflict(state.assets[1], state), true);
+  assert.equal(onCameraConflict(state.assets[2], state), false);
+  assert.equal(onCameraConflict(state.assets[0], state), false);
+  assert.equal(onCameraConflict(state.assets[1], { assets: [state.assets[1]] }), false);
+});
+
+test("deriveWaiting skips a conflicting unapproved shot", async () => {
+  const { deriveWaiting } = await import("../js/shots.js");
+  const conflict = { id: "HF-01", kind: "broll", line: CAM, takes: [{ n: 1, status: "done" }], chosen: 1, approved: false };
+  const fine = { id: "HF-02", kind: "broll", line: "Other.", takes: [{ n: 1, status: "done" }], chosen: 1, approved: true };
+  assert.equal(deriveWaiting([tc({ approved: true }), conflict, fine]), "All shots approved");
+  assert.equal(deriveWaiting([tc(), conflict, fine]), deriveWaiting([tc(), fine]));
+  assert.notEqual(deriveWaiting([tc(), conflict, fine]), "1 shot to review");
+});
+
+test("clips chosen before the shot list: the list can still be made and the clips stay", async () => {
+  const { h, store } = await mk([shot({ id: "c", lineIndex: 0, line: "L0" })]);
+  const clip = { id: "TC-01", kind: "presenter", tool: "higgsfield", lineId: "01", line: "To camera here.", lineIndex: 3, takes: [], chosen: 0, approved: false };
+  await store.update((d) => { d.assets.push(clip); });
+  const r = await buildShotList(h, store, input);
+  assert.deepEqual(r.map((a) => a.id), ["HF-01"]);
+  assert.deepEqual(store.state.assets.map((a) => a.id), ["TC-01", "HF-01"]);
+  await assert.rejects(buildShotList(h, store, input), (e) => e.code === "exists");
+});
+
+test("deriveWaiting: clips alone are no shot list; an out-of-step clip counts once", () => {
+  const tc = (o = {}) => ({ id: "TC-01", kind: "presenter", line: "To camera here now.", takes: [], chosen: 0, approved: false, ...o });
+  assert.equal(deriveWaiting([tc()]), "Shot list not made yet");
+  assert.equal(deriveWaiting([tc({ approved: true, takes: [{ n: 1, status: "done" }], chosen: 1 })]), "Shot list not made yet");
+  const hf = { id: "HF-01", kind: "broll", line: "Other line entirely.", takes: [], chosen: 0, approved: true };
+  const out = tc({ takes: [{ n: 1, status: "done" }], chosen: 1, voiceoverChanged: true });
+  assert.equal(deriveWaiting([hf, out]), "1 clip out of step");
 });

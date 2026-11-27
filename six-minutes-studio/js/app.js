@@ -11,6 +11,11 @@ import { makeFilmSession, readSavedJobs } from "./session.js";
 import { makeJobs } from "./jobs.js";
 import { notifyRules } from "./notify.js";
 import { buildShotList } from "./shots.js";
+import { scriptCameraIds, seedCameraLines, suggestLines, setCameraLines, suggestLooks, setLook, lastLook, startPortraits, approvePortrait, keepAnyway,
+  clipSeconds, lineLengthS } from "./presenter.js";
+import { estimateCredits } from "./tools/hfmedia.js";
+import { makeCosts } from "./oncamcosts.js";
+import { costPress, onCameraModel, OWN as OWN_PICK } from "./ui/oncamera.js";
 import { startTake, approve, unapprove, choose, setTool, setPreferComfy, addBlender3d, addAnimated, removeVersion, jobGone, jobRemoved, removedText } from "./redo.js";
 import { ensureProxy, toBlobUrl, openFull, revokeAll } from "./media.js";
 import { makeHiggsfieldRunner } from "./tools/higgsfield.js";
@@ -20,6 +25,7 @@ import { makeStableAudioStarter, makeStableAudioRunner } from "./tools/stableaud
 import { makeComfyStarter } from "./tools/comfystart.js";
 import { autostart, toolsLine } from "./autostart.js";
 import { makeCredits } from "./credits.js";
+import { savePresenterPhotos } from "./presenterphotos.js";
 import { makeElevenRunner } from "./tools/elevenlabs.js";
 import { planAudio, addCue, editItem, getEstimate, rewriteFromNote, startAudioTake, approveAudio, unapproveAudio, chooseAudio, proposeStarts } from "./audioplan.js";
 import { makeVoiceJoinRunner } from "./tools/voicejoin.js";
@@ -41,7 +47,7 @@ const LAYOUT_KEY = "six-minutes-studio.reviewLayout";
 const app = {
   host: null, root: null, jobs: null, films: [], view: "films",
   film: null, store: null, session: null, playing: null, retried: new Set(), goneJobs: new Map(), movedAside: null, stateError: null, bootError: null, openError: null,
-  review: { making: false, listError: null, cardErrors: new Map(), pending: new Set(), estimating: new Set(), noteFor: null, draft: "" },
+  review: { making: false, listError: null, cardErrors: new Map(), pending: new Set(), estimating: new Set(), noteFor: null, draft: "", oc: {} },
   starter: null, saBusy: false,
   previews: new Map(),
   layout: (() => { try { return localStorage.getItem(LAYOUT_KEY) || "script"; } catch { return "script"; } })(),
@@ -141,7 +147,7 @@ function paint(name, el, model, view, actions) {
   const refocus = document.activeElement?.id === "note-box" || (name === "review" && app.review.focusNote);
   // An audio prompt, length or cue box Jon is typing in keeps its caret across the re-render.
   const act = document.activeElement;
-  const keep = act?.id?.startsWith("au-") || act?.id?.startsWith("pace-") ? { id: act.id, start: act.selectionStart ?? null, end: act.selectionEnd ?? null } : null;
+  const keep = act?.id?.startsWith("au-") || act?.id?.startsWith("pace-") || act?.id?.startsWith("oc-own-") ? { id: act.id, start: act.selectionStart ?? null, end: act.selectionEnd ?? null } : null;
   rendering = true;
   try { view.render(el, model, actions); } finally { rendering = false; }
   const ta = refocus ? $("note-box") : null;
@@ -190,6 +196,8 @@ async function renderNow() {
       mixUi: { settings: { stemRemixer: !!app.settings?.stemRemixerDir }, jobs: list, ui: { exports: r.exports ?? null, opened: r.opened ?? null, confirm: r.exportConfirm ?? null },
         pacing: { transcript: r.transcript ?? null, lineScript: r.lineScript ?? null, menu: r.paceMenu ?? null,
           chain: { applying: r.applying ?? null, placing: !!r.placing, error: r.paceError ?? null, info: r.paceInfo ?? null } } },
+      lineScript: r.lineScript ?? null, transcript: r.transcript ?? null, transcriptAt: r.transcript ? r.transcriptAt ?? null : undefined,
+      onCamera: { estimates: estimatesView(), photosOk: !!r.oc.photosOk, ui: r.oc },
     });
     r.paceSource = model.mix?.pacing?.source ?? null;
     // No voiceover player in the review now (a rejoin is running, or the mix is current): stop the old one, unseen.
@@ -200,7 +208,24 @@ async function renderNow() {
     if (r.focusMenu) { r.focusMenu = false; document.querySelector("#view-review .pmenu .pop")?.focus(); }
     proposeOnce();
     loadTranscript();
+    loadOnCamera();
   }
+}
+
+// "Choose presenter photos…" (Probe and On camera): copy them under the root, list them in .studio-settings.json,
+// then re-read the settings so every runner sees the new photos at once.
+async function choosePresenterPhotos(files) {
+  if (!app.root || !app.host) throw new Error("Studio can't see your films folder yet.");
+  const paths = await savePresenterPhotos(app.host, app.root, files);
+  await reloadSettings();
+  return paths;
+}
+
+async function reloadSettings() {
+  if (!app.root || !app.settings) return;
+  const fresh = await loadSettings(app.host, app.root);
+  for (const k of Object.keys(app.settings)) if (!(k in fresh)) delete app.settings[k];
+  Object.assign(app.settings, fresh);
 }
 
 // ---- films ----
@@ -267,7 +292,7 @@ function resetReview() {
   for (const slot of Object.keys(players)) dropPlayer(slot);
   app.previews.clear();
   revokeAll();
-  app.review = { making: false, listError: null, cardErrors: new Map(), pending: new Set(), estimating: new Set(), noteFor: null, draft: "" };
+  app.review = { making: false, listError: null, cardErrors: new Map(), pending: new Set(), estimating: new Set(), noteFor: null, draft: "", oc: {} };
   fields.clear();
 }
 
@@ -287,6 +312,7 @@ async function openReview(dir) {
   }
   if (!store || app.session.current?.store !== store) return;
   app.openError = null;
+  costs.reset(); // costs are asked again each time a review opens
   if (app.store !== store) {
     resetReview();
     app.film = film;
@@ -491,7 +517,7 @@ function loadTranscript() {
   if (!f?.transcript || !app.host) return Promise.resolve(f ? r.transcript ?? null : null);
   if (r.transcriptFor?.at === f.at && r.transcriptFor?.path === f.transcript) return r.transcriptFor.p;
   const p = app.host.fs.read(f.transcript, "utf8").then((t) => JSON.parse(t)).catch((e) => { console.error(e); return null; })
-    .then((t) => { if (app.review === r && r.transcriptFor?.p === p) { r.transcript = t; render(); } return t; });
+    .then((t) => { if (app.review === r && r.transcriptFor?.p === p) { r.transcript = t; r.transcriptAt = f.at; render(); } return t; });
   r.transcriptFor = { at: f.at, path: f.transcript, p };
   return p;
 }
@@ -613,7 +639,13 @@ async function makeShotList() {
     if (handoverText === null) throw new Error("Couldn't read handover\\part1_handover.md.");
     const scriptText = await findScript(dir, handoverText);
     if (scriptText === null) throw new Error("Couldn't find the script. Add its path to part1_handover.md.");
-    await buildShotList(app.host, app.store, { scriptText, handoverText });
+    // The to-camera lines come from the line script: read it now if Narration hasn't yet, so no b-roll is planned on them.
+    if (!r.lineScript && !app.store.state.presenter?.lines?.length) await refreshNarration();
+    if (app.review !== r) return;
+    if (!r.lineScript && !r.narration?.missingScript && !app.store.state.presenter?.lines?.length) {
+      throw new Error("The line script is still loading. Try again in a moment.");
+    }
+    await buildShotList(app.host, app.store, { scriptText, handoverText, cameraLines: cameraLinesNow() });
   } catch (e) {
     r.listError = msg(e);
   } finally {
@@ -621,6 +653,117 @@ async function makeShotList() {
     render();
   }
 }
+
+// The to-camera lines the shot plan leaves alone: the chosen ones once there are any, else the script's marks.
+function cameraLinesNow() {
+  const ls = app.review.lineScript;
+  const chosen = app.store?.state?.presenter?.lines;
+  const ids = chosen !== undefined ? chosen.map((l) => l.id) : scriptCameraIds(ls); // Jon's choice, even none, wins
+  return ids.map((id) => ({ id, text: ls?.lines?.find((l) => l.id === id)?.text ?? app.store.state.assets.find((a) => a.kind === "presenter" && a.lineId === id)?.line ?? "" }))
+    .filter((l) => l.text);
+}
+
+// ---- On camera ----
+// Higgsfield's costs for the open review (oncamcosts); reset whenever a review opens.
+const costs = makeCosts((tool, input) => estimateCredits(app.host, tool, input));
+const estimatesView = () => costs.view();
+function askEstimates() {
+  if (!app.store || !app.host?.mcp) return;
+  // A new cost replaces any "Press again" waiting on the old one.
+  costs.ask({ state: app.store.state, transcript: app.review.transcript ?? null }, () => { app.review.oc.confirm = null; render(); });
+}
+const forgetClipEstimates = () => costs.forgetClips();
+
+// Once per review: whether the presenter photos are there, and the last film's look (both free reads).
+function loadOnCamera() {
+  const r = app.review;
+  // Script marks become the chosen lines the first time (free); once per review, never over Jon's choice.
+  if (r.lineScript && app.store && app.store.state.presenter?.lines === undefined && !r.seeding) {
+    r.seeding = true;
+    seedCameraLines(ctx()).catch((e) => { console.error(e); r.oc.lineError = msg(e); }).finally(() => render());
+  }
+  askEstimates();
+  if (r.ocLoaded || !app.store || !app.host || !(r.lineScript || app.store.state.presenter?.lines?.length)) return;
+  r.ocLoaded = true;
+  (async () => {
+    const photos = (app.settings?.presenter?.photos ?? []).filter((p) => typeof p === "string" && p.trim());
+    let ok = photos.length > 0;
+    for (const p of photos) { try { if (!(await app.host.fs.exists(p))) ok = false; } catch { ok = false; } }
+    let last = null;
+    try { last = app.root ? await lastLook(app.host, app.root, app.film.dir) : null; } catch (e) { console.error(e); }
+    if (app.review === r) { r.oc.photosOk = ok; r.oc.lastLook = last; render(); }
+  })();
+}
+
+// A step-level On camera action: one at a time per flag, errors shown under it.
+function ocAction(flag, errKey, fn) {
+  return async (...a) => {
+    const r = app.review, oc = r.oc;
+    if (oc[flag]) return;
+    oc[flag] = true; oc[errKey] = null; render();
+    try { await fn(oc, ...a); } catch (e) { if (app.review === r) oc[errKey] = msg(e); }
+    finally { oc[flag] = false; render(); }
+  };
+}
+
+// A paid press: goes when the cost is known; with "(cost unknown)" the first press asks for a second one.
+function paid(key, est) {
+  const oc = app.review.oc;
+  const p = costPress(est, oc.confirm ?? null, key);
+  oc.confirm = p.confirm;
+  if (!p.go) render();
+  return p.go;
+}
+const clipEstimate = (id) => {
+  const a = app.store?.state?.assets.find((x) => x.id === id);
+  if (a?.kind !== "presenter") return 0;
+  const len = lineLengthS(app.review.transcript, a.lineId);
+  return len == null ? undefined : estimatesView().clips[clipSeconds(len)];
+};
+
+const startPortraitsNow = ocAction("portraitPending", "portraitError", async () => {
+  userStarted();
+  await startPortraits(ctx());
+});
+
+const onCameraActions = {
+  toggleLine: ocAction("linesBusy", "lineError", async (oc, id, on, from) => {
+    const ids = (app.store.state.presenter?.lines ?? []).map((l) => l.id);
+    const next = on ? [...ids, id] : ids.filter((x) => x !== id);
+    await setCameraLines(ctx(), next, on && from ? { from } : {});
+  }),
+  addLine: (id) => onCameraActions.toggleLine(id, true),
+  suggestLines: ocAction("suggesting", "lineError", async (oc) => {
+    userStarted();
+    oc.suggestions = await suggestLines(app.host, app.review.lineScript);
+  }),
+  suggestLooks: ocAction("suggestingLooks", "lookError", async (oc) => {
+    userStarted();
+    const dir = app.film.dir;
+    const handoverText = await readText(join(dir, "handover", "part1_handover.md"));
+    const scriptText = await findScript(dir, handoverText ?? "");
+    oc.looks = await suggestLooks(app.host, { scriptText: scriptText ?? "", lastLook: oc.lastLook ?? null });
+  }),
+  pickLook(kind, value) { const oc = app.review.oc; oc.lookPick = { ...(oc.lookPick ?? {}), [kind]: value }; render(); },
+  setOwnLook(kind, text) {
+    const oc = app.review.oc;
+    oc.own = { ...(oc.own ?? {}), [kind]: text };
+    oc.lookPick = { ...(oc.lookPick ?? {}), [kind]: OWN_PICK };
+    render();
+  },
+  saveLook: ocAction("lookSaving", "lookError", async (oc) => {
+    await setLook(ctx(), onCameraModel({ state: app.store.state, lineScript: app.review.lineScript ?? null, ui: oc }).look.chosen);
+    oc.lookPick = null; oc.own = {};
+  }),
+  choosePhotos: ocAction("photosSaving", "photosError", async (oc, files) => { await choosePresenterPhotos(files); oc.photosOk = true; }),
+  // The cost check comes first, so an unknown-cost first press shows "Press again…" without a "Making…" flash.
+  makePortraits: (...a) => (app.review.oc.portraitPending || !paid("PORTRAIT", estimatesView().portrait) ? undefined : startPortraitsNow(...a)),
+  approvePortrait: ocAction("approving", "portraitError", async (oc, n) => {
+    await approvePortrait(ctx(), n);
+    forgetClipEstimates();
+  }),
+  keepAnyway: cardAction((id) => keepAnyway(ctx(), id)),
+};
 
 // ---- music and sound effects ----
 async function planMusic() {
@@ -687,7 +830,10 @@ function cardAction(fn) {
     finally { r.pending.delete(id); render(); }
   };
 }
-const ctx = () => ({ host: app.host, store: app.store, jobs: app.jobs });
+// lineScript and transcript (the last good join's): to-camera lines and clip takes need them.
+// transcriptAt: the join the loaded transcript came from; a clip take needs it to be the current join.
+const ctx = () => ({ host: app.host, store: app.store, jobs: app.jobs, settings: app.settings ?? {}, lineScript: app.review.lineScript ?? null,
+  transcript: app.review.transcript ?? null, transcriptAt: app.review.transcript ? app.review.transcriptAt ?? null : undefined });
 // narration: the mix steps refuse to run from a join that misses a take saved since (joinStale).
 const mixCtx = () => ({ ...ctx(), lineScript: app.review.lineScript ?? null, settings: app.settings ?? {}, narration: app.review.narration ?? null });
 // A Voiceover and mix step's action, guarded like a card (VOICEOVER, FIT or MIX).
@@ -740,12 +886,18 @@ const reviewActions = {
     try { localStorage.setItem(LAYOUT_KEY, v); } catch { /* storage blocked: per-session only */ }
     render();
   },
-  first: cardAction((id) => { userStarted(); return startTake(ctx(), id); }),
+  // A clip costs credits: its press goes through paid() (a second press when the cost is unknown).
+  first: cardAction((id) => {
+    if (!paid(id, clipEstimate(id))) return;
+    userStarted();
+    return startTake(ctx(), id);
+  }),
   approve: cardAction((id) => approve(ctx(), id)),
   unapprove: cardAction((id) => unapprove(ctx(), id)),
   choose: cardAction((id, n) => choose(ctx(), id, n)),
   redo: cardAction(async (id, note) => {
     if (!note || !note.trim()) throw new Error("Write a note saying what should change.");
+    if (!paid(id, clipEstimate(id))) return;
     userStarted();
     await startTake(ctx(), id, { note: note.trim() });
     app.review.noteFor = null; app.review.draft = "";
@@ -906,6 +1058,7 @@ const reviewActions = {
   },
   placePauses: () => { placePauses(); },
   applyPauses: () => { runApplyPauses(); },
+  ...onCameraActions,
   field: (k) => fields.get(k),
   setField(k, v) { if (v === undefined) fields.delete(k); else fields.set(k, v); },
   rendering: () => rendering,
@@ -938,12 +1091,8 @@ async function boot() {
   const desktop = await window.claude.use("desktop");
   desktop.app?.dock?.setIcon(drawIcon()).catch(() => {});
   // Probe re-reads .studio-settings.json and updates the one settings object every runner holds.
-  mountProbe(host, $("run-probe"), $("probe-results"), () => app.settings, async () => {
-    if (!app.root || !app.settings) return;
-    const fresh = await loadSettings(host, app.root);
-    for (const k of Object.keys(app.settings)) if (!(k in fresh)) delete app.settings[k];
-    Object.assign(app.settings, fresh);
-  }, () => ({ comfy: app.comfyStarter, stableAudio: app.starter }), () => refreshI2v());
+  mountProbe(host, $("run-probe"), $("probe-results"), () => app.settings, reloadSettings,
+    () => ({ comfy: app.comfyStarter, stableAudio: app.starter }), () => refreshI2v(), choosePresenterPhotos);
   await startWithAccess();
 }
 
