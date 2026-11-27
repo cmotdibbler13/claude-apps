@@ -11,6 +11,7 @@ From the script and the part 1 handover below, make a shot list. Answer with a J
 - tool rule: Higgsfield makes filmed-looking b-roll (kind "broll") and 2D line art (kind "lineart"), so tool is "higgsfield". Blender makes 3D line-art versions of approved line art and 3D models of a place (kind "blender"), so tool is "blender".
 - A "blender" shot must give sourceId: the id of a "lineart" shot in your list. Other shots have no sourceId.
 - prompt: the generation prompt, never empty. For "lineart" shots use exactly this formula: "Elegant scientific line illustration of <subject>, fine single-weight <amber #e3a64a | white> ink lines on a pure black background, no fill, no shading, no text, no frame, isolated, generous margin." Choose amber or white.
+Plan no shot on these to-camera lines: Jon is on camera for the whole line. They are given as cameraLines [{id, text}].
 Cover the whole script in order.`;
 
 const KINDS = ["broll", "lineart", "blender"];
@@ -19,8 +20,27 @@ const filled = (v) => typeof v === "string" && v.trim() !== "";
 
 const shots = (n) => `${n} shot${n === 1 ? "" : "s"}`;
 
+const norm = (t) => String(t ?? "").toLowerCase().replace(/[^\p{L}\p{N}'\s]/gu, " ").replace(/\s+/g, " ").trim();
+// Two script lines are the same line when their normalised text is equal, or one holds the other
+// (only when the shorter has 4 words or more). Reading-script and line-script indexes differ, so match by text.
+export function sameLine(a, b) {
+  const x = norm(a), y = norm(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  const [s, l] = x.length <= y.length ? [x, y] : [y, x];
+  return s.split(" ").length >= 4 && l.includes(s);
+}
+
+// A shot (any non-presenter asset) on a line Jon says to camera.
+export function onCameraConflict(asset, state) {
+  if (!asset || asset.kind === "presenter" || !asset.line) return false;
+  return (state?.assets ?? []).some((p) => p.kind === "presenter" && sameLine(p.line, asset.line));
+}
+
 // What the film is waiting on Jon for, from its shots. Written in the same update as every change to them.
-export function deriveWaiting(assets = []) {
+export function deriveWaiting(all = []) {
+  const state = { assets: all };
+  const assets = all.filter((a) => !onCameraConflict(a, state));
   if (!assets.length) return "Shot list not made yet";
   const chosen = (a) => a.takes?.find((t) => t.n === a.chosen) ?? null;
   const busy = (a) => (a.takes ?? []).some((t) => t.status === "queued" || t.status === "running");
@@ -40,7 +60,7 @@ export function orderByScript(assets) {
   return [...assets].sort((a, b) => a.lineIndex - b.lineIndex || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
-function validateShots(list) {
+const validateShots = (cameraLines) => (list) => {
   if (!Array.isArray(list) || list.length === 0) throw new Error("expected a non-empty array of shots");
   const byId = new Map();
   list.forEach((s, i) => {
@@ -51,6 +71,8 @@ function validateShots(list) {
     byId.set(s.id, s);
     if (!KINDS.includes(s.kind)) throw new Error(`${at} has a bad kind`);
     if (!filled(s.line)) throw new Error(`${at} has no line`);
+    const cam = cameraLines.find((c) => sameLine(c.text, s.line));
+    if (cam) throw new Error(`${at} is on camera line ${cam.id}`);
     if (!Number.isInteger(s.lineIndex) || s.lineIndex < 0) throw new Error(`${at} has a bad lineIndex`);
     if (!filled(s.desc)) throw new Error(`${at} has no desc`);
     if (!TOOLS.includes(s.tool)) throw new Error(`${at} has a bad tool`);
@@ -63,15 +85,15 @@ function validateShots(list) {
     const src = byId.get(s.sourceId);
     if (!src || src.kind !== "lineart") throw new Error(`blender shot ${s.id} needs a lineart source shot`);
   }
-}
+};
 
-export async function buildShotList(host, store, { scriptText, handoverText }) {
+export async function buildShotList(host, store, { scriptText, handoverText, cameraLines = [] }) {
   if (store.state.assets.length) throw new ClaudeError("exists", "This film already has a shot list.");
   const list = await askJson(host, {
     instructions: SHOT_INSTRUCTIONS,
-    data: { script: scriptText, handover: handoverText },
+    data: { script: scriptText, handover: handoverText, cameraLines },
     tier: "default",
-    validate: validateShots,
+    validate: validateShots(cameraLines),
   });
   const ordered = orderByScript(list);
   const newId = new Map(ordered.map((s, i) => [s.id, `HF-${String(i + 1).padStart(2, "0")}`]));

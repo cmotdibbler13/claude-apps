@@ -581,3 +581,19 @@ test("jobRemoved: a failed score-measure job is not refused", async () => {
   assert.equal(await jobRemoved(host, measure, store), null);
   assert.equal(await jobRemoved(host, measure, null), null);
 });
+
+test("removeVersion lets a b-roll on a camera line go, but not one off camera or while a take runs", async () => {
+  const CAMT = "I have walked this shore a hundred times, and it still surprises me.";
+  const presenter = { id: "TC-01", kind: "presenter", tool: "higgsfield", lineId: "L3", line: CAMT, takes: [], chosen: 0, approved: false };
+  const { ctx, store, host } = await setup([presenter, hf({ id: "HF-05", kind: "broll", line: CAMT }), hf({ id: "HF-06", kind: "broll", line: "Elsewhere." })], idle);
+  await assert.rejects(() => removeVersion(ctx, "HF-06"), /not a 3D or animated version/);
+  await store.update((d) => { d.assets.find((a) => a.id === "HF-05").takes = [{ n: 1, status: "running" }]; });
+  await assert.rejects(() => removeVersion(ctx, "HF-05"), /HF-05 has a take in progress\./);
+  await store.update((d) => { d.assets.find((a) => a.id === "HF-05").takes = [{ n: 1, status: "done", file: "x.mp4" }]; });
+  await removeVersion(ctx, "HF-05");
+  assert.equal(store.state.assets.some((a) => a.id === "HF-05"), false);
+  assert.equal(store.state.removed[0].id, "HF-05");
+  assert.equal(store.state.removed[0].removedAt, host.now());
+  assert.equal(store.state.removed[0].takes[0].file, "x.mp4");
+  await assert.rejects(() => removeVersion(ctx, "TC-01"), /not a 3D or animated version/);
+});

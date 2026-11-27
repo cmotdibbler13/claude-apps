@@ -2,6 +2,7 @@
 // picks), and one TC asset per chosen line. Later steps add the look, portraits and clips.
 import { askJson } from "./claude.js";
 import { deriveWaiting } from "./shots.js";
+export { sameLine, onCameraConflict } from "./shots.js";
 
 export const MAX_CLIP_S = 15;
 export const TOO_LONG = "Too long for one clip: 15 s at most";

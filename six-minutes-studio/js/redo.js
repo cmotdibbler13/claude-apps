@@ -1,7 +1,7 @@
 // Takes: start a first take or a redo with a note, mirror job progress onto takes, approvals.
 import { askJson } from "./claude.js";
 import { join, filmKey } from "./paths.js";
-import { deriveWaiting } from "./shots.js";
+import { deriveWaiting, onCameraConflict } from "./shots.js";
 import { mixHolders, mixJobDone, syncMixHolder, MIX_IDS, runLabel } from "./mixplan.js";
 
 const REWRITE_INSTRUCTIONS = `You improve one image or video generation prompt for a Six Minutes On... documentary film (dark, calm, precise, British English).
@@ -79,7 +79,7 @@ export async function removeVersion(ctx, id) {
   const { store } = ctx;
   const a = find(store.state, id);
   if (!a) throw new Error(`Unknown shot ${id}`);
-  if (a.kind !== "blender" && a.kind !== "animated") throw new Error(`${id} is not a 3D or animated version.`);
+  if (a.kind !== "blender" && a.kind !== "animated" && !onCameraConflict(a, store.state)) throw new Error(`${id} is not a 3D or animated version.`);
   const inProgress = () => busy(a) || starting(store, id);
   if (inProgress()) throw new Error(`${id} has a take in progress.`);
   await save(store, (d) => {
