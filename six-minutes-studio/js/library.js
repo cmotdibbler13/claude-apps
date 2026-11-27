@@ -54,13 +54,32 @@ function jobId(take, root, shot) {
 
 const brId = (n) => "BR-" + String(n).padStart(3, "0");
 
-export function plannedEntries({ shots, entries, film, filmFolder, slug, startNumber, root }) {
+const extOf = (p) => { const m = /\.[^.\\/]+$/.exec(String(p)); return m ? m[0] : ".mp4"; };
+
+// taken: extra library paths (relative, any case) that can't be used, e.g. a different file already on disk.
+export function plannedEntries({ shots, entries, film, filmFolder, slug, startNumber, root, taken }) {
   const have = new Set((entries || []).map((e) => lower(e && e.source_path)));
+  // A take that was a rejected row last time can be the chosen take now: only approved entries count as copied.
+  const haveCopied = new Set((entries || []).filter((e) => e && e.status !== "rejected").map((e) => lower(e.source_path)));
+  const used = new Set([...(entries || []).map((e) => lower(e && e.library_path)).filter(Boolean), ...[...(taken || [])].map(lower)]);
+  // <slug>_<shot><ext>; when that is taken, <slug>_<shot>_t<n><ext>, then _2, _3...
+  const libPath = (s) => {
+    const dir = `B-roll library\\clips\\${slug}\\`;
+    const ext = extOf(s.chosen.file);
+    const stem = `${slug}_${s.id}`;
+    const alt = s.chosen.n != null ? `${stem}_t${s.chosen.n}` : stem;
+    const free = (name) => !used.has(lower(dir + name));
+    let name = `${stem}${ext}`;
+    if (!free(name) && alt !== stem) name = `${alt}${ext}`;
+    for (let k = 2; !free(name); k++) name = `${alt}_${k}${ext}`;
+    used.add(lower(dir + name));
+    return dir + name;
+  };
   const out = [];
   let n = startNumber;
   for (const s of shots) {
     const chosenRel = rel(root, s.chosen.file);
-    if (have.has(lower(chosenRel))) continue;
+    if (haveCopied.has(lower(chosenRel))) continue;
     const common = { film, shot: s.id, aspect: s.aspect };
     const id = brId(n++);
     out.push({
@@ -69,7 +88,7 @@ export function plannedEntries({ shots, entries, film, filmFolder, slug, startNu
         description: undefined, setting: undefined, period: undefined, tags: undefined,
         prompt: s.prompt, job_id: jobId(s.chosen, root, s.id), notes: undefined,
         size_mb: sizeOf(s.probe.size_mb), source_path: chosenRel,
-        library_path: `B-roll library\\clips\\${slug}\\${slug}_${s.id}.mp4`, in_library: true, duplicate_of: null,
+        library_path: libPath(s), in_library: true, duplicate_of: null,
         duration_s: s.probe.duration_s, width: s.probe.width, height: s.probe.height, fps: s.probe.fps,
       },
       copyFrom: s.chosen.file,

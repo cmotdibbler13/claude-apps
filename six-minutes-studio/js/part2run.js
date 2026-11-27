@@ -39,7 +39,7 @@ export function part2Sig(state) {
     rows.push([a.id, a.chosen ?? null, chosenTake(a)?.file ?? null]);
   }
   const p = state?.presenter?.portrait;
-  if (p?.approved) rows.push(["PORTRAIT", p.n ?? null, p.file ?? null]);
+  if (p?.hfId && p?.file) rows.push(["PORTRAIT", p.n ?? null, p.file ?? null]);
   const sc = state?.audio?.score;
   if (sc?.approved) rows.push([sc.id ?? "SCORE", sc.chosen ?? null, chosenTake(sc)?.file ?? null]);
   for (const x of state?.audio?.sfx ?? []) if (x.approved) rows.push([x.id, x.chosen ?? null, chosenTake(x)?.file ?? null]);
@@ -82,7 +82,7 @@ function proseData(state, warnings) {
     else if (!onCameraConflict(a, state)) choices.push(`${a.id}: take ${a.chosen} approved (${a.kind}, ${a.tool})${a.desc ? `: ${a.desc}` : ""}`);
   }
   takeNotes(state.presenter?.portraits);
-  if (state.presenter?.portrait?.approved) choices.push(`Portrait: take ${state.presenter.portrait.n ?? "?"} approved`);
+  if (state.presenter?.portrait?.hfId && state.presenter?.portrait?.file) choices.push(`Portrait: take ${state.presenter.portrait.n ?? "?"} approved`);
   const look = state.presenter?.look;
   if (look && (filled(look.outfit) || filled(look.set))) choices.push(`The look: ${[look.outfit, look.set].filter(filled).join("; ")}`);
   const sc = state.audio?.score;
@@ -144,7 +144,17 @@ async function run(ctx, { onStep } = {}) {
   const part1File = join(dir, "handover", "part1_handover.md");
   let part1 = { topic: null, episode: null };
   if (await host.fs.exists(part1File)) part1 = await part1Facts(host, String(await host.fs.read(part1File, "utf8")));
-  const film = filled(part1.topic) ? part1.topic : folder;
+  // A film already in the library keeps its name and slug there, so its rows go under its existing table.
+  const underFolder = (e) => e && lower(e.source_path).startsWith(lower(filmFolder) + "\\");
+  let film = cat.entries.find((e) => underFolder(e) && filled(e.film))?.film;
+  let slug;
+  if (film) slug = librarySlug(cat.entries, filmFolder, film);
+  else {
+    film = filled(part1.topic) ? part1.topic : folder;
+    slug = librarySlug(cat.entries, filmFolder, film);
+    const bySlug = cat.entries.find((e) => e && filled(e.film) && lower(e.library_path).startsWith(lower(`B-roll library\\clips\\${slug}\\`)));
+    if (bySlug) film = bySlug.film;
+  }
 
   const transcriptFile = state.mix.voiceover.transcript;
   let transcript;
@@ -165,25 +175,31 @@ async function run(ctx, { onStep } = {}) {
       byFile.set(lower(t.file), { a, t, kind: "rejected", probe: null });
     }
     byFile.set(lower(chosen.file), { a, t: chosen, kind: "approved", probe });
-    shots.push({ id: a.id, kind: a.kind, aspect, prompt: chosen.prompt ?? a.draftPrompt ?? null, chosen: sourceOf(a, chosen, jobs), others: o, probe });
+    shots.push({ id: a.id, kind: a.kind, aspect, prompt: chosen.prompt ?? a.draftPrompt ?? null, chosen: { ...sourceOf(a, chosen, jobs), n: chosen.n }, others: o, probe });
   }
-  const slug = librarySlug(cat.entries, filmFolder, film);
-  const planned = plannedEntries({ shots, entries: cat.entries, film, filmFolder, slug, startNumber: nextBrNumber(cat.entries, cat.md), root });
-  const whose = (e) => byFile.get(lower(e.source_path)) ?? byFile.get(lower(join(root, e.source_path)));
-
-  // A clip already at its library path is kept when it is the same size; a different file stops the run.
-  const copies = [];
-  for (const p of planned) {
-    if (!p.copyFrom) continue;
-    const dest = join(root, p.entry.library_path);
-    let skip = false;
-    if (await host.fs.exists(dest)) {
-      const [d, s] = [await host.fs.stat(dest), await host.fs.stat(p.copyFrom)];
-      if (d.size !== s.size) throw new Error(`${dest} already exists in the library`);
-      skip = true;
+  const startNumber = nextBrNumber(cat.entries, cat.md);
+  const taken = new Set();
+  let planned, copies;
+  // A different file already at a planned library path is never overwritten: that name is taken, plan again.
+  // The same file there (an earlier press copied it, then stopped) is kept and not copied again.
+  for (;;) {
+    planned = plannedEntries({ shots, entries: cat.entries, film, filmFolder, slug, startNumber, root, taken });
+    copies = [];
+    let clash = false;
+    for (const p of planned) {
+      if (!p.copyFrom) continue;
+      const dest = join(root, p.entry.library_path);
+      let skip = false;
+      if (await host.fs.exists(dest)) {
+        const [d, src] = [await host.fs.stat(dest), await host.fs.stat(p.copyFrom)];
+        if (d.size !== src.size) { taken.add(lower(p.entry.library_path)); clash = true; continue; }
+        skip = true;
+      }
+      copies.push({ from: p.copyFrom, dest, skip, thumb: thumbOf(cat.paths, p.entry.id), id: p.entry.id });
     }
-    copies.push({ from: p.copyFrom, dest, skip, thumb: thumbOf(cat.paths, p.entry.id), id: p.entry.id });
+    if (!clash) break;
   }
+  const whose = (e) => byFile.get(lower(e.source_path)) ?? byFile.get(lower(join(root, e.source_path)));
 
   let entries = [];
   if (planned.length) {
@@ -209,6 +225,9 @@ async function run(ctx, { onStep } = {}) {
   }
   const facts = handoverFacts({ state, dir, root, lineScript, part1, jobs, brIds, settings, transcript });
   await checkFiles(host, facts.files);
+  for (const name of ["awaiting_permission.md", "images_to_download.md"]) {
+    if (await host.fs.exists(join(dir, name))) facts.warnings.push(`Archive images: ${name} is still in the project folder.`);
+  }
   const prose = await handoverProse(host, proseData(state, facts.warnings));
 
   // Repair what an earlier, interrupted press left: this film's catalogued entries without an MD row, and

@@ -28,7 +28,7 @@ const sample = () => ({
     { id: "TC-01", kind: "presenter", tool: "higgsfield", lineId: "L5", line: "And that is why we still do it today.", approved: true, chosen: 1,
       takes: [take(1, `${DIR}\\studio\\presenter\\TC-01_t1.mp4`, { hfId: "hf-tc" })] },
   ],
-  presenter: { portrait: { n: 1, hfId: "port-1", file: `${DIR}\\studio\\presenter\\portrait.png`, approved: true } },
+  presenter: { portrait: { n: 1, hfId: "port-1", file: `${DIR}\\studio\\presenter\\portrait.png`, at: 3 } },
   audio: {
     flowId: "flow-1",
     score: { id: "SCORE", approved: true, chosen: 1, node: { id: "n-score" }, takes: [take(1, `${DIR}\\studio\\audio\\score_1.mp3`, { source: "elevenlabs" })] },
@@ -280,14 +280,16 @@ test("a new approved shot on a second run is added with the next number", async 
   assert.equal(e.library_path, "B-roll library\\clips\\christmas_trees\\christmas_trees_HF-05.mp4");
 });
 
-test("a library clip already there: same size is kept, a different file stops with nothing written", async () => {
+test("a library clip already there: same size is kept, a different file is left alone and the copy takes a free name", async () => {
   const dest = `${LIB}\\clips\\christmas_trees\\christmas_trees_HF-01.mp4`;
   const t = await setup();
-  t.h.files.set(dest, new Uint8Array(7));
-  t.h.events = [];
-  const before = snapshot(t.h);
-  await assert.rejects(approvePart2(t.ctx), (e) => e.message === `${dest} already exists in the library`);
-  assertUntouched(t.h, before);
+  const other = new Uint8Array(7).fill(3);
+  t.h.files.set(dest, other);
+  await approvePart2(t.ctx);
+  assert.equal(await t.h.fs.read(dest), other, "the other file is not overwritten");
+  const e = JSON.parse(await read(t.h, `${LIB}\\broll_catalogue.json`)).entries.find((x) => x.id === "BR-013");
+  assert.equal(e.library_path, "B-roll library\\clips\\christmas_trees\\christmas_trees_HF-01_t2.mp4");
+  assert.ok(await has(t.h, `${LIB}\\clips\\christmas_trees\\christmas_trees_HF-01_t2.mp4`));
 
   const s = await setup();
   const same = new Uint8Array(1000).fill(9);
@@ -456,4 +458,68 @@ test("one run at a time across films: a second press is refused while the first 
   await assert.rejects(approvePart2(bad.ctx), /isn't valid JSON/);
   assert.equal(part2InFlight(), null);
   await approvePart2(other.ctx);
+});
+
+test("re-press after choosing another take: a rejected take becomes a new approved entry under a free name", async () => {
+  const { h, store, ctx } = await setup();
+  await approvePart2(ctx);
+  // Take 1 of HF-01 was the rejected row BR-014; now Jon chooses it. Then a third take for HF-02.
+  await store.update((d) => { d.assets[0].chosen = 1; });
+  h.t += 3600_000;
+  let r = await approvePart2(ctx);
+  assert.deepEqual(r.added, ["BR-016"]);
+  let doc = JSON.parse(await read(h, `${LIB}\\broll_catalogue.json`));
+  const e = doc.entries.find((x) => x.id === "BR-016");
+  assert.deepEqual([e.status, e.source_path, e.library_path], ["approved", "Christmas Tree\\studio\\media\\HF-01_t1.mp4", "B-roll library\\clips\\christmas_trees\\christmas_trees_HF-01_t1.mp4"]);
+  assert.equal(doc.entries.find((x) => x.id === "BR-014").status, "rejected", "the old rejected row stays as history");
+  assert.equal(doc.entries.find((x) => x.id === "BR-013").library_path, "B-roll library\\clips\\christmas_trees\\christmas_trees_HF-01.mp4");
+  assert.ok(await has(h, `${LIB}\\clips\\christmas_trees\\christmas_trees_HF-01_t1.mp4`));
+  assert.deepEqual(r.brIds, ["BR-016", "BR-015"]);
+  assert.match(await read(h, r.handover), /HF-01 \(BR-016\)/);
+
+  h.files.set(`${M}\\HF-02_t2.mp4`, new Uint8Array(1000));
+  await store.update((d) => { d.assets[1].takes.push(take(2, `${M}\\HF-02_t2.mp4`, { workflow: "C:\\ComfyUI\\broll_ltx.json", seed: 8 })); d.assets[1].chosen = 2; });
+  h.t += 3600_000;
+  r = await approvePart2(ctx);
+  doc = JSON.parse(await read(h, `${LIB}\\broll_catalogue.json`));
+  assert.deepEqual(r.added, ["BR-017"]);
+  assert.equal(doc.entries.find((x) => x.id === "BR-017").library_path, "B-roll library\\clips\\christmas_trees\\christmas_trees_HF-02_t2.mp4");
+});
+
+test("the portrait counts in the signature and the choices", async () => {
+  const { h, store, ctx } = await setup();
+  await approvePart2(ctx);
+  assert.ok(h.proseData.choices.some((c) => /^Portrait: take 1/.test(c)));
+  assert.equal(part2Changed(store.state), false);
+  await store.update((d) => { d.presenter.portrait = { n: 2, hfId: "port-2", file: `${DIR}\\studio\\presenter\\portrait2.png`, at: 4 }; });
+  assert.equal(part2Changed(store.state), true);
+});
+
+test("archive files in the project folder become Open items", async () => {
+  const { h, ctx } = await setup();
+  h.files.set(`${DIR}\\awaiting_permission.md`, "x");
+  h.files.set(`${DIR}\\images_to_download.md`, "y");
+  const r = await approvePart2(ctx);
+  const open = (await read(h, r.handover)).split("## Open items")[1].split("## Usage")[0];
+  assert.ok(open.includes("- Archive images: awaiting_permission.md is still in the project folder."));
+  assert.ok(open.includes("- Archive images: images_to_download.md is still in the project folder."));
+  assert.ok(h.proseData.warnings.includes("Archive images: awaiting_permission.md is still in the project folder."));
+});
+
+test("a film already in the library keeps its catalogue name, slug and table", async () => {
+  const doc = JSON.parse(FIXTURE);
+  doc.entries.push({ id: "BR-020", film: "The Christmas Tree", shot: "HF-09", status: "approved", source_path: "Christmas Tree\\broll\\old.mp4",
+    library_path: "B-roll library\\clips\\christmas_tree\\christmas_tree_HF-09.mp4", in_library: true, duration_s: 4, tags: [] });
+  const md = `${MD}\n## The Christmas Tree\n\n${HEAD}\n| BR-020 | HF-09 | used | 4.0 s | x | 1950s | t | n |\n`;
+  const { h, ctx } = await setup({ json: JSON.stringify(doc, null, 2), md });
+  const r = await approvePart2(ctx);
+  assert.deepEqual(r.added, ["BR-021", "BR-022", "BR-023"]);
+  const out = JSON.parse(await read(h, `${LIB}\\broll_catalogue.json`)).entries.find((x) => x.id === "BR-021");
+  assert.equal(out.film, "The Christmas Tree");
+  assert.equal(out.library_path, "B-roll library\\clips\\christmas_tree\\christmas_tree_HF-01.mp4");
+  const text = await read(h, `${LIB}\\broll_catalogue.md`);
+  assert.equal(text.split("## ").length - 1, 2, "no second table for the film");
+  assert.ok(text.trimEnd().endsWith("|"));
+  assert.ok(text.indexOf("| BR-021 |") > text.indexOf("| BR-020 |"));
+  assert.match(await read(h, r.handover), /^# Part 2 handover: Six minutes on… Christmas Trees/);
 });

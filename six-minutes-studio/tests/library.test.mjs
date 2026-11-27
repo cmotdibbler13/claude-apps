@@ -203,3 +203,21 @@ test("plannedEntries tolerates ComfyUI without workflow or seed", () => {
   assert.equal(plannedEntries({ ...base, shots: [mk({ tool: "comfyui", workflow: "w.json" })] })[0].entry.job_id, none);
   assert.equal(plannedEntries({ ...base, shots: [mk({ tool: "comfyui", workflow: "w.json", seed: 0 })] })[0].entry.job_id, "local ComfyUI w.json seed 0");
 });
+
+test("plannedEntries: a new chosen take gets a free library name; a rejected row doesn't block it", () => {
+  const M = "The Christmas Tree\\studio\\media";
+  const lp = "B-roll library\\clips\\christmas_tree\\christmas_tree_HF-01.mp4";
+  // Last time take 1 was chosen (copied) and take 2 got a rejected row; now take 2 is chosen.
+  const entries = [...doc.entries,
+    { id: "BR-050", status: "approved", source_path: `${M}\\HF-01_t1.mp4`, library_path: lp },
+    { id: "BR-051", status: "rejected", source_path: `${M}\\HF-01_t2.mp4`, library_path: null }];
+  const s = shot("HF-01", { chosen: { n: 2, file: `${ROOT}${M}\\HF-01_t2.mp4`, hfJob: "j" }, others: [{ file: `${ROOT}${M}\\HF-01_t1.mp4`, hfJob: "k" }] });
+  const out = plannedEntries({ ...base, entries, shots: [s] });
+  assert.deepEqual(out.map((p) => [p.entry.status, p.entry.source_path]), [["approved", `${M}\\HF-01_t2.mp4`]]);
+  assert.equal(out[0].entry.library_path, "B-roll library\\clips\\christmas_tree\\christmas_tree_HF-01_t2.mp4");
+  // Taken on disk too: then _2, _3; a .mov keeps its extension.
+  const taken = ["b-roll library\\clips\\christmas_tree\\christmas_tree_hf-01_t2.mp4"];
+  assert.equal(plannedEntries({ ...base, entries, shots: [s], taken })[0].entry.library_path, "B-roll library\\clips\\christmas_tree\\christmas_tree_HF-01_t2_2.mp4");
+  const mov = shot("HF-09", { chosen: { n: 1, file: `${ROOT}${M}\\HF-09_t1.mov`, hfJob: "j" }, others: [] });
+  assert.equal(plannedEntries({ ...base, shots: [mov] })[0].entry.library_path, "B-roll library\\clips\\christmas_tree\\christmas_tree_HF-09.mov");
+});
