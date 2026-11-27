@@ -122,3 +122,11 @@ Before you start: Probe → **Install join script** (the join script now takes p
 13. **Nothing wasted.** With no marks changed and nothing out of date, Apply pauses says why it's off instead of re-running.
 14. **Prompter bar (version 18).** Once a voiceover is joined, a bar sits at the top of the Review with ⏮ ❚❚ ⏭, the time, and the line being spoken. Scroll right down to B-roll: the bar stays. Pause, click a word in the bar (a ‖ appears there and in the list), type a note in the bar's box, then ▶ to carry on.
 15. **Fold sections (version 18).** Each section heading (Narration, Score, Sound effects, Voiceover and mix, B-roll) has ▾. Press it: the section folds to its heading (▸). Close and reopen Studio: it stays folded. The bar still plays with Voiceover and mix folded.
+
+## Tools start with Studio (version 20)
+1. Close ComfyUI and Stable Audio (in Pinokio). Exit Studio from the tray and open it again.
+2. The Films page shows **ComfyUI: Starting… · Stable Audio: Starting…** and, after a minute or two, **Ready** for both. The tray tooltip shows the same.
+3. Run Probe: ComfyUI and Stable Audio pass without you opening them.
+4. Exit Studio from the tray: ComfyUI and Stable Audio close (they were started by Studio). Open ComfyUI yourself, then open Studio: it says Ready and, on Exit, leaves your ComfyUI open.
+5. If it says **ComfyUI: Not found**, add `"comfy": { "exe": "<path to ComfyUI.exe>" }` to `.studio-settings.json` (Probe then has **Start ComfyUI now**).
+6. To stop either starting with Studio: `"autostart": { "comfy": false }` (or `"stableAudio": false`) in `.studio-settings.json`.

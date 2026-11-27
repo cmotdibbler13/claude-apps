@@ -41,6 +41,7 @@ export function makeComfyStarter({ settings, sleep }) {
 
   async function start(host) {
     const myGen = gen;
+    set("starting"); // checking counts as starting, so the line never reads "Off" while Studio looks
     if (await comfyUp(host, comfy())) { set("ready"); return; }
     const exe = await comfyExe(host, comfy());
     if (!exe) { set("missing", MSG_COMFY_MISSING); throw new Error(MSG_COMFY_MISSING); }

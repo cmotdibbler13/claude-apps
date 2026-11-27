@@ -17,6 +17,8 @@ import { makeHiggsfieldRunner } from "./tools/higgsfield.js";
 import { makeBlenderRunner } from "./tools/blender.js";
 import { makeComfyRunner } from "./tools/comfyui.js";
 import { makeStableAudioStarter, makeStableAudioRunner } from "./tools/stableaudio.js";
+import { makeComfyStarter } from "./tools/comfystart.js";
+import { autostart, toolsLine } from "./autostart.js";
 import { makeElevenRunner } from "./tools/elevenlabs.js";
 import { planAudio, addCue, editItem, getEstimate, rewriteFromNote, startAudioTake, approveAudio, unapproveAudio, chooseAudio, proposeStarts } from "./audioplan.js";
 import { makeVoiceJoinRunner } from "./tools/voicejoin.js";
@@ -88,7 +90,7 @@ function updateTray() {
     const open = () => { try { app.host.showWindow?.().catch(() => {}); } catch { /* ignore */ } };
     Promise.resolve(app.host.tray({
       icon: drawTrayIcon(), iconIsTemplate: false,
-      toolTip: `Six Minutes Studio \u2014 ${n} running`,
+      toolTip: `Six Minutes Studio \u2014 ${n} running${app.comfyStarter ? `\n${toolsLine({ comfy: app.comfyStarter, stableAudio: app.starter })}` : ""}`,
       menu: [
         { label: "Open", click: open },
         { label: "Live jobs", click: () => { open(); showView("jobs"); } },
@@ -161,7 +163,8 @@ async function renderNow() {
   $("state-banner").textContent = se ? jobsView.stateErrorBanner(se.film, se.message) : "";
 
   if (app.view === "films") {
-    paint("films", $("view-films"), filmsView.filmsModel({ root: app.root, films: app.films, jobs: list, error: app.bootError }), filmsView, filmsActions);
+    paint("films", $("view-films"), filmsView.filmsModel({ root: app.root, films: app.films, jobs: list, error: app.bootError,
+      tools: app.comfyStarter ? toolsLine({ comfy: app.comfyStarter, stableAudio: app.starter }) : null }), filmsView, filmsActions);
   } else if (app.view === "jobs") {
     const log = app.store ? await app.store.readLog(50) : null;
     const model = jobsView.jobsModel({ jobs: list, log, retried: app.retried, persistError: null });
@@ -202,7 +205,10 @@ async function loadRoot() {
     // One Stable Audio starter for the app: the runner starts it when a take needs it, Review shows its state.
     const starter = makeStableAudioStarter({ settings, sleep: (ms) => new Promise((res) => setTimeout(res, ms)) });
     app.starter = starter;
-    starter.onChange(() => render());
+    starter.onChange(() => { render(); updateTray(); });
+    // ComfyUI Desktop, started with Stable Audio when Studio opens (settings "autostart"); closed on exit if Studio started it.
+    app.comfyStarter = makeComfyStarter({ settings, sleep: (ms) => new Promise((res) => setTimeout(res, ms)) });
+    app.comfyStarter.onChange(() => { render(); updateTray(); });
     app.jobs = makeJobs(host, {
       runners: {
         higgsfield: makeHiggsfieldRunner({ settings }),
@@ -224,6 +230,8 @@ async function loadRoot() {
     app.jobs.onChange((list) => { onJobsChanged(list); render(); });
     app.jobs.onPersistError(() => render());
     app.jobs.restore(saved);
+    // Load ComfyUI and Stable Audio now, so a job never waits on them (states show on Films and in the tray).
+    autostart(host, settings, { comfy: app.comfyStarter, stableAudio: starter }).catch(() => {});
   }
   app.films = await scanFilms(host, app.root);
   render();
@@ -879,7 +887,7 @@ async function boot() {
     const fresh = await loadSettings(host, app.root);
     for (const k of Object.keys(app.settings)) if (!(k in fresh)) delete app.settings[k];
     Object.assign(app.settings, fresh);
-  });
+  }, () => ({ comfy: app.comfyStarter, stableAudio: app.starter }));
   await startWithAccess();
 }
 
@@ -918,7 +926,10 @@ async function startWithAccess(fromClick = false) {
 }
 
 // Closing the app stops the Stable Audio process the app started (never one Jon started himself).
-window.addEventListener("pagehide", () => { try { Promise.resolve(app.starter?.stop()).catch(() => {}); } catch { /* closing anyway */ } });
+// Closing the app stops the ComfyUI and Stable Audio processes the app started (never ones Jon started himself).
+window.addEventListener("pagehide", () => {
+  for (const s of [app.starter, app.comfyStarter]) { try { Promise.resolve(s?.stop()).catch(() => {}); } catch { /* closing anyway */ } }
+});
 
 // The sticky summary bar on Review sits just under the sticky header, whatever its height.
 {

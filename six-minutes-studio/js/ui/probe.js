@@ -24,7 +24,7 @@ const cmdCheck = (cmd, args) => async (host) => {
 const comfyCheck = (comfy) => async (host) => {
   const url = String(comfy.url || DEFAULT_SETTINGS.comfy.url).replace(/\/+$/, "");
   const r = await runProcess(host, "curl", ["-sS", "--fail", `${url}/system_stats`], { timeout: 15000 });
-  if (r.code !== 0) throw new Error(`exit ${r.code}: ${(r.stderr || r.stdout).trim()}`);
+  if (r.code !== 0) throw Object.assign(new Error(`Not running (exit ${r.code}: ${(r.stderr || r.stdout).trim()})`), { start: "comfy" });
   let version = null;
   try { version = JSON.parse(r.stdout)?.system?.comfyui_version ?? null; } catch { /* not JSON: still running */ }
   if (!comfy.workflow) throw new Error("Workflow path not set yet; open Films first");
@@ -36,7 +36,7 @@ const comfyCheck = (comfy) => async (host) => {
 const stableAudioCheck = (sa) => async (host) => {
   const s = await stableAudioState(host, sa);
   if (s === "ready") return "Ready";
-  if (s === "off") throw new Error("Off: press Start Stable Audio on a film's Review");
+  if (s === "off") throw Object.assign(new Error("Off: press Start now below, or Start Stable Audio on a film's Review"), { start: "stableAudio" });
   if (s === "music") throw new Error(MSG_MUSIC);
   throw new Error(`Not ready: look at Stable Audio in Pinokio (${sa.url})`);
 };
@@ -125,7 +125,7 @@ export async function runChecks(host, onResult = () => {}, settings = DEFAULT_SE
   for (const c of makeChecks(settings)) {
     let r;
     try { r = { name: c.name, ok: true, detail: await c.run(host) }; }
-    catch (e) { r = { name: c.name, ok: false, detail: String(e?.message ?? e), install: !!e?.install }; }
+    catch (e) { r = { name: c.name, ok: false, detail: String(e?.message ?? e), install: !!e?.install, ...(e?.start ? { start: e.start } : {}) }; }
     out.push(r);
     onResult(r);
   }
@@ -144,7 +144,8 @@ function row(r) {
 
 // getSettings() gives the loaded .studio-settings.json (defaults until the root is read). reload(), when
 // given, re-reads the file first, so a setting changed while the app is open counts straight away.
-export function mountProbe(host, button, list, getSettings = () => DEFAULT_SETTINGS, reload = null) {
+// getStarters(): { comfy, stableAudio } — a check that finds the tool not running gets a Start now row.
+export function mountProbe(host, button, list, getSettings = () => DEFAULT_SETTINGS, reload = null, getStarters = () => ({})) {
   const run = async () => {
     button.disabled = true;
     list.replaceChildren();
@@ -153,9 +154,28 @@ export function mountProbe(host, button, list, getSettings = () => DEFAULT_SETTI
     const results = await runChecks(host, (r) => list.append(row(r)), settings);
     // A missing or old join script can be put right from here: Studio carries the current copy.
     if (results.some((r) => r.install)) list.append(installRow(host, settings.autocueDir ?? DEFAULT_SETTINGS.autocueDir, run));
+    const starters = getStarters?.() ?? {};
+    for (const r of results) if (r.start && starters[r.start]) list.append(startRow(host, r.name, starters[r.start], run));
     button.disabled = false;
   };
   button.onclick = run;
+}
+
+function startRow(host, name, starter, rerun) {
+  const li = document.createElement("li");
+  li.className = "install";
+  const b = document.createElement("button");
+  b.type = "button"; b.className = "btn"; b.textContent = `Start ${name} now`;
+  const d = document.createElement("span"); d.className = "detail";
+  d.textContent = "Studio starts it when it opens; this starts it now. It can take a minute or two to load.";
+  b.onclick = async () => {
+    b.disabled = true;
+    d.textContent = `Starting ${name}…`;
+    try { await starter.ensure(host); d.textContent = `${name} is ready. Checking again…`; await rerun(); }
+    catch (e) { d.textContent = `Couldn't start ${name}: ${e?.message ?? e}`; b.disabled = false; }
+  };
+  li.append(b, d);
+  return li;
 }
 
 function installRow(host, dir, rerun) {

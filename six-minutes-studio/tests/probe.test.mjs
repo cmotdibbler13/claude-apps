@@ -122,7 +122,7 @@ test("Stable Audio check: connection refused says how to start it; the Music mod
   host.fs.list = async () => [];
   const r = saCheck(await runChecks(host, () => {}, saSettings));
   assert.equal(r.ok, false);
-  assert.equal(r.detail, "Off: press Start Stable Audio on a film's Review");
+  assert.equal(r.detail, "Off: press Start now below, or Start Stable Audio on a film's Review");
 
   const h2 = new FakeHost();
   h2.spawnScript((cmd, args, o, p) => {
