@@ -53,22 +53,24 @@ async function readJson(host, path) {
   try { return JSON.parse(await host.fs.read(path, "utf8")); } catch { return null; }
 }
 
-// waitJob resolves on the job; the holder follows it a moment later.
-async function holderDone(store, key, host) {
-  for (let i = 0; i < 400; i++) {
-    const s = store.state.mix?.[key]?.status;
-    if (s === "done") return;
-    if (s === "failed" || s === "interrupted") throw new Error(store.state.mix[key].error ?? "It stopped.");
-    await new Promise((r) => setTimeout(r, 5));
+// waitJob resolves on the job; the holder follows it a moment later (the store has no change hook, so poll).
+async function holderDone(store, key, label) {
+  const until = Date.now() + 30000;
+  while (Date.now() < until) {
+    const h = store.state.mix?.[key];
+    if (h?.status === "done") return;
+    if (h?.status === "failed" || h?.status === "interrupted") throw new Error(h.error ?? "It stopped.");
+    await new Promise((r) => setTimeout(r, 50));
   }
+  throw new Error(`The ${label} finished but Studio didn't record it in time. Press Apply pauses again.`);
 }
 
-async function runStep(ctx, key, start) {
+async function runStep(ctx, key, label, start) {
   await start();
   const id = ctx.store.state.mix?.[key]?.jobId;
   if (!id) throw new Error("The step did not start.");
   await waitJob(ctx.jobs, id);
-  await holderDone(ctx.store, key, ctx.host);
+  await holderDone(ctx.store, key, label);
 }
 
 export async function applyPauses(ctx, { onStep } = {}) {
@@ -87,7 +89,7 @@ export async function applyPauses(ctx, { onStep } = {}) {
   const allowFlagged = rows.length > 0 && rows.every((r) => r.status === "rerecord" || allowedSet.has(r.id));
 
   onStep?.("VOICEOVER");
-  await runStep(ctx, "voiceover", () => startJoin(ctx, { allowFlagged, pauses: { file, sig, applied: file.inside, allowedIds } }));
+  await runStep(ctx, "voiceover", "voiceover join", () => startJoin(ctx, { allowFlagged, pauses: { file, sig, applied: file.inside, allowedIds } }));
   await store.update((d) => {
     d.mix.pacing ??= { lines: {} };
     d.mix.pacing.appliedSig = sig;
@@ -108,9 +110,9 @@ export async function applyPauses(ctx, { onStep } = {}) {
 
   if (!fit || fit.source !== "app") return { stoppedAt: "FIT" };
   onStep?.("FIT");
-  await runStep(ctx, "fit", () => startFit(ctx, { note: fit.note ?? undefined }));
+  await runStep(ctx, "fit", "score fit", () => startFit(ctx, { note: fit.note ?? undefined }));
   if (!hadMix) return { stoppedAt: null };
   onStep?.("MIX");
-  await runStep(ctx, "mix", () => startMix(ctx));
+  await runStep(ctx, "mix", "mix", () => startMix(ctx));
   return { stoppedAt: null };
 }

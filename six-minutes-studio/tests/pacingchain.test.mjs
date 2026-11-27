@@ -136,13 +136,12 @@ test("a join failure rejects and starts nothing else", async () => {
   const s = await setup();
   await prepared(s);
   const jobs0 = s.jobs.list().length;
-  const real = s.jobs;
   // the join's timings write fails
   const orig = s.host.fs.write;
   s.host.fs.write = async (p, d) => { if (String(p).endsWith("_timings.csv")) throw new Error("disk full"); return orig(p, d); };
   await assert.rejects(applyPauses(s.ctx, {}));
   s.host.fs.write = orig;
-  const added = real.list().slice(jobs0).map((j) => j.assetId);
+  const added = s.jobs.list().slice(jobs0).map((j) => j.assetId);
   assert.deepEqual(added, ["VOICEOVER"]);
 });
 
@@ -175,4 +174,41 @@ test("after a restart with an interrupted join, the marks are still stale: Apply
   const n = s.jobs.list().length;
   await new Promise((r) => setTimeout(r, 30));
   assert.equal(s.jobs.list().length, n);
+});
+
+test("the chain shifts Jon's cues using the old and new transcripts", async () => {
+  const s = await setup();
+  await prepared(s);
+  const TP = VO + "\\t.json";
+  await s.host.fs.write(TP, JSON.stringify({ sentences: [{ sentence: "01.1", start: 8, end: 12 }] }));
+  await s.store.update((d) => { d.audio.sfx[0].startS = 10; d.audio.sfx[0].startSBy = "jon"; d.audio.sfx[1].startS = 10; d.mix.voiceover.pausesApplied = {}; });
+  const orig = s.host.fs.write;
+  s.host.fs.write = async (p, d) => {
+    await orig(p, d);
+    if (String(p).endsWith("_timings.csv")) await orig(TP, JSON.stringify({ sentences: [{ sentence: "01.1", start: 8.3, end: 12.6 }] }));
+  };
+  await applyPauses(s.ctx, {});
+  const [a, b] = s.store.state.audio.sfx;
+  assert.equal(a.startS, 10.3);
+  assert.equal(a.startSBy, "jon");
+  assert.equal(b.startS, 10, "a cue that is not Jon's is left alone");
+});
+
+test("a rerecord row lets the join run with allowFlagged and its id allowed", async () => {
+  const s = await setup();
+  await prepared(s);
+  s.ctx.narration = { rows: [{ id: "01.1", status: "rerecord" }] };
+  await applyPauses(s.ctx, {});
+  assert.equal(s.calls.join.at(-1).allowFlagged, true);
+  assert.deepEqual(st(s).voiceover.allowedIds, ["01.1"]);
+});
+
+test("no done fit stops at FIT", async () => {
+  const s = await setup();
+  await startJoin(s.ctx);
+  await until(() => st(s).voiceover?.status === "done");
+  await s.store.update((d) => { d.mix.pacing = JSON.parse(JSON.stringify(MARKED)); });
+  s.ctx.narration = { rows: [{ id: "01.1", status: "ok" }] };
+  assert.deepEqual(await applyPauses(s.ctx, {}), { stoppedAt: "FIT" });
+  assert.equal(s.calls.fit.length, 0);
 });
