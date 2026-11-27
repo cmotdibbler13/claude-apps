@@ -230,6 +230,8 @@ export function render(el, model, actions) {
     h("p", { class: "lede", text: "Pick a take, approve it, or redo anything with a note." }),
     h("label", { class: "pref", for: "prefer-comfy" }, pref, h("span", { text: "Prefer ComfyUI for b-roll" })),
     model.prefError ? h("p", { class: "err", text: model.prefError }) : null,
+    // The prompter bar sticks at the top while Jon scrolls (shown once a voiceover is joined).
+    model.mix?.pacing && actions.prompter ? actions.prompter(model.mix.pacing) : null,
   ].filter(Boolean);
   if (model.needsShotList) {
     el.replaceChildren(...head, ...(model.narration ? [narrationSection(model.narration, actions)] : []), ...audioSections(model.audio, actions), mixSection(model.mix, actions),

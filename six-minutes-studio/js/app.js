@@ -29,6 +29,7 @@ import * as jobsView from "./ui/jobs.js";
 import * as reviewView from "./ui/review.js";
 import { keepPlayer } from "./ui/mix.js";
 import { followPlayer } from "./ui/pacing.js";
+import { prompterBar } from "./ui/prompter.js";
 
 const $ = (id) => document.getElementById(id);
 const msg = (e) => String(e?.message ?? e);
@@ -240,6 +241,7 @@ const filmsActions = {
 };
 
 function resetReview() {
+  app.review?.bar?.attach(null);
   stopTake();
   unfollow();
   for (const slot of Object.keys(players)) dropPlayer(slot);
@@ -416,6 +418,7 @@ const reviewEl = () => (app.review.paceSource === "mix" ? players.mix.el : playe
 function attachFollow() {
   const list = document.querySelector("#view-review ul.pace");
   const el = app.view === "review" ? reviewEl() : null;
+  app.review.bar?.attach(el ?? null);
   if (!list || !el) { unfollow(); return; }
   if (follow.el === el && follow.list === list) return;
   unfollow();
@@ -807,6 +810,8 @@ const reviewActions = {
   seekMix,
   // Pacing review
   reviewPlayer: (file, key, label) => audioEl("review", file, key, label),
+  // A new bar per paint (the old one is dropped with the old DOM); attachFollow binds it to the review's player.
+  prompter(m) { app.review.bar?.attach(null); app.review.bar = prompterBar(m, reviewActions); return app.review.bar.el; },
   seekReview,
   markWord(id, i) {
     if (newTake(id)) return;

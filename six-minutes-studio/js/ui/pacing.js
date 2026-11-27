@@ -142,9 +142,10 @@ function markMenu(id, m, actions, { first = false, gap = false, lost = false } =
     onkeydown: (e) => { if (e.key === "Escape") actions.openMark(id, m.key); } }, kids);
 }
 
-function noteBox(l, actions) {
+// The field key is shared with the prompter bar's copy of the box, so text typed in either survives a re-render.
+function noteBox(l, actions, prefix = "pace") {
   const key = `pace-${l.id}-note`;
-  const ta = h("textarea", { id: key, class: "pnote", rows: 1, placeholder: "Note", "aria-label": `Note for ${l.id}` });
+  const ta = h("textarea", { id: `${prefix}-${l.id}-note`, class: "pnote", rows: 1, placeholder: "Note", "aria-label": `Note for ${l.id}` });
   ta.value = actions.field?.(key) ?? l.note;
   ta.addEventListener("input", () => actions.setField(key, ta.value));
   ta.addEventListener("blur", () => {
@@ -157,7 +158,8 @@ function noteBox(l, actions) {
   return ta;
 }
 
-function lineEl(l, actions) {
+// prefix: element ids (the prompter bar shows the same line with "pace-bar").
+export function lineEl(l, actions, { prefix = "pace" } = {}) {
   const text = [];
   if (l.words.length) {
     for (const w of l.words) {
@@ -185,7 +187,7 @@ function lineEl(l, actions) {
     seen.add(m.text);
     notes.push(h("p", { class: `pwarn${m.tight ? " tight" : ""}`, text: m.text }));
   }
-  const cb = h("input", { type: "checkbox", id: `pace-${l.id}-rr` });
+  const cb = h("input", { type: "checkbox", id: `${prefix}-${l.id}-rr` });
   cb.checked = l.rerecord;
   cb.addEventListener("change", () => actions.setRerecord(l.id, cb.checked));
   const attrs = { class: `pline${l.rerecord ? " rr" : ""}` };
@@ -193,7 +195,7 @@ function lineEl(l, actions) {
   return h("li", attrs,
     h("button", { type: "button", class: "pid", title: "Play from this line", disabled: l.start == null, onclick: () => actions.seekReview(l.start) }, l.id),
     h("div", { class: "ptext" }, text),
-    h("div", { class: "pside" }, noteBox(l, actions), h("label", { class: "prr", for: `pace-${l.id}-rr` }, cb, h("span", { text: "Re-record" }))),
+    h("div", { class: "pside" }, noteBox(l, actions, prefix), h("label", { class: "prr", for: `${prefix}-${l.id}-rr` }, cb, h("span", { text: "Re-record" }))),
     notes.length || l.reply ? h("div", { class: "pinfo" }, notes, l.reply ? h("p", { class: "preply", text: l.reply }) : null) : null);
 }
 
