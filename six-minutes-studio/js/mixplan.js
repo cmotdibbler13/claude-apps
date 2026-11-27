@@ -225,6 +225,17 @@ async function preparing(store, id, fn) {
   try { return await fn(); } finally { store.pending?.delete(key); }
 }
 
+// The last good join: the one whose transcript and applied pauses the marks are placed from. A done join is its
+// own; a join that is queued, running, failed or interrupted carries the one before it (lastGood).
+export function goodFrame(vo) {
+  if (!vo) return null;
+  if (vo.status === "done") {
+    return { transcript: vo.transcript ?? null, applied: vo.pausesApplied ?? {}, startedAt: vo.startedAt ?? null, at: vo.at ?? null,
+      allowFlagged: !!vo.allowFlagged, tight: vo.tight ?? [] };
+  }
+  return vo.lastGood ?? null;
+}
+
 // ---- actions ----
 export async function startJoin(ctx, { allowFlagged = false, pauses = null } = {}) {
   const { host, store, settings = {} } = ctx;
@@ -240,7 +251,7 @@ export async function startJoin(ctx, { allowFlagged = false, pauses = null } = {
     input.pauses = path;
   }
   return startRun(ctx, "VOICEOVER", {
-    allowFlagged: !!allowFlagged,
+    allowFlagged: !!allowFlagged, lastGood: goodFrame(store.state.mix?.voiceover),
     pausesSig: pauses ? pauses.sig : null, pausesApplied: pauses ? pauses.applied ?? {} : {}, allowedIds: pauses ? pauses.allowedIds ?? [] : ctx.notOkIds ?? [], wav: null, csv: null, transcript: null, lengthS: null, tightened: [], tight: [], extra: [], silent: [], duplicates: [], at: null,
   }, { why: allowFlagged ? "Flagged lines allowed" : undefined, input });
 }

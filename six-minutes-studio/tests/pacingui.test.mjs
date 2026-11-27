@@ -303,3 +303,64 @@ test("a freshly painted list gets the highlight at once but is not scrolled", ()
   assert.equal(list.scrollTop, 0);
   assert.ok(lis.every((li) => li.scrolled === 0));
 }));
+
+// ---- final review fixes ----
+test("after a failed or running join, marks are not shown as applied", () => {
+  const pacing = { lines: { "01.1": { pauses: [{ key: "pictish#2", word: "Pictish", nth: 2, size: "medium", by: "jon", take: SIG("01.1") }] } } };
+  const sigs = { "01.1": SIG("01.1"), "01.2": SIG("01.2"), "01.3": SIG("01.3") };
+  const sig = marksSig(pacing, sigs);
+  const done = film({ pacing, vo: { pausesSig: sig } });
+  assert.equal(pacingModel({ state: done, transcript: TRANSCRIPT, narration: NARR, lineScript: LINES, sig }).lines[0].words[4].mark.applied, true);
+  for (const status of ["failed", "running", "interrupted"]) {
+    const st = film({ pacing, vo: { status, pausesSig: sig } });
+    assert.equal(pacingModel({ state: st, transcript: TRANSCRIPT, narration: NARR, lineScript: LINES, sig }).lines[0].words[4].mark.applied, false, status);
+  }
+});
+
+test("while a join runs, tight marks follow the last good join it carries", () => {
+  const t2 = JSON.parse(JSON.stringify(TRANSCRIPT));
+  for (const w of t2.words.filter((x) => x.sentence === "01.1" && x.start >= 1.6)) { w.start += 0.6; w.end += 0.6; }
+  const at = (1.5 + 1.6) / 2;
+  const pacing = { lines: { "01.1": { pauses: [{ key: "orkney#1", word: "Orkney.", nth: 1, size: "medium", by: "jon", take: SIG("01.1") }] } } };
+  const lastGood = { transcript: "C:\\f\\t.json", applied: { "01.1": [{ at_s: at, add_s: 0.6 }] }, startedAt: 400000, at: 500000, tight: [{ id: "01.1", at_s: at + 0.1 }] };
+  const state = film({ pacing, vo: { status: "running", pausesApplied: { "01.1": [{ at_s: 9, add_s: 1 }] }, tight: [], lastGood } });
+  const m = pacingModel({ state, transcript: t2, narration: NARR, lineScript: LINES, sig: "x" });
+  assert.equal(m.lines[0].words[3].mark.tight, true);
+});
+
+test("a line whose take is newer than the last good join: words can't be marked, its inside marks say the take changed", () => withDom(async () => {
+  const { pacingSection } = await import("../js/ui/pacing.js");
+  const narration = { ...NARR, rows: [row("01.1", 600), row("01.2"), row("01.3")] };
+  const pacing = { lines: { "01.1": { pauses: [
+    { key: "pictish#2", word: "Pictish", nth: 2, size: "medium", by: "jon", take: takeSig(row("01.1", 600)) },
+    { key: "end", word: null, nth: null, size: "short", by: "jon", take: takeSig(row("01.1", 600)) },
+  ] } } };
+  const state = film({ pacing, vo: { startedAt: 499000 } });
+  const m = pacingModel({ state, transcript: TRANSCRIPT, narration, lineScript: LINES, sig: "x" });
+  const l = m.lines[0];
+  assert.equal(l.newTake, true);
+  assert.equal(m.lines[1].newTake, false);
+  assert.equal(l.words[4].mark.state, "take-changed");
+  assert.equal(l.words[4].mark.text, "The take changed. Place again");
+  assert.equal(l.gap.state, "ok");
+  const calls = [];
+  const el = pacingSection(m, { markWord: (id, i) => calls.push([id, i]), markGap: (id) => calls.push([id, "gap"]), field: () => undefined, setField() {} });
+  const lis = all(el, (e) => e.tag === "li");
+  const words = all(lis[0], (e) => hasClass(e, "pword"));
+  assert.ok(words.length > 0 && words.every((w) => w.disabled === true && w.attrs.title === "Join again to mark the new take"));
+  assert.ok(all(lis[1], (e) => hasClass(e, "pword")).every((w) => !w.disabled));
+}));
+
+test("while Apply pauses runs, the Join, Fit and Mix buttons are held", () => {
+  const state = film();
+  state.audio = { score: { approved: true, chosen: 1, takes: [{ n: 1, status: "done", file: "s.wav" }] } };
+  state.mix.fit = { id: "FIT", status: "done", at: 60, fromVoiceoverAt: 500000, fromScoreTake: 1, file: "fit.wav", source: "app", scoreFile: "s.wav", takes: [] };
+  state.mix.mix = { id: "MIX", status: "done", at: 70, fromFitAt: 60, fromVoiceoverAt: 500000, fromSfx: [], files: { wav: "m.wav" }, takes: [] };
+  const free = mixModel({ state, narration: NARR, settings: { stemRemixer: true } }).steps;
+  assert.deepEqual(free.map((s) => s.run.enabled), [true, true, true]);
+  const held = mixModel({ state, narration: NARR, settings: { stemRemixer: true }, pacingUi: { chain: { applying: { step: "FIT" } } } }).steps;
+  assert.deepEqual(held.map((s) => s.run.enabled), [false, false, false]);
+  assert.equal(held[1].canOpen, false);
+  assert.equal(held[1].canUseExport, false);
+  assert.equal(held[2].canApprove, false);
+});

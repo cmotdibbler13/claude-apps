@@ -5,7 +5,7 @@ import { openFilm } from "../js/store.js";
 import { makeJobs } from "../js/jobs.js";
 import { watchJobs, holders } from "../js/redo.js";
 import { startJoin, startFit, startMix, useStemRemixerExport, approveMix, fitStale, mixStale, OUT_OF_DATE, parseCsv,
-  openFitInStemRemixer, REJOIN, pastedPath, pacingStale } from "../js/mixplan.js";
+  openFitInStemRemixer, REJOIN, pastedPath, pacingStale, goodFrame } from "../js/mixplan.js";
 import { marksSig } from "../js/pacing.js";
 import { MSG_NO_STEM_REMIXER, MSG_SET_STEM_REMIXER } from "../js/tools/stemfit.js";
 
@@ -421,4 +421,32 @@ test("pacingStale: true after the marks change, false right after a join with th
   await until(() => st(s).voiceover.status === "done" && st(s).voiceover.pausesSig === marked);
   assert.equal(pacingStale(s.store.state, marked), false);
   assert.equal(pacingStale(s.store.state, empty), true);
+});
+
+test("goodFrame: a done join is its own frame; otherwise the last good join it carries", () => {
+  const done = { status: "done", transcript: "T1", pausesApplied: { "01.1": [{ at_s: 1, add_s: 0.6 }] }, startedAt: 10, at: 20, allowFlagged: true, tight: [{ id: "01.1", at_s: 1 }] };
+  assert.deepEqual(goodFrame(done), { transcript: "T1", applied: { "01.1": [{ at_s: 1, add_s: 0.6 }] }, startedAt: 10, at: 20, allowFlagged: true, tight: [{ id: "01.1", at_s: 1 }] });
+  assert.deepEqual(goodFrame({ status: "done", transcript: "T", startedAt: 1, at: 2 }).applied, {});
+  const lg = { transcript: "T0", applied: {}, startedAt: 1, at: 2, allowFlagged: false, tight: [] };
+  assert.equal(goodFrame({ status: "failed", transcript: null, lastGood: lg }), lg);
+  assert.equal(goodFrame({ status: "running" }), null);
+  assert.equal(goodFrame(null), null);
+});
+
+test("a new join carries the last good join's frame, through a failed one too", async () => {
+  const s = await setup();
+  await startJoin(s.ctx, { pauses: { file: { inside: {}, after: {} }, sig: "S1", applied: { "01.1": [{ at_s: 1, add_s: 0.6 }] }, allowedIds: [] } });
+  await until(() => st(s).voiceover.status === "done");
+  const first = goodFrame(st(s).voiceover);
+  assert.equal(first.transcript, VO + "\\t.json");
+  assert.deepEqual(first.applied, { "01.1": [{ at_s: 1, add_s: 0.6 }] });
+  const orig = s.host.fs.write;
+  s.host.fs.write = async (p, d) => { if (String(p).endsWith("_timings.csv")) throw new Error("disk full"); return orig(p, d); };
+  await startJoin(s.ctx, { pauses: { file: { inside: {}, after: {} }, sig: "S2", applied: { "01.1": [{ at_s: 2, add_s: 1 }] }, allowedIds: [] } });
+  assert.deepEqual(st(s).voiceover.lastGood, first);
+  await until(() => st(s).voiceover.status === "failed");
+  s.host.fs.write = orig;
+  assert.deepEqual(goodFrame(st(s).voiceover), first);
+  await startJoin(s.ctx);
+  assert.deepEqual(st(s).voiceover.lastGood, first, "a failed join passes the frame it carried on");
 });

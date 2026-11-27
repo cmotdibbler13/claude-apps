@@ -5,9 +5,9 @@ import { openFilm } from "../js/store.js";
 import { makeJobs } from "../js/jobs.js";
 import { watchJobs, holders } from "../js/redo.js";
 import { startJoin, startFit, startMix } from "../js/mixplan.js";
-import { marksSig } from "../js/pacing.js";
+import { marksSig, takeSig } from "../js/pacing.js";
 import { pacingStale } from "../js/mixplan.js";
-import { canApply, shiftJonStarts, applyPauses } from "../js/pacingchain.js";
+import { canApply, shiftJonStarts, applyPauses, NO_FRAME } from "../js/pacingchain.js";
 
 const DIR = "S:\\Youtube video ideas\\Film A";
 const MEDIA = DIR + "\\studio\\media";
@@ -109,8 +109,7 @@ test("the chain joins, fits with the previous note, then mixes, each after the l
   assert.deepEqual(steps, ["VOICEOVER", "FIT", "MIX"]);
   assert.deepEqual(order(s).slice(n0).filter((x) => x !== "MEASURE"), ["VOICEOVER", "FIT", "MIX"]);
   assert.equal(st(s).fit.note, "keep the rise");
-  assert.equal(st(s).pacing.appliedSig, marksSig(MARKED, {}));
-  assert.deepEqual(st(s).pacing.applied, {});
+  assert.ok(!("appliedSig" in st(s).pacing) && !("applied" in st(s).pacing), "no copy of the join's record on the marks");
   assert.equal(st(s).voiceover.pausesSig, marksSig(MARKED, {}));
   assert.equal(s.calls.join.length, 2);
 });
@@ -167,7 +166,7 @@ test("canApply", () => {
 test("after a restart with an interrupted join, the marks are still stale: Apply is offered, nothing starts", async () => {
   const s = await setup();
   await prepared(s);
-  await s.store.update((d) => { d.mix.voiceover.status = "failed"; d.mix.pacing.appliedSig = "old"; });
+  await s.store.update((d) => { d.mix.voiceover.status = "failed"; });
   const sig = marksSig(MARKED, {});
   assert.equal(pacingStale({ mix: { ...st(s), voiceover: { ...st(s).voiceover, status: "done", pausesSig: "old" } } }, sig), true);
   assert.equal(canApply({ state: s.store.state, narration: s.ctx.narration, sig }).ok, true);
@@ -194,13 +193,34 @@ test("the chain shifts Jon's cues using the old and new transcripts", async () =
   assert.equal(b.startS, 10, "a cue that is not Jon's is left alone");
 });
 
-test("a rerecord row lets the join run with allowFlagged and its id allowed", async () => {
+test("a Re-record row alone never turns on allowFlagged", async () => {
   const s = await setup();
   await prepared(s);
-  s.ctx.narration = { rows: [{ id: "01.1", status: "rerecord" }] };
+  s.ctx.narration = { rows: [{ id: "01.1", status: "rerecord", checkedStatus: "ok" }] };
+  assert.equal(canApply({ state: s.store.state, narration: s.ctx.narration }).ok, true);
   await applyPauses(s.ctx, {});
-  assert.equal(s.calls.join.at(-1).allowFlagged, true);
-  assert.deepEqual(st(s).voiceover.allowedIds, ["01.1"]);
+  assert.equal(s.calls.join.at(-1).allowFlagged, false);
+  assert.equal(st(s).voiceover.allowFlagged, false);
+  await applyPauses(s.ctx, { joinOnly: true, allowFlagged: true });
+  assert.equal(s.calls.join.at(-1).allowFlagged, false, "Join anyway with only Re-record lines");
+});
+
+test("allowFlagged goes on when the last join had it, or for flagged lines already allowed", async () => {
+  const s = await setup();
+  await prepared(s);
+  await s.store.update((d) => { d.mix.voiceover.allowFlagged = true; });
+  s.ctx.narration = { rows: [{ id: "01.1", status: "rerecord", checkedStatus: "ok" }] };
+  await applyPauses(s.ctx, {});
+  assert.equal(s.calls.join.at(-1).allowFlagged, true, "the last join had it");
+  await s.store.update((d) => { d.mix.voiceover.allowFlagged = false; d.mix.voiceover.allowedIds = ["01.2"]; });
+  s.ctx.narration = { rows: [{ id: "01.1", status: "rerecord", checkedStatus: "ok" }, { id: "01.2", status: "flagged" }] };
+  await applyPauses(s.ctx, {});
+  assert.equal(s.calls.join.at(-1).allowFlagged, true, "a flagged line Jon already joined anyway");
+  assert.deepEqual(st(s).voiceover.allowedIds, ["01.2"]);
+  await s.store.update((d) => { d.mix.voiceover.allowFlagged = false; d.mix.voiceover.allowedIds = []; });
+  s.ctx.narration = { rows: [{ id: "01.2", status: "flagged" }] };
+  await applyPauses(s.ctx, { joinOnly: true, allowFlagged: true });
+  assert.equal(s.calls.join.at(-1).allowFlagged, true, "Join anyway with a flagged line");
 });
 
 test("no done fit stops at FIT", async () => {
@@ -211,4 +231,132 @@ test("no done fit stops at FIT", async () => {
   s.ctx.narration = { rows: [{ id: "01.1", status: "ok" }] };
   assert.deepEqual(await applyPauses(s.ctx, {}), { stoppedAt: "FIT" });
   assert.equal(s.calls.fit.length, 0);
+});
+
+// ---- the last good join's frame (final review: R1-R4) ----
+const TP = VO + "\\t.json";
+const WORDS = [["Pictish", 8.0, 8.4], ["village", 8.45, 8.8], ["in", 8.85, 8.95], ["Orkney.", 9.0, 9.5]];
+const r3 = (n) => Math.round(n * 1000) / 1000;
+// Each join writes a transcript whose words sit where the pauses it was sent put them.
+function realTranscripts(s) {
+  const orig = s.host.fs.write.bind(s.host.fs);
+  s.host.fs.write = async (p, d) => {
+    await orig(p, d);
+    if (!String(p).endsWith("_timings.csv")) return;
+    const input = s.calls.join.at(-1);
+    const inside = input?.pauses ? JSON.parse(await s.host.fs.read(input.pauses, "utf8")).inside?.["01.1"] ?? [] : [];
+    const shift = (rel) => inside.filter((a) => a.at_s < rel).reduce((n, a) => n + a.add_s, 0);
+    const words = WORDS.map(([word, a, b]) => ({ sentence: "01.1", word, start: r3(a + shift(a - 8)), end: r3(b + shift(a - 8)) }));
+    await orig(TP, JSON.stringify({ sentences: [{ sentence: "01.1", start: 8, end: words.at(-1).end }], words }));
+  };
+  return orig;
+}
+const INSIDE = { lines: { "01.1": { pauses: [
+  { key: "village#1", word: "village", nth: 1, size: "medium", by: "jon" },
+  { key: "in#1", word: "in", nth: 1, size: "medium", by: "jon" },
+  { key: "end", word: null, nth: null, size: "short", by: "jon" },
+] } } };
+const sent = async (s) => JSON.parse(await s.host.fs.read(s.calls.join.at(-1).pauses, "utf8"));
+function failJoins(s) {
+  const prev = s.host.fs.write;
+  s.host.fs.write = async (p, d) => { if (String(p).endsWith("_timings.csv")) throw new Error("disk full"); return prev(p, d); };
+  return () => { s.host.fs.write = prev; };
+}
+
+test("after a failed join, Apply and Join again keep the inside marks at the last good join's at_s", async () => {
+  const s = await setup();
+  realTranscripts(s);
+  await prepared(s);
+  await s.store.update((d) => { d.mix.pacing = JSON.parse(JSON.stringify(INSIDE)); });
+  await applyPauses(s.ctx, {});
+  const good = (await sent(s)).inside;
+  assert.deepEqual(good, { "01.1": [{ at_s: 0.825, add_s: 0.6 }, { at_s: 0.975, add_s: 0.6 }] });
+  const sig = st(s).voiceover.pausesSig;
+
+  const restore = failJoins(s);
+  await assert.rejects(applyPauses(s.ctx, {}));
+  restore();
+  assert.equal(st(s).voiceover.status, "failed");
+
+  await applyPauses(s.ctx, {});
+  assert.deepEqual((await sent(s)).inside, good, "Apply after the failure");
+  assert.equal(st(s).voiceover.pausesSig, sig);
+  assert.deepEqual(st(s).voiceover.pausesApplied, good);
+
+  const restore2 = failJoins(s);
+  await assert.rejects(applyPauses(s.ctx, { joinOnly: true }));
+  restore2();
+  await applyPauses(s.ctx, { joinOnly: true });
+  assert.deepEqual((await sent(s)).inside, good, "Join again after the failure");
+  assert.deepEqual((await sent(s)).after, { "01.1": 0.3 });
+});
+
+test("when the last good join's word timings can't be read, Apply refuses; Join again joins without any pauses", async () => {
+  const s = await setup();
+  realTranscripts(s);
+  await prepared(s);
+  await s.store.update((d) => { d.mix.pacing = JSON.parse(JSON.stringify(INSIDE)); });
+  await s.host.fs.write(TP, "not json");
+  const n = s.jobs.list().length;
+  await assert.rejects(applyPauses(s.ctx, {}), (e) => e.message === NO_FRAME);
+  assert.equal(s.jobs.list().length, n, "Apply starts nothing");
+  assert.equal(NO_FRAME, "Couldn't read the last voiceover's word timings, so the pauses can't be placed. Join again without changes first.");
+  // "Join again without changes": no pauses file at all, and the marks are not taken as joined.
+  const r = await applyPauses(s.ctx, { joinOnly: true });
+  assert.deepEqual(r, { stoppedAt: null, joinOnly: true, withoutPauses: true });
+  assert.ok(!("pauses" in s.calls.join.at(-1)));
+  assert.equal(st(s).voiceover.pausesSig, null);
+  assert.equal(pacingStale(s.store.state, marksSig(st(s).pacing, {})), true);
+  // From that join the marks are placed again, at their unpaused times.
+  await applyPauses(s.ctx, {});
+  assert.deepEqual((await sent(s)).inside, { "01.1": [{ at_s: 0.825, add_s: 0.6 }, { at_s: 0.975, add_s: 0.6 }] });
+});
+
+test("gap marks alone need no word timings", async () => {
+  const s = await setup();
+  realTranscripts(s);
+  await prepared(s);
+  await s.host.fs.write(TP, "not json");
+  await applyPauses(s.ctx, { joinOnly: true });
+  assert.deepEqual((await sent(s)).after, { "01.1": 1 });
+});
+
+test("a line with a take newer than the last good join: its inside marks are not sent, its gap mark is", async () => {
+  const s = await setup();
+  realTranscripts(s);
+  await prepared(s);
+  await s.store.update((d) => { d.mix.pacing = JSON.parse(JSON.stringify(INSIDE)); });
+  const takeS = st(s).voiceover.startedAt / 1000 + 5;
+  const row = { id: "01.1", status: "ok", file: "C:\\rec\\film_a_01.1.wav", takeS };
+  s.ctx.narration = { rows: [row] };
+  await applyPauses(s.ctx, { joinOnly: true });
+  const f = await sent(s);
+  assert.deepEqual(f.inside, {});
+  assert.deepEqual(f.after, { "01.1": 0.3 });
+  assert.deepEqual(st(s).voiceover.pausesApplied, {});
+  // The inside marks were not joined, so they still count as changed once the new take is in.
+  assert.equal(pacingStale(s.store.state, marksSig(st(s).pacing, { "01.1": takeSig(row) })), true);
+});
+
+test("plain Join again moves Jon's cues with the pauses and does not fit or mix", async () => {
+  const s = await setup();
+  realTranscripts(s);
+  await prepared(s);
+  await s.store.update((d) => { d.mix.pacing = JSON.parse(JSON.stringify(INSIDE)); d.audio.sfx[0].startS = 9.2; d.audio.sfx[0].startSBy = "jon"; });
+  const fits = s.calls.fit.length, mixes = s.calls.mix.length;
+  const r = await applyPauses(s.ctx, { joinOnly: true });
+  assert.deepEqual(r, { stoppedAt: null, joinOnly: true });
+  // 9.2 is 0.2 s into "Orkney." (9.0): both 0.6 s pauses come before it.
+  assert.equal(s.store.state.audio.sfx[0].startS, 10.4);
+  assert.equal(s.calls.fit.length, fits);
+  assert.equal(s.calls.mix.length, mixes);
+});
+
+test("plain Join with no marks sends no pauses file", async () => {
+  const s = await setup();
+  await prepared(s);
+  await s.store.update((d) => { d.mix.pacing = { lines: {} }; });
+  await applyPauses(s.ctx, { joinOnly: true });
+  assert.ok(!("pauses" in s.calls.join.at(-1)));
+  assert.equal(st(s).voiceover.pausesSig, null);
 });

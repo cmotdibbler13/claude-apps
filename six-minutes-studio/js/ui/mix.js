@@ -36,7 +36,8 @@ function approvedScore(state) {
 }
 
 // The common part of a step: running, done or stale, locked, failed or interrupted, or ready.
-function base(id, holder, { lock, stale, pending, jobs, error }) {
+// hold: Apply pauses is running its chain, so no step may be started by hand (like a running step).
+function base(id, holder, { lock, stale, pending, jobs, error, hold = false }) {
   const st = holder?.status;
   let state, statusText = null;
   if (live(st)) {
@@ -60,7 +61,7 @@ function base(id, holder, { lock, stale, pending, jobs, error }) {
     state = "failed";
     statusText = `Failed: ${holder.error ?? "no reason given"}`;
   } else state = "ready";
-  const free = state !== "running";
+  const free = state !== "running" && !hold;
   return { id, state, statusText, lock: lock ?? null, free, error: error ?? null };
 }
 
@@ -76,7 +77,7 @@ function joinStep(state, narration, o) {
     notOk = narration.rows.filter((r) => NOT_OK.has(r.status));
   }
   const stale = o.joinStale;
-  const s = base("VOICEOVER", vo, { lock, stale, pending: o.pending.has("VOICEOVER"), jobs: o.jobs, error: o.cardErrors.get("VOICEOVER") });
+  const s = base("VOICEOVER", vo, { lock, stale, pending: o.pending.has("VOICEOVER"), jobs: o.jobs, error: o.cardErrors.get("VOICEOVER"), hold: o.hold });
   // Marks changed since this join: only the Join step says so; Fit and Mix are not held back by it.
   if (s.state === "done" && o.pacingStale) { s.state = "stale"; s.statusText = MARKS_CHANGED; }
   const again = vo && vo.status !== "queued" && vo.status !== "running";
@@ -109,7 +110,7 @@ function fitStep(state, o) {
   else if (!approvedScore(state)) lock = "Waits for an approved score take (Score card).";
   else if (!o.settings.stemRemixer) lock = MSG_NO_STEM_REMIXER;
   const stale = fitStale(state) || o.joinStale;
-  const s = base("FIT", fit, { lock, stale, pending: o.pending.has("FIT"), jobs: o.jobs, error: o.cardErrors.get("FIT") });
+  const s = base("FIT", fit, { lock, stale, pending: o.pending.has("FIT"), jobs: o.jobs, error: o.cardErrors.get("FIT"), hold: o.hold });
   const label = s.state === "done" ? "Fit again with a note" : fit && s.state !== "ready" && s.state !== "locked" ? "Fit again" : "Fit score";
   const out = { ...s, title: "Fit score", run: { label, enabled: s.free && !lock, note: s.state === "done" }, noteOpen: o.noteFor === "FIT",
     sheet: null, suggestion: null, notes: null, sourceText: null, file: null, playing: false, playerKey: null, lengthText: null,
@@ -142,7 +143,7 @@ function mixStep(state, o) {
   else if (fit?.status !== "done") lock = "Waits for the score fit.";
   else if (fitStale(state)) lock = "Waits for the score fit to be run again.";
   const stale = mixStale(state) || o.joinStale;
-  const s = base("MIX", x, { lock, stale, pending: o.pending.has("MIX"), jobs: o.jobs, error: o.cardErrors.get("MIX") });
+  const s = base("MIX", x, { lock, stale, pending: o.pending.has("MIX"), jobs: o.jobs, error: o.cardErrors.get("MIX"), hold: o.hold });
   const again = x && s.state !== "ready" && s.state !== "locked";
   const out = { ...s, title: "Mix preview", run: { label: again ? "Make mix again" : "Make mix preview", enabled: s.free && !lock },
     player: null, playerKey: null, playerLabel: null, marks: [], files: [], unplaced: null, approved: false, canApprove: false, approvalNote: null };
@@ -166,8 +167,9 @@ function mixStep(state, o) {
 export function mixModel({ state, narration = null, settings = {}, pending = new Set(), cardErrors = new Map(), noteFor = null, playing = null, jobs = [], ui = {}, pacingUi = {} } = {}) {
   const takeSigs = Object.fromEntries((narration?.rows ?? []).map((r) => [r.id, takeSig(r)]).filter(([, v]) => v != null));
   const sig = marksSig(state?.mix?.pacing, takeSigs);
-  const o = { settings, pending, cardErrors, noteFor, playing, jobs, ui, joinStale: joinStale(state?.mix?.voiceover, narration), pacingStale: pacingStale(state, sig) };
   const chain = pacingUi.chain ?? {};
+  const o = { settings, pending, cardErrors, noteFor, playing, jobs, ui, joinStale: joinStale(state?.mix?.voiceover, narration), pacingStale: pacingStale(state, sig),
+    hold: !!chain.applying };
   const pacing = pacingModel({ state, transcript: pacingUi.transcript ?? null, narration, lineScript: pacingUi.lineScript ?? null, sig, chain,
     canApply: canApply({ state, narration, sig, running: !!chain.applying }), menu: pacingUi.menu ?? null });
   return { steps: [joinStep(state, narration, o), fitStep(state, o), mixStep(state, o)], pacing };

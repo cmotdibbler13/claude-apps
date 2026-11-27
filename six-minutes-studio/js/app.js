@@ -3,8 +3,8 @@ import { makeHost } from "./host.js";
 import { accessGate } from "./gate.js";
 import { resolveRoot, join } from "./paths.js";
 import { loadSettings } from "./settings.js";
-import { withRerecord, rerecordsToClear, lineWords, takeSig, addMark, setSize, moveMark, removeMark, buildPauses, marksSig, placeFromNotes } from "./pacing.js";
-import { applyPauses, NOT_OK } from "./pacingchain.js";
+import { withRerecord, rerecordsToClear, lineWords, takeSig, addMark, setSize, moveMark, removeMark, placeFromNotes, newTakeIds } from "./pacing.js";
+import { applyPauses, JOINED_WITHOUT } from "./pacingchain.js";
 import { findLineScript, loadLineScript, refreshLineScript, narrationStatus } from "./narration.js";
 import { scanFilms } from "./films.js";
 import { makeFilmSession, readSavedJobs } from "./session.js";
@@ -22,7 +22,7 @@ import { planAudio, addCue, editItem, getEstimate, rewriteFromNote, startAudioTa
 import { makeVoiceJoinRunner } from "./tools/voicejoin.js";
 import { makeStemFitRunner, listExports } from "./tools/stemfit.js";
 import { makeMixdownRunner } from "./tools/mixdown.js";
-import { startJoin, startFit, startMix, useStemRemixerExport, approveMix, parseCsv, openFitInStemRemixer, stemExportDir, pastedPath } from "./mixplan.js";
+import { startFit, startMix, useStemRemixerExport, approveMix, parseCsv, openFitInStemRemixer, stemExportDir, pastedPath, goodFrame } from "./mixplan.js";
 import { mountProbe } from "./ui/probe.js";
 import * as filmsView from "./ui/films.js";
 import * as jobsView from "./ui/jobs.js";
@@ -428,22 +428,24 @@ function seekReview(t) {
   el.play().catch(() => {});
 }
 
-// The joined voiceover's transcript (lines and words), read once per join.
+// The last good join's transcript (lines and words; mixplan.goodFrame), read once per join. While a join runs,
+// or after one failed, it is the one before it, so the marks Jon places sit where the next join reads them from.
 function loadTranscript() {
   const r = app.review;
-  const vo = app.store?.state?.mix?.voiceover;
-  if (!vo || vo.status !== "done" || !vo.transcript || !app.host) return Promise.resolve(r.transcript ?? null);
-  if (r.transcriptFor?.at === vo.at && r.transcriptFor?.path === vo.transcript) return r.transcriptFor.p;
-  const p = app.host.fs.read(vo.transcript, "utf8").then((t) => JSON.parse(t)).catch((e) => { console.error(e); return null; })
+  const f = goodFrame(app.store?.state?.mix?.voiceover);
+  if (!f?.transcript || !app.host) return Promise.resolve(f ? r.transcript ?? null : null);
+  if (r.transcriptFor?.at === f.at && r.transcriptFor?.path === f.transcript) return r.transcriptFor.p;
+  const p = app.host.fs.read(f.transcript, "utf8").then((t) => JSON.parse(t)).catch((e) => { console.error(e); return null; })
     .then((t) => { if (app.review === r && r.transcriptFor?.p === p) { r.transcript = t; render(); } return t; });
-  r.transcriptFor = { at: vo.at, path: vo.transcript, p };
+  r.transcriptFor = { at: f.at, path: f.transcript, p };
   return p;
 }
 
 const takeSigsNow = () => Object.fromEntries((app.review.narration?.rows ?? []).map((x) => [x.id, takeSig(x)]).filter(([, v]) => v != null));
 const takeOf = (id) => takeSig((app.review.narration?.rows ?? []).find((x) => x.id === id)) ?? null;
 const wordsOf = (id) => lineWords(app.review.transcript, id);
-const EMPTY_SIG = marksSig({ lines: {} }, {});
+// A take saved after the last good join: its words in the transcript are the old take's (no word marks until it is joined).
+const newTake = (id) => newTakeIds(app.review.narration, goodFrame(app.store?.state?.mix?.voiceover)).has(id);
 
 // One line's marks and note, changed through the store (saved in the film's state.json).
 async function editLine(id, fn) {
@@ -505,7 +507,6 @@ async function runApplyPauses() {
   userStarted();
   r.applying = { step: null }; r.paceError = null; r.paceInfo = null; r.paceMenu = null; render();
   try {
-    await loadTranscript();
     const fit = app.store.state.mix?.fit;
     const res = await applyPauses(mixCtx(), { onStep: (step) => { if (r.applying) { r.applying = { step }; render(); } } });
     if (app.review === r && res?.stoppedAt === "FIT" && fit?.status === "done" && fit.source === "stemremixer") {
@@ -635,7 +636,8 @@ const ctx = () => ({ host: app.host, store: app.store, jobs: app.jobs });
 // narration: the mix steps refuse to run from a join that misses a take saved since (joinStale).
 const mixCtx = () => ({ ...ctx(), lineScript: app.review.lineScript ?? null, settings: app.settings ?? {}, narration: app.review.narration ?? null });
 // A Voiceover and mix step's action, guarded like a card (VOICEOVER, FIT or MIX).
-const stepAction = (id, fn) => { const run = cardAction((_, ...a) => fn(...a)); return (...a) => run(id, ...a); };
+// While Apply pauses runs its chain, no step starts by hand (the buttons are held too).
+const stepAction = (id, fn) => { const run = cardAction((_, ...a) => fn(...a)); return (...a) => (app.review?.applying ? false : run(id, ...a)); };
 
 async function findExports() {
   const r = app.review;
@@ -754,20 +756,22 @@ const reviewActions = {
   unapproveAudio: cardAction((id) => unapproveAudio(ctx(), id)),
   startStableAudio: () => { startStableAudio(); },
   // Voiceover and mix
-  // The join always takes the pause marks as they are now (Apply pauses also refits and remixes).
+  // The join always takes the pause marks as they are now: the same code as Apply pauses (pacingchain), stopping
+  // after the join, so Jon's cue starts move with the pauses too. The card is free once the job is queued; a failure
+  // before that shows on the card, the join's own failure on its step, anything after it under the review.
   joinVoiceover: stepAction("VOICEOVER", async (allowFlagged) => {
     userStarted();
-    const notOkIds = (app.review.narration?.rows ?? []).filter((x) => NOT_OK.has(x.status)).map((x) => x.id);
-    const takeSigs = takeSigsNow();
-    const pacing = app.store.state.mix?.pacing;
-    const sig = marksSig(pacing, takeSigs);
-    let pauses = null;
-    if (sig !== EMPTY_SIG) {
-      const transcript = await loadTranscript();
-      const { file } = buildPauses(pacing, transcript, app.store.state.mix?.voiceover?.pausesApplied ?? {}, takeSigs);
-      pauses = { file, sig, applied: file.inside, allowedIds: notOkIds };
-    }
-    return startJoin({ ...mixCtx(), notOkIds }, { allowFlagged: !!allowFlagged, pauses });
+    const r = app.review;
+    let begun = false, started;
+    const queued = new Promise((res) => { started = res; });
+    const run = applyPauses(mixCtx(), { joinOnly: true, allowFlagged: !!allowFlagged, onStarted: () => { begun = true; started(); } });
+    run.then((res) => { if (res?.withoutPauses && app.review === r) { r.paceInfo = JOINED_WITHOUT; render(); } }, (e) => {
+      if (!begun || app.review !== r) return;
+      const st = app.store?.state?.mix?.voiceover?.status;
+      if (st === "failed" || st === "interrupted") return;
+      r.paceError = msg(e); render();
+    });
+    await Promise.race([queued, run]);
   }),
   fitScore: stepAction("FIT", async (note) => {
     if (note !== undefined && !String(note).trim()) throw new Error("Write a note saying what should change.");
@@ -805,6 +809,7 @@ const reviewActions = {
   reviewPlayer: (file, key, label) => audioEl("review", file, key, label),
   seekReview,
   markWord(id, i) {
+    if (newTake(id)) return;
     const words = wordsOf(id);
     const w = words[i];
     if (!w) return;

@@ -2,7 +2,8 @@
 // and a Re-record tick per line, Place pauses and Apply pauses. pacingModel is pure; pacingSection builds the DOM;
 // followPlayer lights the line being spoken without a re-render.
 import { h, btn, playerKey } from "./dom.js";
-import { lineWords, takeSig, markState, norm, toUnpaused, notesToPlace } from "../pacing.js";
+import { lineWords, takeSig, markState, norm, toUnpaused, notesToPlace, newTakeIds } from "../pacing.js";
+import { goodFrame } from "../mixplan.js";
 
 const SIZES = [["short", "Short"], ["medium", "Medium"], ["long", "Long"]];
 const SIZE_LABEL = Object.fromEntries(SIZES);
@@ -13,6 +14,7 @@ export const COPY = {
   "take-changed": "The take changed. Place again",
   "not-found": "Couldn't find this word. Place again",
   older: "Playing the voiceover: the mix is older than it.",
+  newTake: "Join again to mark the new take",
 };
 
 const keyOf = (word, nth) => `${norm(word)}#${nth}`;
@@ -30,17 +32,17 @@ function labels(text, words) {
   return toks.every((t, i) => norm(t) === norm(words[i].word)) ? toks : words.map((w) => w.word);
 }
 
-// Tight: the join reported the quietest spot near the at_s sent for this mark was still loud.
-function isTight(vo, id, mark, words, sentence) {
+// Tight: the last good join (frame) reported the quietest spot near the at_s sent for this mark was still loud.
+function isTight(frame, id, mark, words, sentence) {
   if (mark.key === "end") return false;
   const w = words.find((x) => norm(x.word) === norm(mark.word) && x.nth === mark.nth);
   const next = w ? words[w.i + 1] : null;
   if (!next) return false;
-  const applied = vo?.pausesApplied?.[id] ?? [];
+  const applied = frame?.applied?.[id] ?? [];
   const at = toUnpaused((w.end + next.start) / 2 - (sentence?.start ?? 0), applied);
   const sent = applied.find((a) => Math.abs(a.at_s - at) <= TIGHT_S);
   if (!sent) return false;
-  return (vo?.tight ?? []).some((t) => t.id === id && Math.abs(Number(t.at_s) - sent.at_s) <= TIGHT_S);
+  return (frame?.tight ?? []).some((t) => t.id === id && Math.abs(Number(t.at_s) - sent.at_s) <= TIGHT_S);
 }
 
 // chain: { applying: {step} | null, placing, error }. canApply: pacingchain.canApply's answer. menu: {id, key} of the open ‖.
@@ -52,7 +54,10 @@ export function pacingModel({ state, transcript = null, narration = null, lineSc
   const pacing = state?.mix?.pacing ?? { lines: {} };
   const rows = narration?.rows ?? [];
   const sigs = Object.fromEntries(rows.map((r) => [r.id, takeSig(r)]));
-  const applied = vo.pausesSig != null && vo.pausesSig === sig;
+  // Shown as joined only once the join with these marks is done (not while one runs, or after one failed).
+  const applied = voDone && vo.pausesSig != null && vo.pausesSig === sig;
+  const frame = goodFrame(vo);
+  const newer = newTakeIds(narration, frame);
   const script = lineScript?.lines?.length ? lineScript.lines
     : (transcript?.sentences ?? []).map((s) => ({ id: s.sentence, text: s.text ?? "" }));
   let marks = 0, rerecords = 0;
@@ -61,10 +66,13 @@ export function pacingModel({ state, transcript = null, narration = null, lineSc
     const line = pacing.lines?.[id] ?? {};
     const sentence = (transcript?.sentences ?? []).find((s) => s.sentence === id) ?? null;
     const words = lineWords(transcript, id);
+    // A take newer than the last good join: its words here are the old take's.
+    const newTake = newer.has(id);
     const markOf = (m) => {
       const own = m.take ?? line.take ?? null;
-      const st = markState(m, words, line, id in sigs ? sigs[id] : own);
-      const tight = st === "ok" && isTight(vo, id, m, words, sentence);
+      let st = markState(m, words, line, id in sigs ? sigs[id] : own);
+      if (newTake && m.key !== "end" && st === "ok") st = "take-changed";
+      const tight = st === "ok" && isTight(frame, id, m, words, sentence);
       if (st === "ok") marks++;
       return { key: m.key, size: m.size, by: m.by ?? null, state: st, tight, applied: applied && st === "ok",
         text: tight ? COPY.tight : COPY[st] ?? null, open: !!menu && menu.id === id && menu.key === m.key };
@@ -84,7 +92,7 @@ export function pacingModel({ state, transcript = null, narration = null, lineSc
     const gap = end ? markOf(end) : null;
     return {
       id, start: sentence?.start ?? null, end: sentence?.end ?? null, text: sl.text ?? "",
-      words: ws, gap, lost, note: line.note ?? "", reply: line.reply ?? null, rerecord: !!line.rerecord,
+      words: ws, gap, lost, note: line.note ?? "", reply: line.reply ?? null, rerecord: !!line.rerecord, newTake,
       takeChanged: [...ws.map((w) => w.mark), ...lost, gap].some((m) => m?.state === "take-changed"),
     };
   });
@@ -153,7 +161,8 @@ function lineEl(l, actions) {
   const text = [];
   if (l.words.length) {
     for (const w of l.words) {
-      text.push(h("button", { type: "button", class: "pword", title: "Add a pause after this word", onclick: () => actions.markWord(l.id, w.i) }, w.word));
+      text.push(h("button", { type: "button", class: "pword", title: l.newTake ? COPY.newTake : "Add a pause after this word", disabled: l.newTake,
+        onclick: () => actions.markWord(l.id, w.i) }, w.word));
       if (w.mark) {
         text.push(markButton(l.id, w.mark, `Pause after “${w.word}”`, actions));
         if (w.mark.open) text.push(markMenu(l.id, w.mark, actions, { first: w.first }));

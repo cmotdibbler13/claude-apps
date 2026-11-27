@@ -149,6 +149,21 @@ test("marksSig ignores notes and skipped marks; changes with size", () => {
   assert.equal(marksSig(staleIn, sigs), marksSig(gapOnly, sigs));
 });
 
+test("toUnpaused inside a pause right after another one lands on that pause's start", () => {
+  // pauses 0.15 s apart: the second one sits at 0.975 + 0.6 in the paused audio
+  assert.equal(toUnpaused(1.875, [{ at_s: 0.825, add_s: 0.6 }, { at_s: 0.975, add_s: 0.6 }]), 0.975);
+  assert.equal(toUnpaused(1.6, [{ at_s: 0.825, add_s: 0.6 }, { at_s: 0.975, add_s: 0.6 }]), 0.975);
+});
+
+test("buildPauses leaves out the inside marks of lines it is told to skip, keeps their gap marks", () => {
+  const p = pacingOf([mk("pictish#2", "Pictish", 2), mk("end", null, null, "short")]);
+  const { file, skipped } = buildPauses(p, TR, {}, {}, { skipInside: new Set(["02.1"]) });
+  assert.deepEqual(file.inside, {});
+  assert.deepEqual(file.after, { "02.1": 0.3 });
+  assert.deepEqual(skipped, [{ id: "02.1", key: "pictish#2", reason: "new-take" }]);
+  assert.equal(marksSig(p, {}, { skipInside: new Set(["02.1"]) }), marksSig(pacingOf([mk("end", null, null, "short")]), {}));
+});
+
 test("toUnpaused inside an inserted pause lands on its start", () => {
   assert.equal(toUnpaused(2.71, [{ at_s: 2.41, add_s: 0.6 }]), 2.41);
 });

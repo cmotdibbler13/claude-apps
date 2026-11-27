@@ -1,15 +1,20 @@
 // Apply pauses: rejoin the voiceover with Jon's pause marks, then refit the score and remake the mix
 // (only the steps that already exist).
-import { startJoin, startFit, startMix, waitJob } from "./mixplan.js";
-import { buildPauses, marksSig, takeSig, toUnpaused } from "./pacing.js";
+import { startJoin, startFit, startMix, waitJob, goodFrame } from "./mixplan.js";
+import { buildPauses, marksSig, takeSig, toUnpaused, newTakeIds, hasInsideMarks } from "./pacing.js";
+
+const EMPTY_SIG = marksSig({ lines: {} }, {});
 
 // Lines the join takes only when Jon presses Join anyway: their check found a problem, never ran, or is older than the checker.
 export const NOT_OK = new Set(["flagged", "unchecked", "outdated", "error", "rerecord"]);
+export const NO_FRAME = "Couldn't read the last voiceover's word timings, so the pauses can't be placed. Join again without changes first.";
+export const JOINED_WITHOUT = "Joined without the pauses: the last voiceover's word timings couldn't be read. Press Apply pauses to add them.";
 const live = (s) => s === "queued" || s === "running";
 const SLOT = { VOICEOVER: "voiceover", FIT: "fit", MIX: "mix" };
 const LABEL = { VOICEOVER: "voiceover join", FIT: "score fit", MIX: "mix" };
 
-const notOkRows = (narration) => (narration?.rows ?? []).filter((r) => NOT_OK.has(r.status));
+// Whether a line needs --allow-flagged: a Re-record tick on its own never does; the line's own check result does.
+const checkOf = (r) => (r.status === "rerecord" ? r.checkedStatus ?? null : r.status);
 const sigsOf = (narration) => Object.fromEntries((narration?.rows ?? []).map((r) => [r.id, takeSig(r)]).filter(([, v]) => v != null));
 
 export function canApply({ state, narration, sig, running } = {}) {
@@ -18,7 +23,7 @@ export function canApply({ state, narration, sig, running } = {}) {
     if (live(state?.mix?.[SLOT[id]]?.status)) return { ok: false, why: `The ${LABEL[id]} is running.` };
   }
   const allowed = new Set(state?.mix?.voiceover?.allowedIds ?? []);
-  const bad = notOkRows(narration).filter((r) => r.status !== "rerecord" && !allowed.has(r.id));
+  const bad = (narration?.rows ?? []).filter((r) => NOT_OK.has(checkOf(r)) && !allowed.has(r.id));
   if (bad.length) return { ok: false, why: `Newly flagged: ${bad.map((r) => r.id).join(", ")}. Use Join anyway first.` };
   return { ok: true, why: null };
 }
@@ -74,27 +79,41 @@ async function runStep(ctx, key, label, start) {
   await holderDone(ctx.store, key, label);
 }
 
-export async function applyPauses(ctx, { onStep } = {}) {
+// Apply pauses (and, with joinOnly, the plain Join / Join again): join with the marks as they are now, placed from the
+// last good join's transcript and pauses (goodFrame), move Jon's cue starts with them, then (not joinOnly) refit and remix.
+// allowFlagged (joinOnly): Jon pressed Join anyway.
+// onStarted: called once the join's job is queued (Join's button is free again from then on).
+export async function applyPauses(ctx, { onStep, onStarted, joinOnly = false, allowFlagged: anyway = false } = {}) {
   const { host, store, narration } = ctx;
   const before = store.state.mix ?? {};
   const fit = before.fit?.status === "done" ? before.fit : null;
   const hadMix = before.mix?.status === "done";
-  const oldApplied = before.voiceover?.pausesApplied ?? {};
-  const oldTranscript = await readJson(host, before.voiceover?.transcript);
+  const frame = goodFrame(before.voiceover);
+  const oldApplied = frame?.applied ?? {};
+  const oldTranscript = await readJson(host, frame?.transcript);
   const takeSigs = sigsOf(narration);
-  const sig = marksSig(before.pacing, takeSigs);
-  const { file } = buildPauses(before.pacing, oldTranscript, oldApplied, takeSigs);
-  const rows = notOkRows(narration);
-  const allowedIds = rows.map((r) => r.id);
+  const pacing = before.pacing;
+  const skipInside = newTakeIds(narration, frame);
+  // Marks inside lines can't be placed without the last good join's word timings: Apply refuses; the plain Join
+  // ("Join again without changes") joins with no pauses at all, so the next Apply places them from that join.
+  const blind = !oldTranscript && hasInsideMarks(pacing, takeSigs, { skipInside });
+  if (blind && !joinOnly) throw new Error(NO_FRAME);
+  const sig = marksSig(pacing, takeSigs, { skipInside });
+  const { file } = buildPauses(pacing, oldTranscript, oldApplied, takeSigs, { skipInside });
+
+  const others = (narration?.rows ?? []).filter((r) => NOT_OK.has(checkOf(r)));
   const allowedSet = new Set(before.voiceover?.allowedIds ?? []);
-  const allowFlagged = rows.length > 0 && rows.every((r) => r.status === "rerecord" || allowedSet.has(r.id));
+  const lastHad = !!before.voiceover?.allowFlagged || !!frame?.allowFlagged;
+  const allowFlagged = joinOnly
+    ? !!anyway && (others.length > 0 || lastHad)
+    : lastHad || (others.length > 0 && others.every((r) => allowedSet.has(r.id)));
+  const allowedIds = allowFlagged ? others.map((r) => r.id) : [];
+  const pauses = blind || (joinOnly && sig === EMPTY_SIG) ? null : { file, sig, applied: file.inside, allowedIds };
 
   onStep?.("VOICEOVER");
-  await runStep(ctx, "voiceover", "voiceover join", () => startJoin(ctx, { allowFlagged, pauses: { file, sig, applied: file.inside, allowedIds } }));
-  await store.update((d) => {
-    d.mix.pacing ??= { lines: {} };
-    d.mix.pacing.appliedSig = sig;
-    d.mix.pacing.applied = file.inside;
+  await runStep(ctx, "voiceover", "voiceover join", async () => {
+    await startJoin({ ...ctx, notOkIds: allowedIds }, { allowFlagged, pauses });
+    onStarted?.("VOICEOVER");
   });
 
   const newTranscript = await readJson(host, store.state.mix.voiceover.transcript);
@@ -109,6 +128,7 @@ export async function applyPauses(ctx, { onStep } = {}) {
     }
   }
 
+  if (joinOnly) return blind ? { stoppedAt: null, joinOnly: true, withoutPauses: true } : { stoppedAt: null, joinOnly: true };
   if (!fit || fit.source !== "app") return { stoppedAt: "FIT" };
   onStep?.("FIT");
   await runStep(ctx, "fit", "score fit", () => startFit(ctx, { note: fit.note ?? undefined }));

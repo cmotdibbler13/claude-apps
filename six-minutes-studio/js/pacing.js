@@ -80,25 +80,48 @@ export function markState(mark, words, line, sig) {
 }
 
 // Position in the audio as it is now (pauses included) to the line's own audio without pauses.
+// Each pause's start is compared in the paused audio (at_s plus the silence before it), against the position as given.
 export function toUnpaused(posPaused, applied) {
   let shift = 0;
   let pos = posPaused;
   for (const a of [...(applied || [])].sort((x, y) => x.at_s - y.at_s)) {
     const start = a.at_s + shift;
-    if (pos <= start) break;
-    pos -= Math.min(a.add_s, pos - start);
+    if (posPaused <= start) break;
+    pos -= Math.min(a.add_s, posPaused - start);
     shift += a.add_s;
   }
   return ms(pos);
 }
 
-export function buildPauses(pacing, transcript, applied, takeSigs) {
+// Lines whose take was saved after the last good join (frame: mixplan.goodFrame) started: their words in that
+// join's transcript are the old take's, so marks inside them can't be placed until the voiceover is joined again.
+export function newTakeIds(narration, frame) {
+  const since = frame?.startedAt ?? frame?.at ?? null;
+  if (since == null) return new Set();
+  return new Set((narration?.rows ?? []).filter((r) => Number.isFinite(r.takeS) && r.takeS * 1000 > since).map((r) => r.id));
+}
+
+// A mark the join would take: a gap mark, or one made on the line's current take (or with no take stored).
+const sendable = (m, line, sig) => {
+  const made = m.take ?? line.take ?? null;
+  return m.key === "end" || made == null || made === (sig ?? null);
+};
+
+// Whether any mark inside a line would be sent (so the join needs the last good join's word timings).
+export function hasInsideMarks(pacing, takeSigs, { skipInside } = {}) {
+  return Object.entries(pacing?.lines || {}).some(([id, line]) => !skipInside?.has(id)
+    && (line.pauses || []).some((m) => m.key !== "end" && sendable(m, line, takeSigs?.[id])));
+}
+
+// skipInside: ids whose inside marks are left out (a take newer than the transcript); their gap marks still go.
+export function buildPauses(pacing, transcript, applied, takeSigs, { skipInside } = {}) {
   const file = { inside: {}, after: {} };
   const skipped = [];
   for (const [id, line] of Object.entries(pacing?.lines || {})) {
     const words = lineWords(transcript, id);
     const sentence = (transcript?.sentences || []).find((s) => s.sentence === id);
     for (const m of line.pauses || []) {
+      if (m.key !== "end" && skipInside?.has(id)) { skipped.push({ id, key: m.key, reason: "new-take" }); continue; }
       const state = markState(m, words, line, takeSigs?.[id]);
       if (state !== "ok") { skipped.push({ id, key: m.key, reason: state }); continue; }
       const add = PAUSE_S[m.size] ?? PAUSE_S.medium;
@@ -115,14 +138,12 @@ export function buildPauses(pacing, transcript, applied, takeSigs) {
 }
 
 // What would be sent, as a stable string, so Studio can tell the marks changed since the last join.
-export function marksSig(pacing, takeSigs) {
+// skipInside as for buildPauses: those lines' inside marks are not sent, so they are not in the sig either.
+export function marksSig(pacing, takeSigs, { skipInside } = {}) {
   const out = [];
   for (const id of Object.keys(pacing?.lines || {}).sort()) {
     const marks = (pacing.lines[id].pauses || [])
-      .filter((m) => {
-        const made = m.take ?? pacing.lines[id].take ?? null;
-        return m.key === "end" || made == null || made === (takeSigs?.[id] ?? null);
-      })
+      .filter((m) => sendable(m, pacing.lines[id], takeSigs?.[id]) && !(m.key !== "end" && skipInside?.has(id)))
       .map((m) => [m.key, m.size])
       .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
     if (marks.length) out.push([id, marks]);
