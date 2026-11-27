@@ -2,7 +2,7 @@
 import { askJson } from "./claude.js";
 import { join, filmKey } from "./paths.js";
 import { deriveWaiting, onCameraConflict } from "./shots.js";
-import { clipLock, clipPrompt, clipSeconds, lineLengthS } from "./presenter.js";
+import { clipLock, clipPrompt, clipSeconds, lineLengthS, checkClipAudio } from "./presenter.js";
 import { mixHolders, mixJobDone, syncMixHolder, MIX_IDS, runLabel } from "./mixplan.js";
 
 const REWRITE_INSTRUCTIONS = `You improve one image or video generation prompt for a Six Minutes On... documentary film (dark, calm, precise, British English).
@@ -296,14 +296,37 @@ function applyJobs(d, dir, list, lines, pending) {
 }
 
 // ctx.onError(message) reports a failed state write (null once a later reconcile succeeds).
+// Finished voiceover runs and finished clip takes, by id#take#job: a new one means the clips' audio needs a check.
+const doneKeys = (d) => {
+  const keys = new Set();
+  const vo = d.mix?.voiceover;
+  for (const t of vo?.takes ?? []) if (t.status === "done") keys.add(`VOICEOVER#${t.n}#${t.jobId}`);
+  for (const a of d.assets ?? []) if (a.kind === "presenter") for (const t of a.takes ?? []) if (t.status === "done") keys.add(`${a.id}#${t.n}#${t.jobId}`);
+  return keys;
+};
+
 export function watchJobs(ctx) {
   const { store, jobs, onError = () => {} } = ctx;
   let chain = Promise.resolve();
   let queued = false;
+  // One clip-audio check at a time; a request while one runs makes it run once more afterwards.
+  let checking = false, again = false;
+  const check = async () => {
+    if (!ctx.host) return;
+    if (checking) { again = true; return; }
+    checking = true;
+    try {
+      do {
+        again = false;
+        try { await checkClipAudio(ctx); } catch (e) { try { await store.log(`Clip audio check failed: ${String(e?.message ?? e)}`); } catch { /* ignore */ } }
+      } while (again);
+    } finally { checking = false; }
+  };
   const run = async () => {
     queued = false;
     if (!applyJobs(structuredClone(store.state), store.dir, jobs.list(), [], store.pending)) return;
     const lines = [];
+    const before = doneKeys(store.state);
     try {
       await store.update((d) => {
         lines.length = 0;
@@ -316,6 +339,7 @@ export function watchJobs(ctx) {
     }
     try { onError(null); } catch { /* ignore */ }
     for (const l of lines) await store.log(l);
+    if ([...doneKeys(store.state)].some((k) => !before.has(k))) await check();
   };
   const sync = () => {
     if (queued) return; // one pending reconcile covers every change since it was queued

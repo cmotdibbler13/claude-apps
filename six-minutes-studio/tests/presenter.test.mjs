@@ -6,6 +6,9 @@ import { parseLineScript } from "../js/narration.js";
 import { makeJobs } from "../js/jobs.js";
 import { LOOK_INSTRUCTIONS, suggestLooks, setLook, lastLook, portraitPrompt, startPortraits, approvePortrait } from "../js/presenter.js";
 import { holders, watchJobs } from "../js/redo.js";
+import { checkClipAudio, keepAnyway } from "../js/presenter.js";
+import { audioSigOf } from "../js/tools/clipaudio.js";
+import { deriveWaiting } from "../js/shots.js";
 import { scriptCameraIds, suggestLines, lineLengthS, setCameraLines, cameraLineState, LINES_INSTRUCTIONS } from "../js/presenter.js";
 
 const DIR = "S:\\Youtube video ideas\\Film A";
@@ -240,12 +243,13 @@ test("clipPrompt: spec wording, note appended", () => {
 
 test("clipLock: portrait, voiceover, missing line, too long", () => {
   const a = { kind: "presenter", lineId: "01" };
-  const st = (portrait) => ({ presenter: portrait ? { portrait: { n: 1, hfId: "h" } } : {} });
+  const st = (portrait, vo = true) => ({ presenter: portrait ? { portrait: { n: 1, hfId: "h" } } : {}, mix: vo ? { voiceover: { wav: "v.wav" } } : undefined });
   assert.equal(clipLock(a, st(false), TR), "Approve a portrait first");
   assert.equal(clipLock(a, st(true), null), "Join the voiceover first");
   assert.equal(clipLock({ ...a, lineId: "04" }, st(true), TR), "Join the voiceover first");
   assert.equal(clipLock({ ...a, lineId: "02" }, st(true), TR), "Too long for one clip: 15 s at most");
   assert.equal(clipLock(a, st(true), TR), null);
+  assert.equal(clipLock(a, st(true, false), TR), "Join the voiceover first");
 });
 
 async function csetup(runners) {
@@ -287,4 +291,162 @@ test("startTake presenter: locked cases throw the lock copy and write nothing", 
   assert.equal(jobs.list().length, 0);
   assert.equal(canStart(store.state.assets[0], store.state.assets, store.state, null), false);
   assert.equal(canStart(store.state.assets[0], store.state.assets, store.state, TR), true);
+});
+
+// ---- Task 6: voiceover changed ----
+const VO_WAV = DIR + "\\Film A_voiceover.wav";
+const TRPATH = DIR + "\\studio\\voiceover_transcript.json";
+const tickN = async (n = 12) => { for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r)); };
+const until = async (fn, n = 300) => { for (let i = 0; i < n && !fn(); i++) await new Promise((r) => setImmediate(r)); };
+
+// content: map of clip audio file name -> bytes the fake ffmpeg "cuts"
+async function vsetup({ content = {}, transcript = TR, ready = true } = {}) {
+  const s = await csetup();
+  const { host, store } = s;
+  host.cuts = [];
+  await host.fs.mkdir(DIR + "\\studio\\presenter");
+  host.spawnScript(async (cmd, args, _o, p) => {
+    if (cmd !== "ffmpeg") return p.exit(1);
+    const out = args[args.length - 1];
+    host.cuts.push(args);
+    const name = out.split("\\").pop();
+    if (!(name in content)) return p.exit(1);
+    await host.fs.write(out, content[name]);
+    p.exit(0);
+  });
+  await host.fs.write(TRPATH, JSON.stringify(transcript));
+  await store.update((d) => { d.mix.voiceover = { status: "done", wav: VO_WAV, transcript: TRPATH }; });
+  if (ready) await host.fs.write(VO_WAV, "w");
+  const sigOf = async (text) => { const f = DIR + "\\tmp_sig.wav"; await host.fs.write(f, text); return audioSigOf(host, f, 5); };
+  return { ...s, sigOf, content };
+}
+const setSig = (store, id, sig) => store.update((d) => { d.assets.find((x) => x.id === id).takes[0].audioSig = sig; });
+const mkTake = (store, id, status, extra = {}) => store.update((d) => {
+  const a = d.assets.find((x) => x.id === id); a.takes = [{ n: 1, status, ...extra }]; a.chosen = 1;
+});
+const CHK = (id) => `check_${id}_audio.wav`;
+
+test("checkClipAudio: unchanged audio sets no flag", async () => {
+  const { ctx, store, sigOf, host } = await vsetup({ content: { [CHK("TC-01")]: "AAA" } });
+  await mkTake(store, "TC-01", "done", { audioSig: await sigOf("AAA") });
+  await checkClipAudio(ctx);
+  assert.equal(store.state.assets[0].voiceoverChanged, undefined);
+  assert.equal(host.cuts.length, 1);
+  assert.ok(host.cuts[0].some((a) => a.endsWith("\\studio\\presenter\\check_TC-01_audio.wav")));
+});
+
+test("checkClipAudio: changed audio flags the clip, rewrites waiting; a later match clears it", async () => {
+  const content = { [CHK("TC-01")]: "BBB" };
+  const { ctx, store, sigOf } = await vsetup({ content });
+  await mkTake(store, "TC-01", "done", { audioSig: await sigOf("AAA") });
+  await checkClipAudio(ctx);
+  const a = store.state.assets[0];
+  assert.equal(a.voiceoverChanged, true);
+  assert.equal(a.staleReason, undefined);
+  assert.match(store.state.waiting, /1 clip out of step/);
+  content[CHK("TC-01")] = "AAA";
+  await checkClipAudio(ctx);
+  assert.equal(store.state.assets[0].voiceoverChanged, undefined);
+});
+
+test("checkClipAudio: a line that only moved in time (same audio, other start) is not flagged; never touches portrait stale", async () => {
+  const moved = { sentences: [{ sentence: "01", start: 7, end: 12 }, { sentence: "03", start: 21, end: 30 }] };
+  const { ctx, store, sigOf, host } = await vsetup({ content: { [CHK("TC-01")]: "AAA" }, transcript: moved });
+  await mkTake(store, "TC-01", "done", { audioSig: await sigOf("AAA") });
+  await store.update((d) => { d.assets[0].staleReason = "portrait"; });
+  await checkClipAudio(ctx);
+  assert.equal(store.state.assets[0].voiceoverChanged, undefined);
+  assert.equal(store.state.assets[0].staleReason, "portrait");
+  const a = host.cuts[0];
+  assert.equal(a[a.indexOf("-ss") + 1], "7");
+  assert.equal(a[a.indexOf("-to") + 1], "12");
+});
+
+test("checkClipAudio: skips running takes, takes without audioSig, lines missing from the transcript; no-op without a done voiceover", async () => {
+  const { ctx, store, host } = await vsetup({ content: { [CHK("TC-01")]: "X", [CHK("TC-02")]: "X" } });
+  await mkTake(store, "TC-01", "running");
+  await mkTake(store, "TC-02", "done"); // no audioSig
+  await checkClipAudio(ctx);
+  assert.equal(host.cuts.length, 0);
+  await store.update((d) => { d.mix.voiceover.status = "running"; });
+  await mkTake(store, "TC-01", "done", { audioSig: { lengthS: 5, hash: "h" } });
+  await checkClipAudio(ctx);
+  assert.equal(host.cuts.length, 0);
+  await store.update((d) => { d.mix.voiceover = { status: "done", wav: VO_WAV, transcript: DIR + "\\nope.json" }; });
+  await checkClipAudio(ctx);
+  assert.equal(host.cuts.length, 0);
+});
+
+test("keepAnyway clears the flag, records keptAt and keptSig; same new audio is not re-flagged, a different one is", async () => {
+  const content = { [CHK("TC-01")]: "BBB" };
+  const { ctx, store, sigOf } = await vsetup({ content });
+  await mkTake(store, "TC-01", "done", { audioSig: await sigOf("AAA") });
+  await checkClipAudio(ctx);
+  assert.equal(store.state.assets[0].voiceoverChanged, true);
+  await keepAnyway(ctx, "TC-01");
+  let a = store.state.assets[0];
+  assert.equal(a.voiceoverChanged, undefined);
+  assert.ok("keptAt" in a);
+  assert.equal(a.keptSig.hash, (await sigOf("BBB")).hash);
+  assert.doesNotMatch(String(store.state.waiting), /out of step/);
+  await checkClipAudio(ctx);
+  assert.equal(store.state.assets[0].voiceoverChanged, undefined);
+  content[CHK("TC-01")] = "CCC";
+  await checkClipAudio(ctx);
+  assert.equal(store.state.assets[0].voiceoverChanged, true);
+  await assert.rejects(() => keepAnyway(ctx, "TC-99"), /Unknown/);
+});
+
+test("deriveWaiting counts clips out of step", () => {
+  const mk = (id, extra) => ({ id, kind: "presenter", lineId: id, takes: [{ n: 1, status: "done" }], chosen: 1, approved: true, ...extra });
+  assert.equal(deriveWaiting([mk("a", { voiceoverChanged: true })]), "1 clip out of step");
+  assert.equal(deriveWaiting([mk("a", { voiceoverChanged: true }), mk("b", { voiceoverChanged: true })]), "2 clips out of step");
+  assert.equal(deriveWaiting([mk("a", { approved: false, voiceoverChanged: true }), mk("b", {})]), "1 shot to review, 1 clip out of step");
+  assert.equal(deriveWaiting([mk("a", {})]), "All shots approved");
+});
+
+test("watchJobs: a clip take that finishes after the join is checked when it finishes (Review Focus 5)", async () => {
+  let release;
+  const runners = { higgsfield: { start: (j) => new Promise((r) => { release = () => r({ file: j.input.out + ".mp4", meta: { hfId: "x", audioSig: { lengthS: 5, hash: "old" } } }); }) } };
+  const s = await csetup(runners);
+  const { host, store, jobs, ctx } = s;
+  host.spawnScript(async (cmd, args, _o, p) => { await host.fs.write(args[args.length - 1], "NEW"); p.exit(0); });
+  await host.fs.mkdir(DIR + "\\studio\\presenter");
+  await host.fs.write(VO_WAV, "w");
+  await host.fs.write(TRPATH, JSON.stringify(TR));
+  await store.update((d) => { d.mix.voiceover.transcript = TRPATH; });
+  watchJobs(ctx);
+  await startTake(ctx, "TC-01");
+  await tickN();
+  assert.equal(store.state.assets[0].takes[0].status, "running");
+  await checkClipAudio(ctx); // the join finished while it ran: skipped
+  assert.equal(store.state.assets[0].voiceoverChanged, undefined);
+  release();
+  await until(() => store.state.assets[0].voiceoverChanged);
+  assert.equal(store.state.assets[0].takes[0].status, "done");
+  assert.equal(store.state.assets[0].voiceoverChanged, true);
+});
+
+test("watchJobs: a voiceover job turning done runs the check; an error in the check is logged, not thrown", async () => {
+  const runners = { voicejoin: { start: async () => ({ file: "v.wav", meta: { wav: VO_WAV, transcript: TRPATH } }) } };
+  const s = await csetup(runners);
+  const { host, store, jobs, ctx } = s;
+  host.spawnScript(async (cmd, args, _o, p) => { await host.fs.write(args[args.length - 1], "NEW"); p.exit(0); });
+  await host.fs.mkdir(DIR + "\\studio\\presenter");
+  await host.fs.write(VO_WAV, "w");
+  await host.fs.write(TRPATH, JSON.stringify(TR));
+  await mkTake(store, "TC-01", "done", { audioSig: { lengthS: 5, hash: "old" } });
+  await store.update((d) => { d.mix.voiceover = { id: "VOICEOVER", status: "queued", takes: [{ n: 1, status: "queued" }] }; });
+  watchJobs(ctx);
+  jobs.add({ film: store.dir, assetId: "VOICEOVER", take: 1, tool: "voicejoin", what: "v", why: "w", input: {} });
+  await until(() => store.state.assets[0].voiceoverChanged);
+  assert.equal(store.state.mix.voiceover.status, "done");
+  assert.equal(store.state.assets[0].voiceoverChanged, true);
+  // a broken transcript is logged and the watcher keeps working
+  await host.fs.write(TRPATH, "{not json");
+  await store.update((d) => { d.mix.voiceover = { id: "VOICEOVER", status: "queued", takes: [{ n: 2, status: "queued" }] }; });
+  jobs.add({ film: store.dir, assetId: "VOICEOVER", take: 2, tool: "voicejoin", what: "v", why: "w", input: {} });
+  await until(() => store.state.mix.voiceover.status === "done" && store.state.mix.voiceover.takes?.[0]?.n === 2);
+  await tickN(20);
+  assert.equal(store.state.mix.voiceover.status, "done");
 });

@@ -4,6 +4,8 @@ import { askJson } from "./claude.js";
 import { deriveWaiting } from "./shots.js";
 import { scanFilms } from "./films.js";
 import { join, filmKey } from "./paths.js";
+import { runProcess } from "./proc.js";
+import { clipAudioArgs, audioSigOf } from "./tools/clipaudio.js";
 export { sameLine, onCameraConflict } from "./shots.js";
 
 export const MAX_CLIP_S = 15;
@@ -55,6 +57,7 @@ export const clipPrompt = (note) => (typeof note === "string" && note.trim() !==
 // Why a clip can't be made yet, or null. A line missing from the transcript counts as not joined.
 export function clipLock(asset, state, transcript) {
   if (!state?.presenter?.portrait?.hfId) return "Approve a portrait first";
+  if (!state?.mix?.voiceover?.wav) return "Join the voiceover first";
   const len = lineLengthS(transcript, asset.lineId);
   if (len == null) return "Join the voiceover first";
   if (len > MAX_CLIP_S) return TOO_LONG;
@@ -252,4 +255,63 @@ export async function approvePortrait(ctx, n) {
     }
   });
   await store.log(`Portrait ${n} approved`);
+}
+
+// ---- the voiceover changed under a finished clip ----
+export const VOICEOVER_CHANGED = "The voiceover for this line changed: redo to match, or Keep anyway";
+const CHECK_MS = 2 * 60 * 1000;
+const sameSig = (a, b) => !!a && !!b && Math.abs(a.lengthS - b.lengthS) <= 0.01 && a.hash === b.hash;
+const chosenTake = (a) => (a.takes ?? []).find((t) => t.n === a.chosen);
+
+// Re-cut each finished clip's line from the current voiceover and compare with the audio the clip was made
+// from. Only voiceoverChanged is set or cleared here (staleReason belongs to the portrait). Running takes and
+// takes without an audioSig are skipped; a running take is checked when it finishes (watchJobs).
+export async function checkClipAudio(ctx) {
+  const { host, store } = ctx;
+  const vo = store.state.mix?.voiceover;
+  if (!vo || vo.status !== "done" || !vo.wav || !vo.transcript) return;
+  if (!(await host.fs.exists(vo.wav)) || !(await host.fs.exists(vo.transcript))) return;
+  const transcript = JSON.parse(await host.fs.read(vo.transcript, "utf8"));
+  const results = new Map();
+  for (const a of store.state.assets) {
+    if (a.kind !== "presenter") continue;
+    const t = chosenTake(a);
+    if (!t || t.status !== "done" || !t.audioSig) continue;
+    const s = (transcript.sentences ?? []).find((x) => x.sentence === a.lineId);
+    const len = lineLengthS(transcript, a.lineId);
+    if (!s || len == null) continue;
+    const out = join(store.dir, "studio", "presenter", `check_${a.id}`);
+    const r = await runProcess(host, "ffmpeg", clipAudioArgs({ wav: vo.wav, start: s.start, end: s.end, seconds: clipSeconds(len), out }), { timeout: CHECK_MS });
+    const file = `${out}_audio.wav`;
+    if (r.code !== 0 || !(await host.fs.exists(file))) continue;
+    results.set(a.id, { take: t.n, sig: await audioSigOf(host, file, s.end - s.start) });
+  }
+  if (!results.size) return;
+  await store.update((d) => {
+    for (const [id, { take, sig }] of results) {
+      const a = d.assets.find((x) => x.id === id);
+      if (!a || a.chosen !== take) continue;
+      const t = chosenTake(a);
+      if (!t?.audioSig) continue;
+      if (sameSig(t.audioSig, sig)) { delete a.voiceoverChanged; delete a.voiceoverSig; }
+      else if (sameSig(a.keptSig, sig)) { delete a.voiceoverChanged; delete a.voiceoverSig; }
+      else { a.voiceoverChanged = true; a.voiceoverSig = sig; }
+    }
+    d.waiting = deriveWaiting(d.assets);
+  });
+}
+
+// Jon keeps a clip whose line audio changed. The new audio is remembered so the same audio isn't flagged again.
+export async function keepAnyway(ctx, id) {
+  const { store, host } = ctx;
+  const a = store.state.assets.find((x) => x.id === id);
+  if (!a || a.kind !== "presenter") throw new Error(`Unknown clip ${id}`);
+  await store.update((d) => {
+    const x = d.assets.find((y) => y.id === id);
+    if (x.voiceoverSig) x.keptSig = x.voiceoverSig;
+    delete x.voiceoverChanged; delete x.voiceoverSig;
+    x.keptAt = host.now();
+    d.waiting = deriveWaiting(d.assets);
+  });
+  await store.log(`${id} kept as it is (the voiceover for its line changed)`);
 }

@@ -49,6 +49,8 @@ export function deriveWaiting(all = []) {
   const parts = [];
   if (review) parts.push(`${shots(review)} to review`);
   if (redo) parts.push(`${shots(redo)} need${redo === 1 ? "s" : ""} a redo`);
+  const out = assets.filter((a) => a.kind === "presenter" && a.voiceoverChanged).length;
+  if (out) parts.push(`${out} clip${out === 1 ? "" : "s"} out of step`);
   if (parts.length) return parts.join(", ");
   if (assets.some(busy)) return null; // running, not waiting on Jon
   if (assets.every((a) => a.approved)) return "All shots approved";
