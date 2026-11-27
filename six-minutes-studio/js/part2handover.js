@@ -82,20 +82,24 @@ export function handoverFacts({ state, dir, root, lineScript, part1, jobs, brIds
   const files = [];
   const add = (group, label, path, extra = {}) => { if (filled(path)) files.push({ group, label, path, ...extra }); };
   const ids = [];
+  const need = (group, label, path, what) => {
+    if (!filled(path)) throw new Error(`Missing file: ${what}`);
+    add(group, label, path);
+  };
   const gen = join(dir, "studio", "handover");
 
   // Voiceover
   const vo = st.mix?.voiceover ?? {};
-  add("Voiceover", "Joined voiceover", vo.wav);
-  add("Voiceover", "Timings CSV", vo.csv);
-  add("Voiceover", "Word-level transcript", vo.transcript);
+  need("Voiceover", "Joined voiceover", vo.wav, "the joined voiceover");
+  need("Voiceover", "Timings CSV", vo.csv, "the voiceover timings");
+  need("Voiceover", "Word-level transcript", vo.transcript, "the voiceover transcript");
   if (own) { add("Voiceover", "Line script", lineScript.path); add("Voiceover", "Takes folder", recordings); }
 
   // Score
   const sc = st.audio?.score;
   const st1 = chosenTake(sc);
-  add("Score", `Chosen score take${sc?.chosen ? ` ${sc.chosen}` : ""}`, st1?.file);
-  add("Score", "Score fitted to the film", st.mix?.fit?.file);
+  need("Score", `Chosen score take${sc?.chosen ? ` ${sc.chosen}` : ""}`, st1?.file, "the chosen score take");
+  need("Score", "Score fitted to the film", st.mix?.fit?.file, "the fitted score");
   add("Score", "Score timing sheet", st.mix?.fit?.measureFile);
   add("Score", "Mix settings (gain ride and levels)", join(gen, "mix_settings.json"), { extra: true });
 
@@ -103,12 +107,14 @@ export function handoverFacts({ state, dir, root, lineScript, part1, jobs, brIds
   for (const x of st.audio?.sfx ?? []) {
     if (!x.approved) continue;
     const t = chosenTake(x);
-    add("Sound effects", `${x.id}${x.cue ? ` (${x.cue})` : ""}${x.chosen ? ` take ${x.chosen}` : ""}`, t?.file);
+    need("Sound effects", `${x.id}${x.cue ? ` (${x.cue})` : ""}${x.chosen ? ` take ${x.chosen}` : ""}`, t?.file, `${x.id} chosen take`);
   }
   add("Sound effects", "Sound-effect cues (id, file, film start time, loop/end, gain dB)", join(gen, "sfx_cues.json"), { extra: true });
 
   // Mix preview
-  filesOf(st.mix?.mix?.files).forEach((f) => add("Mix preview", baseOf(f), f));
+  const mixFiles = filesOf(st.mix?.mix?.files);
+  if (!mixFiles.length) throw new Error("Missing file: the mix preview");
+  mixFiles.forEach((f) => add("Mix preview", baseOf(f), f));
 
   // B-roll and art
   const live = (st.assets ?? []).filter((a) => !a.removedAt);
@@ -117,8 +123,8 @@ export function handoverFacts({ state, dir, root, lineScript, part1, jobs, brIds
     const t = chosenTake(a);
     const br = brIds?.get?.(a.id);
     const bits = [br ? `${a.id} (${br})` : a.id, a.line ? `line ${a.line}` : null, a.kind, a.tool].filter(Boolean);
-    add("B-roll and art", bits.join(", "), t?.file);
-    if (t) {
+    need("B-roll and art", bits.join(", "), t?.file, `${a.id} chosen take`);
+    {
       if (a.tool === "higgsfield") ids.push({ label: `${a.id} take ${t.n}`, value: hfJobIdFor(t, jobs) ?? NOT_RECORDED });
       else ids.push({ label: `${a.id} take ${t.n}`, value: localText(a, t, jobs) });
     }
@@ -131,8 +137,9 @@ export function handoverFacts({ state, dir, root, lineScript, part1, jobs, brIds
     const t = chosenTake(a);
     const s = sentences.find((x) => x.sentence === a.lineId);
     const when = s && Number.isFinite(s.start) && Number.isFinite(s.end) ? `, film time ${clean(s.start)}–${clean(s.end)} s` : "";
-    add("On camera", `${a.id}, line ${a.lineId ?? a.line ?? "?"}${when}`, t?.file, { note: MUTE_NOTE });
-    if (t) ids.push({ label: `${a.id} take ${t.n}`, value: hfJobIdFor(t, jobs) ?? NOT_RECORDED });
+    if (!filled(t?.file)) throw new Error(`Missing file: ${a.id} chosen take`);
+    add("On camera", `${a.id}, line ${a.lineId ?? a.line ?? "?"}${when}`, t.file, { note: MUTE_NOTE });
+    ids.push({ label: `${a.id} take ${t.n}`, value: hfJobIdFor(t, jobs) ?? NOT_RECORDED });
   }
   const pt = st.presenter?.portrait;
   if (pt?.file) {

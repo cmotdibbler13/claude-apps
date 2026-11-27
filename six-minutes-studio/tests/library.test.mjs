@@ -196,10 +196,10 @@ test("mdRow throws for an approved entry without a duration", () => {
   assert.throws(() => mdRow({ ...e, duration_s: NaN }), /no duration/);
 });
 
-test("plannedEntries throws for ComfyUI without workflow or seed", () => {
+test("plannedEntries tolerates ComfyUI without workflow or seed", () => {
   const mk = (local) => shot("HF-03", { chosen: { file: ROOT + "The Christmas Tree\\studio\\media\\HF-03_t1.mp4", hfJob: null, local }, others: [] });
-  const msg = { message: "HF-03 take has no ComfyUI workflow/seed recorded" };
-  assert.throws(() => plannedEntries({ ...base, shots: [mk({ tool: "comfyui", seed: 1 })] }), msg);
-  assert.throws(() => plannedEntries({ ...base, shots: [mk({ tool: "comfyui", workflow: "w.json" })] }), msg);
+  const none = "local ComfyUI (workflow and seed not recorded)";
+  assert.equal(plannedEntries({ ...base, shots: [mk({ tool: "comfyui", seed: 1 })] })[0].entry.job_id, none);
+  assert.equal(plannedEntries({ ...base, shots: [mk({ tool: "comfyui", workflow: "w.json" })] })[0].entry.job_id, none);
   assert.equal(plannedEntries({ ...base, shots: [mk({ tool: "comfyui", workflow: "w.json", seed: 0 })] })[0].entry.job_id, "local ComfyUI w.json seed 0");
 });

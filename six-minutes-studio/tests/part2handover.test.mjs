@@ -119,3 +119,20 @@ test("rendered markdown: headings in order, groups, exact opening message", () =
   assert.equal(openingMessage("Christmas Trees", DIR), msg);
   assert.ok(md.trimEnd().endsWith("```\n" + msg + "\n```"));
 });
+
+test("no silent gaps: an item without a file is an error naming it", () => {
+  const miss = (edit, re) => { const s = state(); edit(s); assert.throws(() => handoverFacts(args({ state: s })), (e) => re.test(e.message)); };
+  miss((s) => { s.assets[2].takes[0].status = "failed"; }, /^Missing file: HF-03 chosen take$/);
+  miss((s) => { s.assets[4].takes[0].file = ""; }, /^Missing file: TC-01 chosen take$/);
+  miss((s) => { delete s.mix.voiceover.csv; }, /^Missing file: the voiceover timings$/);
+  miss((s) => { delete s.mix.fit.file; }, /^Missing file: the fitted score$/);
+  miss((s) => { s.audio.sfx[0].takes[0].status = "failed"; }, /^Missing file: SFX-01 chosen take$/);
+  miss((s) => { s.mix.mix.files = null; }, /^Missing file: the mix preview$/);
+});
+
+test("rendered file index: On camera line with mute text and path; checkFiles skips extras", async () => {
+  const md = renderHandover(handoverFacts(args()), { decisions: [], openItems: [] });
+  assert.ok(md.includes(`- TC-01, line L5, film time 30.04–36.5 s: ${DIR}\\studio\\media\\TC-01_1.mp4 (mute the clip: the voice is already in the voiceover)`));
+  await assert.doesNotReject(checkFiles(new FakeHost(), [{ group: "Score", label: "x", path: "S:\\nowhere\\mix_settings.json", extra: true }]));
+  await assert.rejects(checkFiles(new FakeHost(), [{ group: "Score", label: "x", path: "S:\\nowhere\\a.wav" }]), /^Error: Missing file: S:\\nowhere\\a\.wav$/);
+});

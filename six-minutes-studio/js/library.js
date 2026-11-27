@@ -45,7 +45,7 @@ function jobId(take, root, shot) {
   if (take.hfJob) return `higgsfield:${take.hfJob}`;
   const l = take.local;
   if (l && l.tool === "comfyui") {
-    if (!l.workflow || l.seed == null) throw new Error(`${shot} take has no ComfyUI workflow/seed recorded`);
+    if (!l.workflow || l.seed == null) return "local ComfyUI (workflow and seed not recorded)";
     return `local ComfyUI ${String(l.workflow).split(/[\\/]/).pop()} seed ${l.seed}`;
   }
   if (l && l.tool === "blender") return `Blender: ${rel(root, l.script)}`;
