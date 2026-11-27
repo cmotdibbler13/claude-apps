@@ -47,6 +47,7 @@ Open **Probe**, press **Run checks**. All should pass:
 ## Known limits in this version
 - Pressing **Check again** many times quickly asks Higgsfield for the job's status each time (free, but more often than every 20 seconds).
 - Blender runs Python that Claude writes, with full access to the PC.
+- Pauses only ever add time; they never shorten anything. A whole-film gap change (every gap a bit shorter or longer) is a later one-number change.
 
 ## ComfyUI b-roll (version 2)
 Have ComfyUI Desktop running, with `S:\Youtube video ideas\ComfyUI workflows\broll_ltx.json` in place. Nothing here spends credits.
@@ -103,3 +104,19 @@ Before you start:
 8. Re-record one line in Autocue Studio: Join, Fit and Mix all show **Out of date: run again**, and Approve is off until you re-run them.
 9. Close Studio while Stem Remixer is open: tell me if Stem Remixer closes too.
 10. With the timings CSV open in Excel, press **Join again**: it should say to close the file, and your earlier voiceover is still there.
+
+## Pacing review (version 17)
+Before you start: Probe → **Install join script** (the join script now takes pauses; Probe's "Autocue join" should pass afterwards). Placing pauses is one quick Claude call and costs nothing. You need a film with a joined voiceover and a mix.
+1. **Install.** Open Probe and press **Install join script**. It says it's installed and "Autocue join" passes.
+2. **The lines.** Under the Mix preview player, the script appears as rolling lines. Press play: the line being spoken is highlighted and the list follows it. Click a line's id (at its left): the player jumps there and plays from that line.
+3. **Mark a pause by clicking.** Click a word in a line: a ‖ appears after it (Medium). Click the ‖: a small box opens with **Short / Medium / Long / ◀ / ▶ / Remove**. Try Long, then ◀ and ▶ (they move the mark one word), then **Remove**.
+4. **Pause after a line.** Press the ＋ after a line: it adds a pause to the gap after that line. Click it to change or remove it.
+5. **Notes.** Type a note in a line's **Note** box, for example "needs a breath after Pictish". Tick **Re-record** on a different line. The counts under the lines say how many pauses are marked and how many lines to re-record.
+6. **Place pauses.** Press **Place pauses**. It reads only the new notes (one quick Claude call, free) and puts ‖ marks where they belong, or replies in plain words, for example "This sounds like a delivery change: tick Re-record". Your own marks are never moved.
+7. **The real test, at about 2:00.** The line reads "Pictish village in Orkney. Pictish he was out…". Click the word after the second "Pictish" to put a pause there (Medium to start). Press **Apply pauses**. Live jobs shows the voiceover joining, then the score fitting, then the mix being made. When it finishes, play from that line: the second "Pictish" should now have a breath after it.
+8. **Too tight?** If a mark sits where two words ran together in the recording, it shows **Tight cut: have a listen**. Listen. If it clicks, move it with ◀ / ▶ or make it Short and Apply again.
+9. **Marks changed.** Change any mark after Apply. The Join voiceover step says **Pause marks changed: press Apply pauses.** Press it and it goes away.
+10. **Sound effects.** Sound effects whose **Starts at** time you typed yourself move with the pauses, so they still land on the same word. Ones you never touched are re-timed from the new voiceover as before.
+11. **Re-record clears itself.** The ticked line shows **Re-record** in the Review → Narration list. Record a new take in Autocue Studio: the tick and the **Re-record** label clear on their own once the newer take arrives.
+12. **Stem Remixer export.** If the current score is a **Use this export** from Stem Remixer, press **Apply pauses**: it joins the voiceover, then stops and says it hasn't replaced your export. Open in Stem Remixer again to fit the longer voiceover. Your export is never overwritten.
+13. **Nothing wasted.** With no marks changed and nothing out of date, Apply pauses says why it's off instead of re-running.
