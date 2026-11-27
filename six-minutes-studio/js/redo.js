@@ -173,7 +173,7 @@ export async function startTake(ctx, assetId, { note } = {}) {
   try {
     await save(store, (d) => {
       const a = find(d, assetId);
-      if (a.takes.length !== n - 1) throw new Error(`${asset.id} changed while the take was being prepared.`);
+      if (!a || a.takes.length !== n - 1) throw new Error(`${asset.id} changed while the take was being prepared.`);
       a.takes.push(take);
       a.chosen = n;
       a.approved = false;

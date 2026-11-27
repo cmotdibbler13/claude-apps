@@ -520,3 +520,15 @@ test("startTake for an animated asset sends a ComfyUI video input from the drawi
   assert.deepEqual(j.input, { kind: "animated", prompt: t.prompt, out: DIR + `\\studio\\media\\${id}_t1.mp4`, sourceFile: "b.png" });
   assert.equal(store.state.assets.find((a) => a.id === id).takes[0].tool, "comfyui");
 });
+
+test("startTake fails cleanly when the version is removed during the prompt rewrite", async () => {
+  const src = lineart2();
+  const { ctx, host, store } = await setup([src], idle);
+  const id = await addAnimated(ctx, "HF-02");
+  await store.update((d) => { d.assets.find((a) => a.id === id).takes = [{ n: 1, status: "failed", prompt: "old", at: 1 }]; });
+  host.claudeScript(async () => {
+    await store.update((d) => { d.removed = [d.assets.find((a) => a.id === id)]; d.assets = d.assets.filter((a) => a.id !== id); });
+    return { prompt: "new" };
+  });
+  await assert.rejects(() => startTake(ctx, id, { note: "n" }), new RegExp(`${id} changed while the take was being prepared\\.`));
+});
