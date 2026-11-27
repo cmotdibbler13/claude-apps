@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { FakeHost } from "./fake-host.mjs";
 import { openFilm } from "../js/store.js";
 import { makeJobs } from "../js/jobs.js";
-import { startTake, watchJobs, approve, unapprove, choose, canStart, setTool, setPreferComfy, addBlender3d, has3d } from "../js/redo.js";
+import { startTake, watchJobs, approve, unapprove, choose, canStart, setTool, setPreferComfy, addBlender3d, has3d, hasDerived, addAnimated, removeVersion } from "../js/redo.js";
 
 const DIR = "S:\\Youtube video ideas\\Film A";
 const hf = (o = {}) => ({ id: "HF-01", kind: "lineart", line: "L", lineIndex: 0, desc: "A lighthouse", tool: "higgsfield", draftPrompt: "draft prompt", takes: [], chosen: 0, approved: false, ...o });
@@ -445,4 +445,78 @@ test("a busy score take with no job is marked lost", async () => {
   assert.equal(t.status, "interrupted");
   assert.equal(t.error, "Lost track of this job");
   stop();
+});
+
+const lineart2 = () => hf({ id: "HF-02", lineIndex: 3, line: "L3", desc: "A Lighthouse at dusk", approved: true });
+
+test("addAnimated adds a ComfyUI animated version beside its drawing, once", async () => {
+  const { ctx, store } = await setup([lineart2(), hf({ id: "HF-07", kind: "broll", lineIndex: 5 })]);
+  const id = await addAnimated(ctx, "HF-02");
+  assert.equal(id, "HF-08");
+  assert.deepEqual(store.state.assets.find((a) => a.id === id), {
+    id: "HF-08", kind: "animated", tool: "comfyui", sourceId: "HF-02", line: "L3", lineIndex: 3,
+    desc: "Animated version of a Lighthouse at dusk",
+    draftPrompt: "a Lighthouse at dusk; slow orbit around it, keep the hand-drawn amber line-art style on black, no new colours",
+    takes: [], chosen: 0, approved: false,
+  });
+  assert.equal(hasDerived(store.state.assets, "HF-02", "animated"), true);
+  assert.equal(has3d(store.state.assets, "HF-02"), false);
+  await assert.rejects(() => addAnimated(ctx, "HF-02"), /HF-02 already has an animated version\./);
+  await assert.rejects(() => addAnimated(ctx, "HF-07"), /HF-07 is not line art\./);
+  assert.equal(canStart(store.state.assets.find((a) => a.id === id), store.state.assets), true);
+});
+
+test("addAnimated waits for the drawing to be approved", async () => {
+  const { ctx, store } = await setup([hf()]);
+  const id = await addAnimated(ctx, "HF-01");
+  assert.equal(canStart(store.state.assets.find((a) => a.id === id), store.state.assets), false);
+  await assert.rejects(() => startTake(ctx, id), /needs its source line art approved/);
+});
+
+test("removeVersion moves a derived version to removed, and a re-made one gets a new id", async () => {
+  const { ctx, store, host } = await setup([lineart2()]);
+  const id = await addBlender3d(ctx, "HF-02");
+  assert.equal(id, "HF-03");
+  await removeVersion(ctx, id);
+  assert.equal(store.state.assets.some((a) => a.id === id), false);
+  assert.equal(store.state.removed.length, 1);
+  assert.equal(store.state.removed[0].id, id);
+  assert.equal(store.state.removed[0].removedAt, host.now());
+  assert.equal(has3d(store.state.assets, "HF-02"), false);
+  const again = await addBlender3d(ctx, "HF-02");
+  assert.equal(again, "HF-04");
+  const anim = await addAnimated(ctx, "HF-02");
+  assert.equal(anim, "HF-05");
+  await removeVersion(ctx, anim);
+  assert.equal(await addAnimated(ctx, "HF-02"), "HF-06");
+});
+
+test("removeVersion refuses while a take runs or is starting, and for line art or b-roll", async () => {
+  const { ctx, store } = await setup([lineart2(), hf({ id: "HF-09", kind: "broll" })], idle);
+  const id = await addAnimated(ctx, "HF-02");
+  await store.update((d) => { d.assets.find((a) => a.id === id).takes = [{ n: 1, status: "running" }]; });
+  await assert.rejects(() => removeVersion(ctx, id), new RegExp(`${id} has a take in progress\\.`));
+  await store.update((d) => { d.assets.find((a) => a.id === id).takes = [{ n: 1, status: "done", file: "x.mp4" }]; });
+  store.pending.add(`${id}#2`);
+  await assert.rejects(() => removeVersion(ctx, id), /has a take in progress\./);
+  store.pending.delete(`${id}#2`);
+  await assert.rejects(() => removeVersion(ctx, "HF-02"), /HF-02 is not a 3D or animated version\./);
+  await assert.rejects(() => removeVersion(ctx, "HF-09"), /HF-09 is not a 3D or animated version\./);
+  await assert.rejects(() => removeVersion(ctx, "HF-99"), /Unknown shot HF-99/);
+  await removeVersion(ctx, id);
+  assert.equal(store.state.removed[0].takes[0].file, "x.mp4");
+});
+
+test("startTake for an animated asset sends a ComfyUI video input from the drawing's chosen take", async () => {
+  const src = lineart2();
+  src.takes = [{ n: 1, status: "done", file: "a.png" }, { n: 2, status: "done", file: "b.png" }];
+  src.chosen = 2;
+  const { ctx, store, jobs } = await setup([src], { comfyui: { start: () => new Promise(() => {}) } });
+  const id = await addAnimated(ctx, "HF-02");
+  const t = await startTake(ctx, id);
+  assert.equal(t.prompt, "a Lighthouse at dusk; slow orbit around it, keep the hand-drawn amber line-art style on black, no new colours");
+  const [j] = jobs.list();
+  assert.equal(j.tool, "comfyui");
+  assert.deepEqual(j.input, { kind: "animated", prompt: t.prompt, out: DIR + `\\studio\\media\\${id}_t1.mp4`, sourceFile: "b.png" });
+  assert.equal(store.state.assets.find((a) => a.id === id).takes[0].tool, "comfyui");
 });

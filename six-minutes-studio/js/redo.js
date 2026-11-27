@@ -21,35 +21,74 @@ const takeName = (id, n) => (MIX_IDS.has(id) ? `${runLabel(id)} run ${n}` : `${n
 const save = (store, fn) => store.update((d) => { fn(d); d.waiting = deriveWaiting(d.assets); });
 
 export function canStart(asset, assets) {
-  if (asset.tool !== "blender") return true;
+  if (asset.tool !== "blender" && asset.kind !== "animated") return true;
   const src = assets.find((a) => a.id === asset.sourceId);
   return !!src && !!src.approved;
 }
 
-export const has3d = (assets, lineartId) => assets.some((a) => a.kind === "blender" && a.sourceId === lineartId);
+export const hasDerived = (assets, lineartId, kind) => assets.some((a) => a.kind === kind && a.sourceId === lineartId);
+export const has3d = (assets, lineartId) => hasDerived(assets, lineartId, "blender");
 
-// Add a Blender shot that uses a line drawing as its source. It sits beside the source (same line)
-// and stays locked until the source is approved.
-export async function addBlender3d(ctx, lineartId) {
+// The next free HF number counts removed assets too, so a re-made version never reuses an id.
+const nextId = (d) => {
+  const top = [...d.assets, ...(d.removed ?? [])].reduce((m, a) => Math.max(m, Number(/^HF-(\d+)$/.exec(a.id)?.[1] ?? 0)), 0);
+  return `HF-${String(top + 1).padStart(2, "0")}`;
+};
+
+// Add a derived shot that uses a line drawing as its source. It sits beside the source (same line)
+// and stays locked until the source is approved. One live version of each kind per drawing.
+async function addDerived(ctx, lineartId, kind, label, make) {
   const { store } = ctx;
   const src = find(store.state, lineartId);
   if (!src) throw new Error(`Unknown shot ${lineartId}`);
   if (src.kind !== "lineart") throw new Error(`${lineartId} is not line art.`);
-  if (has3d(store.state.assets, lineartId)) throw new Error(`${lineartId} already has a Blender version.`);
+  const refuse = () => new Error(`${lineartId} already has ${label} version.`);
+  if (hasDerived(store.state.assets, lineartId, kind)) throw refuse();
   let id;
   await save(store, (d) => {
-    if (has3d(d.assets, lineartId)) throw new Error(`${lineartId} already has a Blender version.`);
-    const top = d.assets.reduce((m, a) => Math.max(m, Number(/^HF-(\d+)$/.exec(a.id)?.[1] ?? 0)), 0);
-    id = `HF-${String(top + 1).padStart(2, "0")}`;
+    if (hasDerived(d.assets, lineartId, kind)) throw refuse();
+    id = nextId(d);
     const desc = src.desc ? src.desc[0].toLowerCase() + src.desc.slice(1) : lineartId;
     d.assets.push({
-      id, kind: "blender", tool: "blender", sourceId: lineartId, line: src.line, lineIndex: src.lineIndex,
-      desc: `3D line-art version of ${desc}`, draftPrompt: `3D line-art version of ${lineartId} in Blender`,
-      takes: [], chosen: 0, approved: false,
+      id, kind, tool: kind === "animated" ? "comfyui" : "blender", sourceId: lineartId, line: src.line, lineIndex: src.lineIndex,
+      ...make(desc), takes: [], chosen: 0, approved: false,
     });
   });
-  await store.log(`${id} added: 3D version of ${lineartId} in Blender`);
   return id;
+}
+
+export async function addBlender3d(ctx, lineartId) {
+  const id = await addDerived(ctx, lineartId, "blender", "a Blender", (desc) => ({
+    desc: `3D line-art version of ${desc}`, draftPrompt: `3D line-art version of ${lineartId} in Blender`,
+  }));
+  await ctx.store.log(`${id} added: 3D version of ${lineartId} in Blender`);
+  return id;
+}
+
+export async function addAnimated(ctx, lineartId) {
+  const id = await addDerived(ctx, lineartId, "animated", "an animated", (desc) => ({
+    desc: `Animated version of ${desc}`,
+    draftPrompt: `${desc}; slow orbit around it, keep the hand-drawn amber line-art style on black, no new colours`,
+  }));
+  await ctx.store.log(`${id} added: animated version of ${lineartId}`);
+  return id;
+}
+
+// Take a 3D or animated version out of the review. Its takes stay on disk.
+export async function removeVersion(ctx, id) {
+  const { store } = ctx;
+  const a = find(store.state, id);
+  if (!a) throw new Error(`Unknown shot ${id}`);
+  if (a.kind !== "blender" && a.kind !== "animated") throw new Error(`${id} is not a 3D or animated version.`);
+  const inProgress = () => busy(a) || starting(store, id);
+  if (inProgress()) throw new Error(`${id} has a take in progress.`);
+  await save(store, (d) => {
+    const x = find(d, id);
+    if (busy(x) || starting(store, id)) throw new Error(`${id} has a take in progress.`);
+    d.assets = d.assets.filter((y) => y.id !== id);
+    (d.removed ??= []).push({ ...x, removedAt: ctx.host.now() });
+  });
+  await store.log(`${id} removed from the review (takes kept on disk)`);
 }
 
 function previousTake(asset) {
@@ -69,10 +108,34 @@ export async function startTake(ctx, assetId, { note } = {}) {
   const prev = previousTake(asset);
   const base = join(store.dir, "studio", "media", `${asset.id}_t${n}`);
   let take, input;
+  const nextPrompt = async () => {
+    let prompt = asset.draftPrompt;
+    if (hasNote || prev) {
+      const r = await askJson(host, {
+        instructions: REWRITE_INSTRUCTIONS,
+        data: {
+          shot: { id: asset.id, desc: asset.desc, line: asset.line, kind: asset.kind },
+          previousPrompt: prev?.prompt ?? asset.draftPrompt,
+          note: hasNote ? note : null,
+        },
+        tier: "quick",
+        validate: (v) => { if (!v || !filled(v.prompt)) throw new Error("prompt is empty"); },
+      });
+      prompt = r.prompt;
+    }
+    return prompt;
+  };
 
   // All Claude work happens before any write. A Blender take does its Claude work inside the job
   // (script, check stills, render), so it only needs the drawing and the previous take here.
-  if (asset.tool === "blender") {
+  if (asset.kind === "animated") {
+    // Like a ComfyUI b-roll take, but it starts from the drawing's chosen take.
+    const src = find(store.state, asset.sourceId);
+    const sourceFile = src.takes.find((t) => t.n === src.chosen)?.file;
+    const prompt = await nextPrompt();
+    take = { n, prompt };
+    input = { kind: "animated", prompt, out: base + ".mp4", sourceFile };
+  } else if (asset.tool === "blender") {
     const src = find(store.state, asset.sourceId);
     const sourceFile = src.takes.find((t) => t.n === src.chosen)?.file;
     take = { n };
@@ -95,20 +158,7 @@ export async function startTake(ctx, assetId, { note } = {}) {
       if (previousScript && previousStill) input.previousStill = previousStill;
     }
   } else {
-    let prompt = asset.draftPrompt;
-    if (hasNote || prev) {
-      const r = await askJson(host, {
-        instructions: REWRITE_INSTRUCTIONS,
-        data: {
-          shot: { id: asset.id, desc: asset.desc, line: asset.line, kind: asset.kind },
-          previousPrompt: prev?.prompt ?? asset.draftPrompt,
-          note: hasNote ? note : null,
-        },
-        tier: "quick",
-        validate: (v) => { if (!v || !filled(v.prompt)) throw new Error("prompt is empty"); },
-      });
-      prompt = r.prompt;
-    }
+    const prompt = await nextPrompt();
     take = { n, prompt };
     input = { kind: asset.kind, prompt, out: asset.tool === "comfyui" ? base + ".mp4" : base };
   }

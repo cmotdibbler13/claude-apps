@@ -13,7 +13,7 @@ From the script and the part 1 handover below, make a shot list. Answer with a J
 - prompt: the generation prompt, never empty. For "lineart" shots use exactly this formula: "Elegant scientific line illustration of <subject>, fine single-weight <amber #e3a64a | white> ink lines on a pure black background, no fill, no shading, no text, no frame, isolated, generous margin." Choose amber or white.
 Cover the whole script in order.`;
 
-const KINDS = ["broll", "lineart", "blender"];
+const KINDS = ["broll", "lineart", "blender", "animated"];
 const TOOLS = ["higgsfield", "blender", "comfyui"];
 const filled = (v) => typeof v === "string" && v.trim() !== "";
 
@@ -56,12 +56,13 @@ function validateShots(list) {
     if (!TOOLS.includes(s.tool)) throw new Error(`${at} has a bad tool`);
     if (!filled(s.prompt)) throw new Error(`${at} has no prompt`);
     if ((s.kind === "blender") !== (s.tool === "blender")) throw new Error(`${at} tool does not match kind`);
-    if (s.tool === "comfyui" && s.kind !== "broll") throw new Error(`${at} tool does not match kind`);
+    if (s.kind === "animated" && s.tool !== "comfyui") throw new Error(`${at} tool does not match kind`);
+    if (s.tool === "comfyui" && s.kind !== "broll" && s.kind !== "animated") throw new Error(`${at} tool does not match kind`);
   });
   for (const s of list) {
-    if (s.kind !== "blender") continue;
+    if (s.kind !== "blender" && s.kind !== "animated") continue;
     const src = byId.get(s.sourceId);
-    if (!src || src.kind !== "lineart") throw new Error(`blender shot ${s.id} needs a lineart source shot`);
+    if (!src || src.kind !== "lineart") throw new Error(`${s.kind} shot ${s.id} needs a lineart source shot`);
   }
 }
 
@@ -81,7 +82,7 @@ export async function buildShotList(host, store, { scriptText, handoverText }) {
       id: newId.get(s.id), kind: s.kind, line: s.line, lineIndex: s.lineIndex, desc: s.desc,
       tool: comfy && s.kind === "broll" ? "comfyui" : s.tool, draftPrompt: s.prompt, takes: [], chosen: 0, approved: false,
     };
-    if (s.kind === "blender") a.sourceId = newId.get(s.sourceId);
+    if (s.kind === "blender" || s.kind === "animated") a.sourceId = newId.get(s.sourceId);
     return a;
   });
   await store.update((d) => {
