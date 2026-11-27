@@ -100,6 +100,15 @@ trial: on an outdoor shot the hands and elbows need to look more natural.
   match, or Keep anyway" on the shot and counts in the film's waiting line; approval stays until Jon chooses. A join
   that only moves the line in time changes neither, so doesn't count.
 
+## B-roll on to-camera lines (Jon, 2026-11-27)
+A to-camera line is Jon for the whole line; no b-roll cuts in.
+- **New shot lists:** the shot plan gets the to-camera line ids and plans no shot on them (the validator refuses a
+  shot whose lineIndex is a to-camera line). If the lines are chosen in Studio (fallback B) after the shot list was
+  made, the next rule applies.
+- **Existing shot lists:** a broll/lineart/blender/animated shot on a to-camera line shows "This line is on camera"
+  with **Remove** (takes stay on disk, as Remove this version; moves to `state.removed`). It doesn't count in the
+  film's waiting line. Unticking the line clears the note.
+
 ## Constraints
 - Studio stays the existing artifact. Republish with `desktop`, `sample: {images: true}` and the mcp servers as now,
   with Higgsfield gaining `media_upload`, `media_confirm`, `estimate_image_cost`, `estimate_video_cost`.
