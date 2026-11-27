@@ -49,6 +49,10 @@ export function lineLengthS(transcript, id) {
   return s.end - s.start;
 }
 
+// The generate params without medias (the estimate is asked for exactly these; the runner adds the medias).
+export const portraitParams = (prompt) => ({ model: "seedream_5_5", prompt, aspect_ratio: "16:9", count: 1, use_unlim: false, resolution: "2k" });
+export const clipParams = ({ seconds, prompt }) => ({ model: "wan2_7", resolution: "1080p", aspect_ratio: "16:9", duration: seconds, prompt, use_unlim: false });
+
 export const clipSeconds = (lengthS) => Math.min(MAX_CLIP_S, Math.max(2, Math.ceil(lengthS)));
 
 const CLIP_PROMPT = "The man speaks directly to the camera, lips precisely synced to the audio, calm and engaging documentary presenter delivery, small natural head movements, relaxed shoulders, natural elbow bends, small occasional gestures that stay low in frame, no stiff or raised arms, steady locked-off camera, the soft-focus background stays still, warm natural light, photorealistic.";

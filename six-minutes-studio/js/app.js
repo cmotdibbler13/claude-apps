@@ -11,6 +11,10 @@ import { makeFilmSession, readSavedJobs } from "./session.js";
 import { makeJobs } from "./jobs.js";
 import { notifyRules } from "./notify.js";
 import { buildShotList } from "./shots.js";
+import { scriptCameraIds, suggestLines, setCameraLines, suggestLooks, setLook, lastLook, portraitPrompt, startPortraits, approvePortrait, keepAnyway,
+  portraitParams, clipParams, clipPrompt, clipSeconds, lineLengthS } from "./presenter.js";
+import { estimateCredits } from "./tools/hfmedia.js";
+import { costPress, onCameraModel, OWN as OWN_PICK } from "./ui/oncamera.js";
 import { startTake, approve, unapprove, choose, setTool, setPreferComfy, addBlender3d, addAnimated, removeVersion, jobGone, jobRemoved, removedText } from "./redo.js";
 import { ensureProxy, toBlobUrl, openFull, revokeAll } from "./media.js";
 import { makeHiggsfieldRunner } from "./tools/higgsfield.js";
@@ -41,7 +45,7 @@ const LAYOUT_KEY = "six-minutes-studio.reviewLayout";
 const app = {
   host: null, root: null, jobs: null, films: [], view: "films",
   film: null, store: null, session: null, playing: null, retried: new Set(), goneJobs: new Map(), movedAside: null, stateError: null, bootError: null, openError: null,
-  review: { making: false, listError: null, cardErrors: new Map(), pending: new Set(), estimating: new Set(), noteFor: null, draft: "" },
+  review: { making: false, listError: null, cardErrors: new Map(), pending: new Set(), estimating: new Set(), noteFor: null, draft: "", oc: {} },
   starter: null, saBusy: false,
   previews: new Map(),
   layout: (() => { try { return localStorage.getItem(LAYOUT_KEY) || "script"; } catch { return "script"; } })(),
@@ -141,7 +145,7 @@ function paint(name, el, model, view, actions) {
   const refocus = document.activeElement?.id === "note-box" || (name === "review" && app.review.focusNote);
   // An audio prompt, length or cue box Jon is typing in keeps its caret across the re-render.
   const act = document.activeElement;
-  const keep = act?.id?.startsWith("au-") || act?.id?.startsWith("pace-") ? { id: act.id, start: act.selectionStart ?? null, end: act.selectionEnd ?? null } : null;
+  const keep = act?.id?.startsWith("au-") || act?.id?.startsWith("pace-") || act?.id?.startsWith("oc-own-") ? { id: act.id, start: act.selectionStart ?? null, end: act.selectionEnd ?? null } : null;
   rendering = true;
   try { view.render(el, model, actions); } finally { rendering = false; }
   const ta = refocus ? $("note-box") : null;
@@ -190,6 +194,8 @@ async function renderNow() {
       mixUi: { settings: { stemRemixer: !!app.settings?.stemRemixerDir }, jobs: list, ui: { exports: r.exports ?? null, opened: r.opened ?? null, confirm: r.exportConfirm ?? null },
         pacing: { transcript: r.transcript ?? null, lineScript: r.lineScript ?? null, menu: r.paceMenu ?? null,
           chain: { applying: r.applying ?? null, placing: !!r.placing, error: r.paceError ?? null, info: r.paceInfo ?? null } } },
+      lineScript: r.lineScript ?? null, transcript: r.transcript ?? null,
+      onCamera: { estimates: estimatesView(), photosOk: !!r.oc.photosOk, ui: r.oc },
     });
     r.paceSource = model.mix?.pacing?.source ?? null;
     // No voiceover player in the review now (a rejoin is running, or the mix is current): stop the old one, unseen.
@@ -200,6 +206,7 @@ async function renderNow() {
     if (r.focusMenu) { r.focusMenu = false; document.querySelector("#view-review .pmenu .pop")?.focus(); }
     proposeOnce();
     loadTranscript();
+    loadOnCamera();
   }
 }
 
@@ -267,7 +274,7 @@ function resetReview() {
   for (const slot of Object.keys(players)) dropPlayer(slot);
   app.previews.clear();
   revokeAll();
-  app.review = { making: false, listError: null, cardErrors: new Map(), pending: new Set(), estimating: new Set(), noteFor: null, draft: "" };
+  app.review = { making: false, listError: null, cardErrors: new Map(), pending: new Set(), estimating: new Set(), noteFor: null, draft: "", oc: {} };
   fields.clear();
 }
 
@@ -613,7 +620,7 @@ async function makeShotList() {
     if (handoverText === null) throw new Error("Couldn't read handover\\part1_handover.md.");
     const scriptText = await findScript(dir, handoverText);
     if (scriptText === null) throw new Error("Couldn't find the script. Add its path to part1_handover.md.");
-    await buildShotList(app.host, app.store, { scriptText, handoverText });
+    await buildShotList(app.host, app.store, { scriptText, handoverText, cameraLines: cameraLinesNow() });
   } catch (e) {
     r.listError = msg(e);
   } finally {
@@ -621,6 +628,142 @@ async function makeShotList() {
     render();
   }
 }
+
+// The to-camera lines the shot plan leaves alone: the chosen ones once there are any, else the script's marks.
+function cameraLinesNow() {
+  const ls = app.review.lineScript;
+  const chosen = app.store?.state?.presenter?.lines;
+  const ids = chosen?.length ? chosen.map((l) => l.id) : scriptCameraIds(ls);
+  return ids.map((id) => ({ id, text: ls?.lines?.find((l) => l.id === id)?.text ?? app.store.state.assets.find((a) => a.kind === "presenter" && a.lineId === id)?.line ?? "" }))
+    .filter((l) => l.text);
+}
+
+// ---- On camera ----
+// Costs are asked of Higgsfield (free) per film and kept across reopenings: the portrait's for the saved look,
+// a clip's per padded length. Asked again after a look change (new prompt) or a portrait approval.
+const estimates = new Map(); // filmKey -> { portraitFor, portrait, clips: Map(seconds -> credits|null), asked: Set }
+function estimatesFor() {
+  const k = app.store ? filmKey(app.store.dir) : null;
+  if (!k) return null;
+  if (!estimates.has(k)) estimates.set(k, { portraitFor: null, portrait: undefined, clips: new Map(), asked: new Set() });
+  return estimates.get(k);
+}
+function estimatesView() {
+  const e = estimatesFor();
+  if (!e) return {};
+  return { portrait: e.portrait, clips: Object.fromEntries([...e.clips].filter(([s]) => !e.asked.has(`clip:${s}`))) };
+}
+function askEstimates() {
+  const e = estimatesFor(), st = app.store?.state, host = app.host;
+  if (!e || !st?.presenter?.lines?.length || !host?.mcp) return;
+  const look = st.presenter.look;
+  if (look?.outfit && look?.set) {
+    const prompt = portraitPrompt(look);
+    if (e.portraitFor !== prompt) {
+      e.portraitFor = prompt; e.portrait = undefined;
+      estimateCredits(host, "estimate_image_cost", { params: portraitParams(prompt) })
+        .then((v) => { if (e.portraitFor === prompt) { e.portrait = v; render(); } });
+    }
+  }
+  for (const a of st.assets) {
+    if (a.kind !== "presenter") continue;
+    const len = lineLengthS(app.review.transcript, a.lineId);
+    if (len == null) continue;
+    const secs = clipSeconds(len);
+    if (e.clips.has(secs)) continue;
+    const gen = e.clips;
+    gen.set(secs, null); e.asked.add(`clip:${secs}`);
+    estimateCredits(host, "estimate_video_cost", { params: clipParams({ seconds: secs, prompt: clipPrompt() }) })
+      .then((v) => { if (e.clips === gen) { gen.set(secs, v); e.asked.delete(`clip:${secs}`); render(); } });
+  }
+}
+function forgetClipEstimates() {
+  const e = estimatesFor();
+  if (e) { e.clips = new Map(); e.asked.clear(); }
+}
+
+// Once per review: whether the presenter photos are there, and the last film's look (both free reads).
+function loadOnCamera() {
+  const r = app.review;
+  askEstimates();
+  if (r.ocLoaded || !app.store || !app.host || !(r.lineScript || app.store.state.presenter?.lines?.length)) return;
+  r.ocLoaded = true;
+  (async () => {
+    const photos = (app.settings?.presenter?.photos ?? []).filter((p) => typeof p === "string" && p.trim());
+    let ok = photos.length > 0;
+    for (const p of photos) { try { if (!(await app.host.fs.exists(p))) ok = false; } catch { ok = false; } }
+    let last = null;
+    try { last = app.root ? await lastLook(app.host, app.root, app.film.dir) : null; } catch (e) { console.error(e); }
+    if (app.review === r) { r.oc.photosOk = ok; r.oc.lastLook = last; render(); }
+  })();
+}
+
+// A step-level On camera action: one at a time per flag, errors shown under it.
+function ocAction(flag, errKey, fn) {
+  return async (...a) => {
+    const r = app.review, oc = r.oc;
+    if (oc[flag]) return;
+    oc[flag] = true; oc[errKey] = null; render();
+    try { await fn(oc, ...a); } catch (e) { if (app.review === r) oc[errKey] = msg(e); }
+    finally { oc[flag] = false; render(); }
+  };
+}
+
+// A paid press: goes when the cost is known; with "(cost unknown)" the first press asks for a second one.
+function paid(key, est) {
+  const oc = app.review.oc;
+  const p = costPress(est, oc.confirm ?? null, key);
+  oc.confirm = p.confirm;
+  if (!p.go) render();
+  return p.go;
+}
+const clipEstimate = (id) => {
+  const a = app.store?.state?.assets.find((x) => x.id === id);
+  if (a?.kind !== "presenter") return 0;
+  const len = lineLengthS(app.review.transcript, a.lineId);
+  return len == null ? undefined : estimatesView().clips[clipSeconds(len)];
+};
+
+const onCameraActions = {
+  toggleLine: ocAction("linesBusy", "lineError", async (oc, id, on, from) => {
+    const ids = (app.store.state.presenter?.lines ?? []).map((l) => l.id);
+    const next = on ? [...ids, id] : ids.filter((x) => x !== id);
+    await setCameraLines(ctx(), next, on && from ? { from } : {});
+  }),
+  addLine: (id) => onCameraActions.toggleLine(id, true),
+  suggestLines: ocAction("suggesting", "lineError", async (oc) => {
+    userStarted();
+    oc.suggestions = await suggestLines(app.host, app.review.lineScript);
+  }),
+  suggestLooks: ocAction("suggestingLooks", "lookError", async (oc) => {
+    userStarted();
+    const dir = app.film.dir;
+    const handoverText = await readText(join(dir, "handover", "part1_handover.md"));
+    const scriptText = await findScript(dir, handoverText ?? "");
+    oc.looks = await suggestLooks(app.host, { scriptText: scriptText ?? "", lastLook: oc.lastLook ?? null });
+  }),
+  pickLook(kind, value) { const oc = app.review.oc; oc.lookPick = { ...(oc.lookPick ?? {}), [kind]: value }; render(); },
+  setOwnLook(kind, text) {
+    const oc = app.review.oc;
+    oc.own = { ...(oc.own ?? {}), [kind]: text };
+    oc.lookPick = { ...(oc.lookPick ?? {}), [kind]: OWN_PICK };
+    render();
+  },
+  saveLook: ocAction("lookSaving", "lookError", async (oc) => {
+    await setLook(ctx(), onCameraModel({ state: app.store.state, lineScript: app.review.lineScript ?? null, ui: oc }).look.chosen);
+    oc.lookPick = null; oc.own = {};
+  }),
+  makePortraits: ocAction("portraitPending", "portraitError", async () => {
+    if (!paid("PORTRAIT", estimatesView().portrait)) return;
+    userStarted();
+    await startPortraits(ctx());
+  }),
+  approvePortrait: ocAction("approving", "portraitError", async (oc, n) => {
+    await approvePortrait(ctx(), n);
+    forgetClipEstimates();
+  }),
+  keepAnyway: cardAction((id) => keepAnyway(ctx(), id)),
+};
 
 // ---- music and sound effects ----
 async function planMusic() {
@@ -687,7 +830,8 @@ function cardAction(fn) {
     finally { r.pending.delete(id); render(); }
   };
 }
-const ctx = () => ({ host: app.host, store: app.store, jobs: app.jobs });
+// lineScript and transcript (the last good join's): to-camera lines and clip takes need them.
+const ctx = () => ({ host: app.host, store: app.store, jobs: app.jobs, settings: app.settings ?? {}, lineScript: app.review.lineScript ?? null, transcript: app.review.transcript ?? null });
 // narration: the mix steps refuse to run from a join that misses a take saved since (joinStale).
 const mixCtx = () => ({ ...ctx(), lineScript: app.review.lineScript ?? null, settings: app.settings ?? {}, narration: app.review.narration ?? null });
 // A Voiceover and mix step's action, guarded like a card (VOICEOVER, FIT or MIX).
@@ -740,12 +884,18 @@ const reviewActions = {
     try { localStorage.setItem(LAYOUT_KEY, v); } catch { /* storage blocked: per-session only */ }
     render();
   },
-  first: cardAction((id) => { userStarted(); return startTake(ctx(), id); }),
+  // A clip costs credits: its press goes through paid() (a second press when the cost is unknown).
+  first: cardAction((id) => {
+    if (!paid(id, clipEstimate(id))) return;
+    userStarted();
+    return startTake(ctx(), id);
+  }),
   approve: cardAction((id) => approve(ctx(), id)),
   unapprove: cardAction((id) => unapprove(ctx(), id)),
   choose: cardAction((id, n) => choose(ctx(), id, n)),
   redo: cardAction(async (id, note) => {
     if (!note || !note.trim()) throw new Error("Write a note saying what should change.");
+    if (!paid(id, clipEstimate(id))) return;
     userStarted();
     await startTake(ctx(), id, { note: note.trim() });
     app.review.noteFor = null; app.review.draft = "";
@@ -906,6 +1056,7 @@ const reviewActions = {
   },
   placePauses: () => { placePauses(); },
   applyPauses: () => { runApplyPauses(); },
+  ...onCameraActions,
   field: (k) => fields.get(k),
   setField(k, v) { if (v === undefined) fields.delete(k); else fields.set(k, v); },
   rendering: () => rendering,

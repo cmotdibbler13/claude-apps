@@ -90,7 +90,9 @@ const validateShots = (cameraLines) => (list) => {
 };
 
 export async function buildShotList(host, store, { scriptText, handoverText, cameraLines = [] }) {
-  if (store.state.assets.length) throw new ClaudeError("exists", "This film already has a shot list.");
+  // Clips of Jon (kind "presenter") can be chosen before the shot list: they stay, and don't count as one.
+  const hasList = (all) => all.some((a) => a.kind !== "presenter");
+  if (hasList(store.state.assets)) throw new ClaudeError("exists", "This film already has a shot list.");
   const list = await askJson(host, {
     instructions: SHOT_INSTRUCTIONS,
     data: { script: scriptText, handover: handoverText, cameraLines },
@@ -109,9 +111,9 @@ export async function buildShotList(host, store, { scriptText, handoverText, cam
     return a;
   });
   await store.update((d) => {
-    if (d.assets.length) throw new ClaudeError("exists", "This film already has a shot list.");
-    d.assets = assets;
-    d.waiting = deriveWaiting(assets);
+    if (hasList(d.assets)) throw new ClaudeError("exists", "This film already has a shot list.");
+    d.assets = [...d.assets, ...assets];
+    d.waiting = deriveWaiting(d.assets);
   });
   await store.log(`Shot list made: ${assets.length} shots`);
   return assets;

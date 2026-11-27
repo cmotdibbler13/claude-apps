@@ -154,3 +154,13 @@ test("deriveWaiting skips a conflicting unapproved shot", async () => {
   assert.equal(deriveWaiting([tc(), conflict, fine]), deriveWaiting([tc(), fine]));
   assert.notEqual(deriveWaiting([tc(), conflict, fine]), "1 shot to review");
 });
+
+test("clips chosen before the shot list: the list can still be made and the clips stay", async () => {
+  const { h, store } = await mk([shot({ id: "c", lineIndex: 0, line: "L0" })]);
+  const clip = { id: "TC-01", kind: "presenter", tool: "higgsfield", lineId: "01", line: "To camera here.", lineIndex: 3, takes: [], chosen: 0, approved: false };
+  await store.update((d) => { d.assets.push(clip); });
+  const r = await buildShotList(h, store, input);
+  assert.deepEqual(r.map((a) => a.id), ["HF-01"]);
+  assert.deepEqual(store.state.assets.map((a) => a.id), ["TC-01", "HF-01"]);
+  await assert.rejects(buildShotList(h, store, input), (e) => e.code === "exists");
+});

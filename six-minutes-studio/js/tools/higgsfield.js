@@ -4,6 +4,7 @@ import { DEFAULT_SETTINGS } from "../settings.js";
 import { runProcess } from "../proc.js";
 import { uploadMedia } from "./hfmedia.js";
 import { clipAudioArgs, audioSigOf } from "./clipaudio.js";
+import { portraitParams, clipParams } from "../presenter.js";
 
 const FFMPEG_MS = 5 * 60 * 1000;
 
@@ -160,10 +161,7 @@ export function makeHiggsfieldRunner({ settings = DEFAULT_SETTINGS, sleep = real
       throw new Error(`ffmpeg couldn't cut this line's audio (code ${r.code}): ${String(r.stderr ?? "").trim().split(/\r?\n/).slice(-3).join(" ")}; not generating.`);
     }
     const audioId = await uploadMedia(host, audio, "audio");
-    const params = {
-      model: "wan2_7", resolution: "1080p", aspect_ratio: "16:9", duration: seconds, prompt,
-      medias: [{ value: hfId, role: "start_image" }, { value: audioId, role: "audio_references" }], use_unlim: false,
-    };
+    const params = { ...clipParams({ seconds, prompt }), medias: [{ value: hfId, role: "start_image" }, { value: audioId, role: "audio_references" }] };
     return generate(job, ctx, "generate_video", params);
   }
 
@@ -179,11 +177,10 @@ export function makeHiggsfieldRunner({ settings = DEFAULT_SETTINGS, sleep = real
       if (kind === "presenter") return startPresenter(job, ctx);
       const video = kind === "broll";
       const portrait = kind === "portrait";
-      const params = { model: video ? settings.videoModel : portrait ? "seedream_5_5" : settings.imageModel, prompt, aspect_ratio: "16:9", count: 1, use_unlim: false };
+      const params = portrait ? portraitParams(prompt) : { model: video ? settings.videoModel : settings.imageModel, prompt, aspect_ratio: "16:9", count: 1, use_unlim: false };
       if (video) { params.mode = "pro"; params.sound = false; }
       if (portrait) {
         // Uploads are free and happen before generate, so a failure here is a plain failure.
-        params.resolution = "2k";
         params.medias = [];
         for (const photo of job.input.photos ?? []) params.medias.push({ value: await uploadMedia(host, photo, "image"), role: "image_references" });
       }

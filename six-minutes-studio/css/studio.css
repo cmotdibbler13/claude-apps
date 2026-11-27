@@ -284,3 +284,32 @@ textarea{width:100%;background:var(--s0);color:var(--ink);border:1px solid var(-
 .fold{margin-left:auto;min-width:30px;height:28px;padding:0 8px;background:none;border:1px solid var(--rule);color:var(--mut);cursor:pointer;font-size:14px;line-height:1}
 .fold:hover{border-color:var(--brass);color:var(--brass)}
 .top .credits{margin-left:auto;font-size:12px;letter-spacing:.04em;color:var(--mut);font-variant-numeric:tabular-nums}
+/* On camera: chosen lines, the look, portraits and the clip cards */
+.oncam h3{margin:18px 0 8px;font-size:15px;font-weight:500;letter-spacing:.02em}
+.oncam h3:first-child{margin-top:0}
+.h3row{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin:18px 0 8px}
+.h3row h3{margin:0}
+.oncam .row{margin:8px 0 0;align-items:center}
+.oclines{list-style:none;margin:0;padding:0;display:grid;gap:2px}
+.oclines li{display:grid;grid-template-columns:auto minmax(0,1fr);gap:2px 12px;align-items:baseline;background:var(--s1);border:1px solid var(--rule);padding:6px 12px;font-size:13px}
+.oclines li.warn{border-color:var(--brass)}
+.oclines.sugg{margin-top:8px}
+.octick{display:inline-flex;align-items:center;gap:8px;grid-row:span 2}
+.octick input,.ocopt input{accent-color:var(--brass);width:15px;height:15px;margin:0;flex:none}
+.octick .nid{color:var(--mut);font-variant-numeric:tabular-nums}
+.octx{overflow-wrap:anywhere}
+.ocmeta{grid-column:2;font-size:12px;color:var(--fnt);overflow-wrap:anywhere}
+.row .ocmeta{grid-column:auto}
+.ocwarn{grid-column:2;font-size:12px;color:var(--brass);overflow-wrap:anywhere}
+.ocadd select{max-width:100%;background:var(--s0);color:var(--ink);border:1px solid var(--rs);font:13px Inter,"Helvetica Neue",Arial,sans-serif;padding:6px}
+.oclooks{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:12px}
+.oclook{margin:0;border:1px solid var(--rule);background:var(--s1);padding:8px 12px 10px;display:grid;gap:6px;min-width:0}
+.oclook legend{font-size:11px;font-weight:500;letter-spacing:.16em;text-transform:uppercase;color:var(--mut);padding:0 4px}
+.ocopt{display:flex;align-items:center;gap:8px;font-size:13px;overflow-wrap:anywhere;cursor:pointer}
+.ocopt input[type=text]{flex:1;min-width:0;background:var(--s0);color:var(--ink);border:1px solid var(--rule);font:13px Inter,"Helvetica Neue",Arial,sans-serif;padding:4px 6px;width:auto;height:auto}
+.ocportraits{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,220px),1fr));gap:10px;margin-top:10px}
+.ocp{margin:0;background:var(--s1);border:1px solid var(--rule)}
+.ocp.ok{border-color:var(--lw)}
+.ocp figcaption{padding:8px;display:flex;gap:8px;align-items:center}
+.occlips{margin-top:14px}
+.cnote{font-size:13px;color:var(--brass);overflow-wrap:anywhere}
