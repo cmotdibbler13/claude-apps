@@ -208,12 +208,14 @@ export async function startTake(ctx, assetId, { note } = {}) {
   return structuredClone(store.state.assets.find((a) => a.id === assetId).takes.find((t) => t.n === n));
 }
 
-// A job whose shot is no longer in the film's review (a removed 3D or animated version): running or
+// A job whose shot was removed from the film's review (in state.removed: a 3D or animated version): running or
 // checking it again would do the whole job and throw the result away. Unknown state is never refused.
 export const removedText = (id) => `${id} was removed from the review.`;
 export function jobGone(state, job) {
   if (!state || job?.assetId === undefined || job?.assetId === null) return false;
-  return !holders(state).some((h) => h.id === job.assetId);
+  // Only shots taken out with Remove this version: other jobs without a holder (the score measure) run as before.
+  const removed = (state.removed ?? []).some((a) => a?.id === job.assetId);
+  return removed && !holders(state).some((h) => h.id === job.assetId);
 }
 
 // The refusal text for a Jobs-panel Retry or Check, or null to go ahead. The open film's state is

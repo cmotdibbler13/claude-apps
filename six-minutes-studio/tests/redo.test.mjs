@@ -549,12 +549,15 @@ test("blender redo: the previous still is the chosen script's round, none when t
 });
 
 test("jobGone: a job whose shot was removed from the review", () => {
-  const state = { assets: [bl()], audio: { score: { id: "SCORE", takes: [] }, sfx: [{ id: "SFX-01", takes: [] }] } };
+  const state = { assets: [bl()], removed: [{ id: "HF-07", kind: "blender", takes: [] }], audio: { score: { id: "SCORE", takes: [] }, sfx: [{ id: "SFX-01", takes: [] }] } };
   assert.equal(jobGone(state, { assetId: "HF-02" }), false);
   assert.equal(jobGone(state, { assetId: "SCORE" }), false);
   assert.equal(jobGone(state, { assetId: "SFX-01" }), false);
   assert.equal(jobGone(state, { assetId: "HF-07" }), true);
   assert.equal(jobGone(state, {}), false, "a job without a shot is never gone");
+  // Jobs that have no holder (the score measure) are not removed shots: Retry works as before.
+  assert.equal(jobGone(state, { assetId: "MEASURE" }), false);
+  assert.equal(jobGone(state, { assetId: "HF-99" }), false, "only ids in state.removed are refused");
   assert.equal(jobGone(null, { assetId: "HF-07" }), false, "unknown state: not refused");
   assert.equal(removedText("HF-07"), "HF-07 was removed from the review.");
 });
@@ -569,4 +572,12 @@ test("jobRemoved: Retry and Check refuse a job whose shot was removed, for the o
   assert.equal(await jobRemoved(host, job, null), "HF-02 was removed from the review.");
   // A film whose state can't be read is not refused.
   assert.equal(await jobRemoved(host, { ...job, film: "S:\\Youtube video ideas\\Nope" }, null), null);
+});
+
+test("jobRemoved: a failed score-measure job is not refused", async () => {
+  const { ctx, host, store } = await setup([hf({ approved: true }), bl()], idle);
+  await removeVersion(ctx, "HF-02");
+  const measure = { id: "m", film: DIR, assetId: "MEASURE", take: 1, tool: "ffmpeg" };
+  assert.equal(await jobRemoved(host, measure, store), null);
+  assert.equal(await jobRemoved(host, measure, null), null);
 });
