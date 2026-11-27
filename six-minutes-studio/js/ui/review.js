@@ -194,7 +194,7 @@ export function reviewModel({ film, state, layout = "script", making = false, li
     narration: narrationModel(narration, playing),
     audio: audioModel(audio === undefined ? state?.audio : audio, { pending, cardErrors, noteFor, playing, sa, ...audioUi }),
     mix: mixModel({ state, narration, pending, cardErrors, noteFor, playing, settings: mixUi.settings ?? {}, jobs: mixUi.jobs ?? [], ui: mixUi.ui ?? {}, pacingUi: mixUi.pacing ?? {} }),
-    summary: summarize(assets),
+    summary: summarize(shots), // b-roll only: clips are counted in On camera
     noteFor,
     onCamera: onCam,
     cards: shots.map(cardFor),

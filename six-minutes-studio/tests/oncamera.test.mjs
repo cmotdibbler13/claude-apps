@@ -260,3 +260,9 @@ test("conflict card DOM: the note and Remove opens the confirm", () => withDom((
 }));
 
 const click = (el) => fire(el, "click");
+
+test("summary counts b-roll shots only, not clips", () => {
+  const b = { id: "HF-01", kind: "broll", tool: "higgsfield", line: "x y z w", lineIndex: 0, desc: "d", takes: [], chosen: 0, approved: true };
+  const m = reviewModel({ film: { title: "F", dir: "D" }, state: ready({ assets: [tc({ approved: true }), tc({ id: "TC-02", lineId: "03" }), b] }), lineScript: LS });
+  assert.deepEqual([m.summary.approved, m.summary.total], [1, 1]);
+});

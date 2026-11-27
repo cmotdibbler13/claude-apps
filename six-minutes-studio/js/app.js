@@ -11,9 +11,10 @@ import { makeFilmSession, readSavedJobs } from "./session.js";
 import { makeJobs } from "./jobs.js";
 import { notifyRules } from "./notify.js";
 import { buildShotList } from "./shots.js";
-import { scriptCameraIds, suggestLines, setCameraLines, suggestLooks, setLook, lastLook, portraitPrompt, startPortraits, approvePortrait, keepAnyway,
-  portraitParams, clipParams, clipPrompt, clipSeconds, lineLengthS } from "./presenter.js";
+import { scriptCameraIds, suggestLines, setCameraLines, suggestLooks, setLook, lastLook, startPortraits, approvePortrait, keepAnyway,
+  clipSeconds, lineLengthS } from "./presenter.js";
 import { estimateCredits } from "./tools/hfmedia.js";
+import { makeCosts } from "./oncamcosts.js";
 import { costPress, onCameraModel, OWN as OWN_PICK } from "./ui/oncamera.js";
 import { startTake, approve, unapprove, choose, setTool, setPreferComfy, addBlender3d, addAnimated, removeVersion, jobGone, jobRemoved, removedText } from "./redo.js";
 import { ensureProxy, toBlobUrl, openFull, revokeAll } from "./media.js";
@@ -294,6 +295,7 @@ async function openReview(dir) {
   }
   if (!store || app.session.current?.store !== store) return;
   app.openError = null;
+  costs.reset(); // costs are asked again each time a review opens
   if (app.store !== store) {
     resetReview();
     app.film = film;
@@ -620,6 +622,12 @@ async function makeShotList() {
     if (handoverText === null) throw new Error("Couldn't read handover\\part1_handover.md.");
     const scriptText = await findScript(dir, handoverText);
     if (scriptText === null) throw new Error("Couldn't find the script. Add its path to part1_handover.md.");
+    // The to-camera lines come from the line script: read it now if Narration hasn't yet, so no b-roll is planned on them.
+    if (!r.lineScript && !app.store.state.presenter?.lines?.length) await refreshNarration();
+    if (app.review !== r) return;
+    if (!r.lineScript && !r.narration?.missingScript && !app.store.state.presenter?.lines?.length) {
+      throw new Error("The line script is still loading. Try again in a moment.");
+    }
     await buildShotList(app.host, app.store, { scriptText, handoverText, cameraLines: cameraLinesNow() });
   } catch (e) {
     r.listError = msg(e);
@@ -639,48 +647,14 @@ function cameraLinesNow() {
 }
 
 // ---- On camera ----
-// Costs are asked of Higgsfield (free) per film and kept across reopenings: the portrait's for the saved look,
-// a clip's per padded length. Asked again after a look change (new prompt) or a portrait approval.
-const estimates = new Map(); // filmKey -> { portraitFor, portrait, clips: Map(seconds -> credits|null), asked: Set }
-function estimatesFor() {
-  const k = app.store ? filmKey(app.store.dir) : null;
-  if (!k) return null;
-  if (!estimates.has(k)) estimates.set(k, { portraitFor: null, portrait: undefined, clips: new Map(), asked: new Set() });
-  return estimates.get(k);
-}
-function estimatesView() {
-  const e = estimatesFor();
-  if (!e) return {};
-  return { portrait: e.portrait, clips: Object.fromEntries([...e.clips].filter(([s]) => !e.asked.has(`clip:${s}`))) };
-}
+// Higgsfield's costs for the open review (oncamcosts); reset whenever a review opens.
+const costs = makeCosts((tool, input) => estimateCredits(app.host, tool, input));
+const estimatesView = () => costs.view();
 function askEstimates() {
-  const e = estimatesFor(), st = app.store?.state, host = app.host;
-  if (!e || !st?.presenter?.lines?.length || !host?.mcp) return;
-  const look = st.presenter.look;
-  if (look?.outfit && look?.set) {
-    const prompt = portraitPrompt(look);
-    if (e.portraitFor !== prompt) {
-      e.portraitFor = prompt; e.portrait = undefined;
-      estimateCredits(host, "estimate_image_cost", { params: portraitParams(prompt) })
-        .then((v) => { if (e.portraitFor === prompt) { e.portrait = v; render(); } });
-    }
-  }
-  for (const a of st.assets) {
-    if (a.kind !== "presenter") continue;
-    const len = lineLengthS(app.review.transcript, a.lineId);
-    if (len == null) continue;
-    const secs = clipSeconds(len);
-    if (e.clips.has(secs)) continue;
-    const gen = e.clips;
-    gen.set(secs, null); e.asked.add(`clip:${secs}`);
-    estimateCredits(host, "estimate_video_cost", { params: clipParams({ seconds: secs, prompt: clipPrompt() }) })
-      .then((v) => { if (e.clips === gen) { gen.set(secs, v); e.asked.delete(`clip:${secs}`); render(); } });
-  }
+  if (!app.store || !app.host?.mcp) return;
+  costs.ask({ state: app.store.state, transcript: app.review.transcript ?? null }, () => render());
 }
-function forgetClipEstimates() {
-  const e = estimatesFor();
-  if (e) { e.clips = new Map(); e.asked.clear(); }
-}
+const forgetClipEstimates = () => costs.forgetClips();
 
 // Once per review: whether the presenter photos are there, and the last film's look (both free reads).
 function loadOnCamera() {
@@ -724,6 +698,11 @@ const clipEstimate = (id) => {
   return len == null ? undefined : estimatesView().clips[clipSeconds(len)];
 };
 
+const startPortraitsNow = ocAction("portraitPending", "portraitError", async () => {
+  userStarted();
+  await startPortraits(ctx());
+});
+
 const onCameraActions = {
   toggleLine: ocAction("linesBusy", "lineError", async (oc, id, on, from) => {
     const ids = (app.store.state.presenter?.lines ?? []).map((l) => l.id);
@@ -753,11 +732,8 @@ const onCameraActions = {
     await setLook(ctx(), onCameraModel({ state: app.store.state, lineScript: app.review.lineScript ?? null, ui: oc }).look.chosen);
     oc.lookPick = null; oc.own = {};
   }),
-  makePortraits: ocAction("portraitPending", "portraitError", async () => {
-    if (!paid("PORTRAIT", estimatesView().portrait)) return;
-    userStarted();
-    await startPortraits(ctx());
-  }),
+  // The cost check comes first, so an unknown-cost first press shows "Press again…" without a "Making…" flash.
+  makePortraits: (...a) => (app.review.oc.portraitPending || !paid("PORTRAIT", estimatesView().portrait) ? undefined : startPortraitsNow(...a)),
   approvePortrait: ocAction("approving", "portraitError", async (oc, n) => {
     await approvePortrait(ctx(), n);
     forgetClipEstimates();
