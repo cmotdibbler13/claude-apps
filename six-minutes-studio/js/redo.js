@@ -2,6 +2,7 @@
 import { askJson } from "./claude.js";
 import { join, filmKey } from "./paths.js";
 import { deriveWaiting, onCameraConflict } from "./shots.js";
+import { clipLock, clipPrompt, clipSeconds, lineLengthS } from "./presenter.js";
 import { mixHolders, mixJobDone, syncMixHolder, MIX_IDS, runLabel } from "./mixplan.js";
 
 const REWRITE_INSTRUCTIONS = `You improve one image or video generation prompt for a Six Minutes On... documentary film (dark, calm, precise, British English).
@@ -20,7 +21,8 @@ const takeName = (id, n) => (MIX_IDS.has(id) ? `${runLabel(id)} run ${n}` : `${n
 // Every change to the shots also rewrites what the film is waiting on Jon for, in the same update.
 const save = (store, fn) => store.update((d) => { fn(d); d.waiting = deriveWaiting(d.assets); });
 
-export function canStart(asset, assets) {
+export function canStart(asset, assets, state, transcript) {
+  if (asset.kind === "presenter") return !!state && clipLock(asset, state, transcript) === null;
   if (asset.tool !== "blender" && asset.kind !== "animated") return true;
   const src = assets.find((a) => a.id === asset.sourceId);
   return !!src && !!src.approved;
@@ -99,14 +101,17 @@ export async function startTake(ctx, assetId, { note } = {}) {
   const { host, store, jobs } = ctx;
   const asset = find(store.state, assetId);
   if (!asset) throw new Error(`Unknown shot ${assetId}`);
-  if (!canStart(asset, store.state.assets)) throw new Error(`${asset.id} needs its source line art approved first.`);
+  if (asset.kind === "presenter") {
+    const lock = clipLock(asset, store.state, ctx.transcript);
+    if (lock) throw new Error(lock);
+  } else if (!canStart(asset, store.state.assets)) throw new Error(`${asset.id} needs its source line art approved first.`);
   if (asset.takes.some((t) => t.status === "queued" || t.status === "running")) {
     throw new Error(`${asset.id} already has a take in progress.`);
   }
   const hasNote = filled(note);
   const n = asset.takes.length + 1;
   const prev = previousTake(asset);
-  const base = join(store.dir, "studio", "media", `${asset.id}_t${n}`);
+  const base = join(store.dir, "studio", asset.kind === "presenter" ? "presenter" : "media", `${asset.id}_t${n}`);
   let take, input;
   const nextPrompt = async () => {
     let prompt = asset.draftPrompt;
@@ -128,7 +133,20 @@ export async function startTake(ctx, assetId, { note } = {}) {
 
   // All Claude work happens before any write. A Blender take does its Claude work inside the job
   // (script, check stills, render), so it only needs the drawing and the previous take here.
-  if (asset.kind === "animated") {
+  if (asset.kind === "presenter") {
+    // No Claude rewrite: the prompt is the spec's, with Jon's note on the end. The take records the portrait it
+    // starts from, so approving another portrait later can tell this clip was made with an earlier one.
+    const vo = store.state.mix?.voiceover;
+    if (!vo?.wav) throw new Error("Join the voiceover first");
+    const s = ctx.transcript.sentences.find((x) => x.sentence === asset.lineId);
+    const hfId = store.state.presenter.portrait.hfId;
+    const prompt = clipPrompt(note);
+    take = { n, prompt, portraitHfId: hfId };
+    input = {
+      kind: "presenter", lineId: asset.lineId, voiceover: vo.wav, start: s.start, end: s.end,
+      seconds: clipSeconds(lineLengthS(ctx.transcript, asset.lineId)), hfId, prompt, out: base,
+    };
+  } else if (asset.kind === "animated") {
     // Like a ComfyUI b-roll take, but it starts from the drawing's chosen take.
     const src = find(store.state, asset.sourceId);
     const sourceFile = src.takes.find((t) => t.n === src.chosen)?.file;

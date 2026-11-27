@@ -47,6 +47,20 @@ export function lineLengthS(transcript, id) {
   return s.end - s.start;
 }
 
+export const clipSeconds = (lengthS) => Math.min(MAX_CLIP_S, Math.max(2, Math.ceil(lengthS)));
+
+const CLIP_PROMPT = "The man speaks directly to the camera, lips precisely synced to the audio, calm and engaging documentary presenter delivery, small natural head movements, relaxed shoulders, natural elbow bends, small occasional gestures that stay low in frame, no stiff or raised arms, steady locked-off camera, the soft-focus background stays still, warm natural light, photorealistic.";
+export const clipPrompt = (note) => (typeof note === "string" && note.trim() !== "" ? `${CLIP_PROMPT} ${note.trim()}` : CLIP_PROMPT);
+
+// Why a clip can't be made yet, or null. A line missing from the transcript counts as not joined.
+export function clipLock(asset, state, transcript) {
+  if (!state?.presenter?.portrait?.hfId) return "Approve a portrait first";
+  const len = lineLengthS(transcript, asset.lineId);
+  if (len == null) return "Join the voiceover first";
+  if (len > MAX_CLIP_S) return TOO_LONG;
+  return null;
+}
+
 const busy = (a) => (a.takes ?? []).some((t) => t.status === "queued" || t.status === "running");
 const starting = (store, id) => [...(store.pending ?? [])].some((k) => k.startsWith(`${id}#`));
 const nextTcId = (d) => {
@@ -172,7 +186,7 @@ const PORTRAIT_BUSY = "Portraits are already being made.";
 export async function startPortraits(ctx) {
   const { host, store, jobs } = ctx;
   const photos = [];
-  for (const p of ctx.settings?.presenter?.photos ?? []) if (filled(p) && (await host.fs.exists(p))) photos.push(p);
+  for (const p of (ctx.settings?.presenter?.photos ?? []).slice(0, 2)) if (filled(p) && (await host.fs.exists(p))) photos.push(p);
   if (!photos.length) throw new Error("Add presenter photos (see Probe)");
   const look = store.state.presenter?.look;
   if (!look || !filled(look.outfit) || !filled(look.set)) throw new Error("Choose an outfit and a set first");

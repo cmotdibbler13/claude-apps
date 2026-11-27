@@ -210,3 +210,81 @@ test("lastLook: newest other film's look, null when none", async () => {
   await h2.fs.mkdir(`${ROOT}\\Film A\\studio`);
   assert.equal(await lastLook(h2, ROOT, `${ROOT}\\Film A`), null);
 });
+
+// ---- Task 5: the clips ----
+import { clipLock, clipPrompt, clipSeconds } from "../js/presenter.js";
+import { startTake, canStart } from "../js/redo.js";
+
+test("startPortraits uses at most two photos", async () => {
+  const three = [...PHOTOS, "C:\\jon\\third.jpg"];
+  const { ctx, jobs } = await psetup(three);
+  await setLook(ctx, LOOK);
+  await startPortraits(ctx);
+  assert.deepEqual(jobs.list()[0].input.photos, PHOTOS);
+});
+
+test("clipSeconds: ceil clamped 2..15", () => {
+  assert.equal(clipSeconds(0.8), 2);
+  assert.equal(clipSeconds(7.2), 8);
+  assert.equal(clipSeconds(15), 15);
+  assert.equal(clipSeconds(14.01), 15);
+});
+
+test("clipPrompt: spec wording, note appended", () => {
+  const p = clipPrompt();
+  assert.match(p, /^The man speaks directly to the camera, lips precisely synced to the audio, calm and engaging documentary presenter delivery,/);
+  assert.match(p, /the soft-focus background stays still, warm natural light, photorealistic\.$/);
+  assert.equal(clipPrompt("  slower  "), p + " slower");
+  assert.equal(clipPrompt("   "), p);
+});
+
+test("clipLock: portrait, voiceover, missing line, too long", () => {
+  const a = { kind: "presenter", lineId: "01" };
+  const st = (portrait) => ({ presenter: portrait ? { portrait: { n: 1, hfId: "h" } } : {} });
+  assert.equal(clipLock(a, st(false), TR), "Approve a portrait first");
+  assert.equal(clipLock(a, st(true), null), "Join the voiceover first");
+  assert.equal(clipLock({ ...a, lineId: "04" }, st(true), TR), "Join the voiceover first");
+  assert.equal(clipLock({ ...a, lineId: "02" }, st(true), TR), "Too long for one clip: 15 s at most");
+  assert.equal(clipLock(a, st(true), TR), null);
+});
+
+async function csetup(runners) {
+  const s = await psetup(PHOTOS, runners);
+  await setCameraLines(s.ctx, ["01", "03"]);
+  await s.store.update((d) => {
+    d.presenter.portrait = { n: 1, hfId: "hf-p", file: "p.png", at: 1 };
+    d.mix = { voiceover: { status: "done", wav: "S:\\Youtube video ideas\\Film A\\Film A_voiceover.wav", transcript: "t.json" } };
+  });
+  s.ctx.transcript = TR;
+  return s;
+}
+
+test("startTake presenter: job input, take records portraitHfId, prompt with note, no Claude call", async () => {
+  const { ctx, store, jobs, host } = await csetup();
+  host.claudeScript(() => { throw new Error("no claude"); });
+  const t = await startTake(ctx, "TC-01", { note: "calmer" });
+  assert.equal(t.prompt, clipPrompt("calmer"));
+  assert.equal(t.portraitHfId, "hf-p");
+  assert.equal(t.note, "calmer");
+  const j = jobs.list()[0];
+  assert.deepEqual(j.input, {
+    kind: "presenter", lineId: "01", voiceover: store.state.mix.voiceover.wav, start: 0, end: 5, seconds: 5, hfId: "hf-p",
+    prompt: clipPrompt("calmer"), out: DIR + "\\studio\\presenter\\TC-01_t1",
+  });
+  assert.equal(j.tool, "higgsfield");
+});
+
+test("startTake presenter: locked cases throw the lock copy and write nothing", async () => {
+  const { ctx, store, jobs } = await csetup();
+  await store.update((d) => { delete d.presenter.portrait; });
+  await assert.rejects(() => startTake(ctx, "TC-01"), { message: "Approve a portrait first" });
+  await store.update((d) => { d.presenter.portrait = { n: 1, hfId: "hf-p" }; });
+  ctx.transcript = { sentences: [] };
+  await assert.rejects(() => startTake(ctx, "TC-01"), { message: "Join the voiceover first" });
+  ctx.transcript = null;
+  await assert.rejects(() => startTake(ctx, "TC-01"), { message: "Join the voiceover first" });
+  assert.equal(store.state.assets[0].takes.length, 0);
+  assert.equal(jobs.list().length, 0);
+  assert.equal(canStart(store.state.assets[0], store.state.assets, store.state, null), false);
+  assert.equal(canStart(store.state.assets[0], store.state.assets, store.state, TR), true);
+});

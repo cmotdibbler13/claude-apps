@@ -3,6 +3,9 @@
 import { DEFAULT_SETTINGS } from "../settings.js";
 import { runProcess } from "../proc.js";
 import { uploadMedia } from "./hfmedia.js";
+import { clipAudioArgs, audioSigOf } from "./clipaudio.js";
+
+const FFMPEG_MS = 5 * 60 * 1000;
 
 const MIN_POLL_MS = 20_000;
 const CAP_MS = 30 * 60 * 1000;
@@ -114,13 +117,54 @@ export function makeHiggsfieldRunner({ settings = DEFAULT_SETTINGS, sleep = real
         }
         const r = await download(host, url, job.input);
         // A portrait's Higgsfield job id is the media value later used as a clip's start_image.
-        return job.input?.kind === "portrait" ? { ...r, meta: { hfId: jobId } } : r;
+        if (job.input?.kind === "portrait") return { ...r, meta: { hfId: jobId } };
+        if (job.input?.kind === "presenter") {
+          // The cut audio is on disk beside the take, so a resumed job gets its signature too.
+          const { start, end, out } = job.input;
+          let audioSig;
+          try { audioSig = await audioSigOf(host, `${out}_audio.wav`, end - start); } catch { audioSig = undefined; }
+          return { ...r, meta: { hfId: jobId, ...(audioSig ? { audioSig } : {}) } };
+        }
+        return r;
       }
       // Every job has ended but none succeeded: say so now instead of polling to the 30 min cap.
       if (p?.all_terminal === true) throw new Error(`Higgsfield job ${status || "ended"} without a result${error ? `: ${error}` : ""}`);
       const after = Number(p?.poll_after_seconds ?? p?.jobs?.[0]?.poll_after_seconds);
       pollMs = Number.isFinite(after) ? after * 1000 : MIN_POLL_MS;
     }
+  }
+
+  async function generate(job, ctx, tool, params) {
+    const { host } = ctx;
+    const payload = await call(host, tool, { params }).catch((e) => {
+      const code = typeof e?.code === "string" ? e.code : null;
+      throw code && !DEFINITE.has(code) ? ambiguous(msg(e)) : new Error(msg(e));
+    });
+    if (payload && typeof payload === "object" && "unlim_choice" in payload) {
+      throw new Error("Higgsfield is asking which balance to use; open Higgsfield and choose, then Run again.");
+    }
+    const jobId = parseJobId(payload);
+    if (!jobId) throw new Error(`Higgsfield did not return a job id (not generating again). Response: ${excerpt(payload)}`);
+    ctx.setRef(jobId);
+    return waitAndDownload(job, ctx, jobId, { tolerateErrors: true });
+  }
+
+  // Cut the line's audio, upload it, then generate. Everything free happens first, so a failure
+  // in any of it spends no credits; generate_video is called once and never retried.
+  async function startPresenter(job, ctx) {
+    const { host } = ctx;
+    const { voiceover, start, end, seconds, hfId, prompt, out } = job.input;
+    const r = await runProcess(host, "ffmpeg", clipAudioArgs({ wav: voiceover, start, end, seconds, out }), { timeout: FFMPEG_MS });
+    const audio = `${out}_audio.wav`;
+    if (r.code !== 0 || !(await host.fs.exists(audio))) {
+      throw new Error(`ffmpeg couldn't cut this line's audio (code ${r.code}): ${String(r.stderr ?? "").trim().split(/\r?\n/).slice(-3).join(" ")}; not generating.`);
+    }
+    const audioId = await uploadMedia(host, audio, "audio");
+    const params = {
+      model: "wan2_7", resolution: "1080p", aspect_ratio: "16:9", duration: seconds, prompt,
+      medias: [{ value: hfId, role: "start_image" }, { value: audioId, role: "audio_references" }], use_unlim: false,
+    };
+    return generate(job, ctx, "generate_video", params);
   }
 
   return {
@@ -132,6 +176,7 @@ export function makeHiggsfieldRunner({ settings = DEFAULT_SETTINGS, sleep = real
       // A take folder that can't be made must fail before any credits are spent.
       if (typeof out !== "string" || !out) throw new Error("This job has no output path; not generating.");
       try { await host.fs.mkdir(parentOf(out)); } catch (e) { throw new Error(`Couldn't make the folder for this take (${msg(e)}); not generating.`); }
+      if (kind === "presenter") return startPresenter(job, ctx);
       const video = kind === "broll";
       const portrait = kind === "portrait";
       const params = { model: video ? settings.videoModel : portrait ? "seedream_5_5" : settings.imageModel, prompt, aspect_ratio: "16:9", count: 1, use_unlim: false };
@@ -142,17 +187,7 @@ export function makeHiggsfieldRunner({ settings = DEFAULT_SETTINGS, sleep = real
         params.medias = [];
         for (const photo of job.input.photos ?? []) params.medias.push({ value: await uploadMedia(host, photo, "image"), role: "image_references" });
       }
-      const payload = await call(host, video ? "generate_video" : "generate_image", { params }).catch((e) => {
-        const code = typeof e?.code === "string" ? e.code : null;
-        throw code && !DEFINITE.has(code) ? ambiguous(msg(e)) : new Error(msg(e));
-      });
-      if (payload && typeof payload === "object" && "unlim_choice" in payload) {
-        throw new Error("Higgsfield is asking which balance to use; open Higgsfield and choose, then Run again.");
-      }
-      const jobId = parseJobId(payload);
-      if (!jobId) throw new Error(`Higgsfield did not return a job id (not generating again). Response: ${excerpt(payload)}`);
-      ctx.setRef(jobId);
-      return waitAndDownload(job, ctx, jobId, { tolerateErrors: true });
+      return generate(job, ctx, video ? "generate_video" : "generate_image", params);
     },
 
     async resume(job, ctx) {

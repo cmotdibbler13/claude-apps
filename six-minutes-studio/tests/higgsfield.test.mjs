@@ -313,3 +313,57 @@ test("portrait: an upload failure fails before generate_image", async () => {
   await assert.rejects(t.runner.start({ id: "j", input: { kind: "portrait", prompt: "P", photos: ["C:\\a.jpg"], out: OUT } }, t.ctx), /nope/);
   assert.ok(!t.calls.some((c) => c.t === "generate_image"));
 });
+
+// ---- Task 5: presenter clips ----
+const PRES = ROOT + "\\studio\\presenter\\TC-01_t1";
+const pjob = (extra = {}) => ({ id: "j", input: { kind: "presenter", lineId: "01", voiceover: "C:\\v\\vo.wav", start: 1.5, end: 8.7, seconds: 8, hfId: "hf-p", prompt: "PROMPT", out: PRES, ...extra } });
+function pmcp(over = {}) {
+  return (tool) => {
+    if (over[tool]) return over[tool]();
+    if (tool === "media_upload") return { uploads: [{ upload_url: "https://up.example.com/a/aaaaaaaa-1111-2222-3333-444444444444?X=1", media_id: "aud1" }] };
+    if (tool === "media_confirm") return {};
+    if (tool === "generate_video") return { job_id: UUID };
+    return done("https://cdn.example.com/c.mp4");
+  };
+}
+const ffmpegSpawn = (code = 0) => async (cmd, args, p, host) => {
+  if (cmd === "ffmpeg") { if (code === 0) await host.fs.write(args[args.length - 1], "WAVBYTES"); p.exit(code); return; }
+  const i = args.indexOf("-o");
+  if (i >= 0) await host.fs.write(args[i + 1], "data");
+  p.exit(0);
+};
+
+test("presenter: cuts audio with ffmpeg, uploads, generate_video with exact params, meta has hfId and audioSig", async () => {
+  const t = setup({ mcp: pmcp(), spawn: ffmpegSpawn() });
+  const r = await t.runner.start(pjob(), t.ctx);
+  const ff = t.spawns.find((s) => s.cmd === "ffmpeg");
+  assert.deepEqual(ff.args, ["-y", "-i", "C:\\v\\vo.wav", "-ss", "1.5", "-to", "8.7", "-af", "apad=whole_dur=8", "-ar", "48000", PRES + "_audio.wav"]);
+  const up = t.calls.find((c) => c.t === "media_upload");
+  assert.deepEqual(up.i, { files: [{ filename: "TC-01_t1_audio.wav", content_type: "audio/wav" }] });
+  const gen = t.calls.find((c) => c.t === "generate_video");
+  assert.deepEqual(gen.i, { params: { model: "wan2_7", resolution: "1080p", aspect_ratio: "16:9", duration: 8, prompt: "PROMPT", medias: [{ value: "hf-p", role: "start_image" }, { value: "aud1", role: "audio_references" }], use_unlim: false } });
+  assert.ok(t.calls.findIndex((c) => c.t === "generate_video") > t.calls.findIndex((c) => c.t === "media_confirm"));
+  const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode("WAVBYTES")))).map((b) => b.toString(16).padStart(2, "0")).join("");
+  assert.deepEqual(r.meta, { hfId: UUID, audioSig: { lengthS: 7.2, hash } });
+  assert.equal(r.file, PRES + ".mp4");
+});
+
+test("presenter: an upload failure fails before generate_video; so does an ffmpeg failure", async () => {
+  const a = setup({ mcp: pmcp({ media_upload: () => { throw new Error("expired"); } }), spawn: ffmpegSpawn() });
+  await assert.rejects(a.runner.start(pjob(), a.ctx), /expired/);
+  assert.ok(!a.calls.some((c) => c.t === "generate_video"));
+  const b = setup({ mcp: pmcp(), spawn: ffmpegSpawn(1) });
+  await assert.rejects(b.runner.start(pjob(), b.ctx), /ffmpeg/);
+  assert.ok(!b.calls.some((c) => c.t === "generate_video" || c.t === "media_upload"));
+});
+
+test("clipAudioArgs and audioSigOf", async () => {
+  const { clipAudioArgs, audioSigOf } = await import("../js/tools/clipaudio.js");
+  assert.deepEqual(clipAudioArgs({ wav: "a.wav", start: 1, end: 2, seconds: 2, out: "o" }), ["-y", "-i", "a.wav", "-ss", "1", "-to", "2", "-af", "apad=whole_dur=2", "-ar", "48000", "o_audio.wav"]);
+  const host = new FakeHost();
+  await host.fs.mkdir("C:\\x");
+  await host.fs.write("C:\\x\\a.wav", "abc");
+  const s = await audioSigOf(host, "C:\\x\\a.wav", 3.14159);
+  assert.equal(s.lengthS, 3.14);
+  assert.equal(s.hash, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+});
