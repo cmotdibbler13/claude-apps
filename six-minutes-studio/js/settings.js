@@ -27,6 +27,12 @@ export const DEFAULT_SETTINGS = {
   },
   // Photos of Jon (paths) used to make the presenter portrait.
   presenter: { photos: [] },
+  // Finished scripts the Part 1 writer reads for voice and structure; pronunciations null = <root>\pronunciations.md.
+  referenceScripts: [
+    "S:\\Youtube video ideas\\Shipping Forecast\\shipping_forecast_script.md",
+    "S:\\Youtube video ideas\\London Sewers\\london_sewers_script.md",
+  ],
+  pronunciationsFile: null,
 };
 
 const isObj = (v) => v && typeof v === "object" && !Array.isArray(v);
@@ -45,7 +51,9 @@ function withDefaults(root, v = {}) {
   // "autostart": false (or true) switches both; an object sets each.
   const autostart = typeof v.autostart === "boolean" ? { comfy: v.autostart, stableAudio: v.autostart }
     : { ...d.autostart, ...(isObj(v.autostart) ? v.autostart : {}) };
-  return { ...d, ...v, comfy, stableAudio, presenter, autostart };
+  const out = { ...d, ...v, comfy, stableAudio, presenter, autostart };
+  if (!out.pronunciationsFile) out.pronunciationsFile = join(root, "pronunciations.md");
+  return out;
 }
 
 export async function loadSettings(host, root) {
