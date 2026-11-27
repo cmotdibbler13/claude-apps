@@ -184,3 +184,38 @@ Before you press:
 5. **Press again.** Press **Write the handover again**: the steps run, "Adding 0 clips"; the catalogues gain no rows and no new dated copies; no clip is copied twice; the old `part2_handover.md` is now `part2_handover_<date>.md` beside the new one (the same for `sfx_cues.json` and `mix_settings.json`).
 6. **Changed since.** Un-approve a shot (or pick another take and approve it): the bar says "Changed since the Part 2 handover" (and the button locks again until it is approved). Approve it and press **Write the handover again** to bring the handover up to date.
 7. **Part 3.** Open a new Claude Code session, paste the opening message and send it: it loads the video skill and reads the handover.
+
+## Part 1 in Studio (version 30)
+Free: Part 1 spends no credits and uses no Higgsfield tools. It writes the reading script, the line script and `part1_handover.md`; it never deletes or overwrites anything (an existing file is moved aside first, renamed with the date).
+
+Before you start:
+- **Probe**, press **Run checks**. Two new rows:
+  - **Reference script** passes and shows the path of the first finished script from `referenceScripts` in `.studio-settings.json` that exists. If none is there it says "None of the referenceScripts in .studio-settings.json is there. Set referenceScripts to one or more finished scripts."
+  - **Pronunciations** shows a warning (not a failure) until your first approval: "No pronunciations file yet: Studio starts one when you approve a Part 1." The file is `pronunciationsFile` in `.studio-settings.json`, or `pronunciations.md` in the Studio folder if that is not set.
+- Make a test folder under `S:\Youtube video ideas\`, e.g. `Orkney test`. Have a brief for it saved as `.md` (or `.txt`).
+- There is no Open Autocue Studio button. You open Autocue Studio yourself and use **Load script**.
+
+1. **New film.** On Films press **New film**. Pick the Orkney test folder, or choose **New folder…** and type a name. Topic, file prefix (for example `orkney_test`) and episode are filled in for you; change any of them. Voice is Own voice (Cloned voice says "coming later" and can't be chosen). Runtime target starts at 6:00–6:45. The line under Voice shows where the takes will be saved.
+2. **Brief.** With no brief in the folder it says "No .md or .txt brief in this folder yet. Add one." Press **Add a brief…** and pick a file; it is copied into the folder (for a new folder, when you press Create). With a brief there, it is in the Brief list.
+3. **PDF message.** Press **Add a brief…** and pick a PDF. It is refused with "Save the brief as Markdown or text in the film's folder first." and nothing is copied. Save the brief as `.md` and add that instead.
+4. **Prefix check.** Type a prefix with a capital or a space: a red message appears and **Create** stays greyed. Type one that another film (or a line script in the Autocue Studio folder) already uses: it says so. Put back a good one.
+5. **Create.** Press **Create** (it reads **Creating…**). The film opens at Part 1 with **Write the script**.
+6. **Write the script.** Press **Write the script**. It reads "Writing… (about a minute)" and the buttons lock. When it ends, the bar shows e.g. "6:12 est · 5:59 expected · 872 words · 27 clips · 7 sections", the sections with clip numbers, a visual cue in brackets under each clip, then Pronunciation notes, Sound effects, Shot list, To-camera lines and Build notes.
+7. **Runtime and warnings.** Check the numbers against the brief. Warnings appear in a list (never a refusal): clips outside 26–29, words outside 825–925, a clip under 5 or over 50 words, sections other than 6–8, or an estimate outside the runtime target.
+8. **Edit a clip.** Press **Edit** on a clip, change a word in Reading script, **Save**. The numbers update. **Cancel** leaves it as it was.
+9. **Redo one clip.** Note down the text of three other clips. On one clip press **Redo with a note…**, type what to change, press **Redo**. Only that clip changes; the three you noted are exactly as before.
+10. **Revise.** Press **Revise with a note…**, type a note for the whole script (e.g. "Open with the sea, not the date"), press **Revise**. A new draft appears and the draft label changes.
+11. **Earlier drafts.** Press **Earlier drafts ▾**. Each draft is listed. Press **Go back to this draft** on an earlier one: the script returns to it. Go forward to the latest again.
+12. **Pronunciations.** Under Pronunciation notes press **Edit or add**. Add a name and how to say it (e.g. Name `Scapa`, Say `SKAP-uh`), **Save**. Under To-camera lines tick or add a line with **Add a line**; the amber lines are the ones read to camera.
+13. **Episode.** The episode number shows beside the Approve button. Press **Edit** to change it. With it blank, Approve Part 1 is greyed with "Add the episode number."
+14. **Approve Part 1.** Press **Approve Part 1** (it reads **Approving…**). The tag "✓ Part 1 approved" appears with the next step: "Record every line in Autocue Studio (Load script → <prefix>_line_script.txt). Then open this film's Review in Studio for Part 2." Any warnings or problems are listed under it.
+15. **Check in Explorer:**
+   - `<film>\<prefix>_script.md`: the reading script, with the line `Voice: Jon, own voice (Autocue Studio → Recordings\<prefix>\)`.
+   - `<film>\narration\<prefix>_line_script.txt`: starts `# <Title> — line-by-line recording script (N lines)` then `# name: <prefix>`; lines look like `[01.1]  (clip 01)`; your Scapa pronunciation shows as a `> Scapa = "SKAP-uh"` note; a picked to-camera line has `> to camera`.
+   - `<film>\handover\part1_handover.md`: has `Episode: <NNN>` at the start of a line, your notes in your words, and the recordings folder.
+   - The Autocue Studio folder (`autocueDir`, e.g. `C:\Users\Jon\desktop autocue`) has its own copy, `<prefix>_line_script.txt`. If that folder can't be reached, the app lists "Copy the line script to Autocue Studio's folder by hand: …".
+   - The pronunciations file now exists with the Scapa row under the film's topic. Press **Run checks** in Probe again: the **Pronunciations** row now passes.
+16. **Moved aside.** Make a second film whose folder already holds a `<prefix>_script.md`, `narration\<prefix>_line_script.txt` and `handover\part1_handover.md` from earlier. Write and approve it. Each old file is still there with a dated name (e.g. `part1_handover_2026-11-27-1405.md`) beside the new one; nothing was overwritten.
+17. **Autocue Studio.** Open Autocue Studio yourself, press **Load script** and choose `<prefix>_line_script.txt`. The to-camera lines show amber with `to camera`, and the pronunciation notes show with their lines. Record or skip one line and check its take is named `<prefix>_<NN.s>.wav` in `Recordings\<prefix>\`.
+18. **Review switches to Part 2.** Open the film's Review. It now works from Part 2 (shots, score, sound effects), not Part 1. Films shows Part 1 as done.
+19. **Next time.** Start another film: the pronunciation you added is passed to Claude when it writes (look for your name spelled as you set it), and Probe's Reference script row still shows the same script.
