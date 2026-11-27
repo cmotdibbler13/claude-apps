@@ -11,6 +11,25 @@ import { SCRIPT_INSTRUCTIONS, CHECK_INSTRUCTIONS, validateScript, validateCheck 
 export const NO_PICTURES = "Claude can't see pictures in this view yet. Allow pictures for Six Minutes Studio when it asks, then press Run again.";
 export const BLANK_TWICE = "The 3D render came out blank. Redo with a note.";
 const ROUNDS = 3;
+export const CLAUDE_WAIT_MS = 5 * 60 * 1000;
+
+// The job holds the only gpu slot while Claude thinks, so a call that never answers must not hold it for ever.
+async function askBounded(host, what, waitMs, opts) {
+  let timer;
+  const late = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Claude didn't answer ${what} in 5 minutes. Press Run again.`)), waitMs);
+  });
+  try {
+    return await Promise.race([askJson(host, opts), late]);
+  } catch (e) {
+    if (e?.name !== "ClaudeError") throw e;
+    const err = new Error(`Claude stopped on ${what}: ${String(e.message).replace(/\.?\s*$/, ".")} Press Run again, or Redo with a note.`);
+    err.code = e.code;
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 // Blender 5 only offers 'FFMPEG' once image_settings.media_type is 'VIDEO'. If a script sets the format
 // without switching to video first, add the switch just before that line (it is a no-op on Blender 4).
@@ -60,7 +79,7 @@ function runBlender(host, settings, args, onFrame) {
   });
 }
 
-export function makeBlenderRunner({ settings = DEFAULT_SETTINGS } = {}) {
+export function makeBlenderRunner({ settings = DEFAULT_SETTINGS, claudeWaitMs = CLAUDE_WAIT_MS } = {}) {
   // The full MP4 render, with frame progress. frames may be unknown (no percentage then).
   async function render(ctx, script, sourceFile, out, frames) {
     const { host } = ctx;
@@ -130,7 +149,7 @@ export function makeBlenderRunner({ settings = DEFAULT_SETTINGS } = {}) {
           if (previousScript) { try { data.previousScript = await host.fs.read(previousScript, "utf8"); } catch { /* gone: model afresh */ } }
           const images = [...drawing];
           if (data.previousScript != null && previousStill && (await host.fs.exists(previousStill))) images.push(...(await readImages(host, [previousStill])));
-          const r = await askJson(host, { instructions: SCRIPT_INSTRUCTIONS, data, tier: "default", validate: validateScript, images });
+          const r = await askBounded(host, "the Blender script", claudeWaitMs, { instructions: SCRIPT_INSTRUCTIONS, data, tier: "default", validate: validateScript, images });
           k = 1;
           await writeScript(k, r.script);
           frames = r.frames;
@@ -151,8 +170,8 @@ export function makeBlenderRunner({ settings = DEFAULT_SETTINGS } = {}) {
           const data = { asset: { id: asset.id, desc: asset.desc, line: asset.line }, take, round: k, script, frames };
           if (!ok) data.error = code !== 0 ? `Blender stopped with exit code ${code}.\n${log}` : `Blender finished but didn't write ${fileName(still)}.\n${log}`;
           const images = ok ? [...drawing, ...(await readImages(host, [still]))] : drawing;
-          const r = await askJson(host, { instructions: CHECK_INSTRUCTIONS, data, tier: "default", validate: validateCheck, images });
-          const blankTwice = r.verdict === "blank" && checks.at(-1)?.verdict === "blank";
+          const r = await askBounded(host, "the Blender check", claudeWaitMs, { instructions: CHECK_INSTRUCTIONS, data, tier: "default", validate: validateCheck, images });
+          const blankTwice = r.verdict === "blank" && checks.find((c) => c.round === k - 1)?.verdict === "blank";
           const goOn = k < ROUNDS && !blankTwice && !(ok && r.verdict === "matches");
           const nextFrames = goOn && r.frames != null ? r.frames : frames;
           // The next round's script is written before this round's compare is saved, so a saved
@@ -166,7 +185,8 @@ export function makeBlenderRunner({ settings = DEFAULT_SETTINGS } = {}) {
           frames = nextFrames;
           script = await host.fs.read(scriptOf(k), "utf8");
         }
-        if (verdict.verdict === "blank" && checks.find((c) => c.round === k - 1)?.verdict === "blank") throw new Error(BLANK_TWICE);
+        // Blank twice in a row, or blank on the last round: a full render would come out blank too.
+        if (verdict.verdict === "blank") throw new Error(BLANK_TWICE);
         await host.fs.write(finalScript, ensureVideoMediaType(script));
         if (frames == null) frames = verdict.frames ?? frameEnd(script);
       }

@@ -81,9 +81,19 @@ export async function startTake(ctx, assetId, { note } = {}) {
       sourceFile, base: join(store.dir, "studio", "blender", `${asset.id}_t${n}`), out: base + ".mp4",
     };
     if (hasNote) input.note = note;
-    if (prev?.script) input.previousScript = prev.script;
-    const lastStill = (prev?.checks ?? []).filter((c) => c?.still).at(-1)?.still;
-    if (prev?.script && lastStill) input.previousStill = lastStill;
+    // The previous take's files on disk, not its record: a failed take (say, blank twice) never got
+    // script or checks from the job, and that is exactly when Jon redoes it with a note.
+    if (prev) {
+      const pb = join(store.dir, "studio", "blender", `${asset.id}_t${prev.n}`);
+      const firstThere = async (paths) => {
+        for (const p of paths) if (p && (await host.fs.exists(p))) return p;
+        return undefined;
+      };
+      const previousScript = await firstThere([pb + ".py", pb + "_r3.py", pb + "_r2.py", pb + "_r1.py", prev.script]);
+      const previousStill = await firstThere([pb + "_check3.png", pb + "_check2.png", pb + "_check1.png"]);
+      if (previousScript) input.previousScript = previousScript;
+      if (previousScript && previousStill) input.previousStill = previousStill;
+    }
   } else {
     let prompt = asset.draftPrompt;
     if (hasNote || prev) {

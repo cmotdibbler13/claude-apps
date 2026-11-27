@@ -88,23 +88,47 @@ test("blender shot cannot start until source line art is approved", async () => 
 
 test("blender redo passes the note, previous script and last check still; done copies script and checks", async () => {
   const src = hf({ takes: [{ n: 1, prompt: "p", status: "done", file: "S:\\a.png", at: 1 }], chosen: 1, approved: true });
-  const checks = [{ round: 1, still: "S:\\c1.png", verdict: "fix", note: "a" }, { round: 2, still: null, verdict: "fix", note: "b" }, { round: 3, still: "S:\\c3.png", verdict: "matches", note: "c" }];
-  const prev = { n: 1, status: "done", file: "S:\\t1.mp4", script: "S:\\t1.py", checks, at: 1 };
+  const pb = DIR + "\\studio\\blender\\HF-02_t1";
+  const prev = { n: 1, status: "done", file: "S:\\t1.mp4", script: pb + ".py", at: 1 };
   const meta = { script: DIR + "\\studio\\blender\\HF-02_t2.py", checks: [{ round: 1, still: "S:\\n1.png", verdict: "matches", note: "ok" }] };
   const runners = { blender: { lane: "gpu", start: async (j) => ({ file: j.input.out, meta }) } };
-  const { ctx, store, jobs } = await setup([src, bl({ takes: [prev], chosen: 1 })], runners);
+  const { ctx, host, store, jobs } = await setup([src, bl({ takes: [prev], chosen: 1 })], runners);
+  await host.fs.mkdir(DIR + "\\studio\\blender");
+  for (const f of ["_r1.py", "_r2.py", ".py", "_check1.png", "_check2.png", "_check3.png"]) host.files.set(pb + f, "x");
   watchJobs(ctx);
   await startTake(ctx, "HF-02", { note: "turn left" });
   const input = jobs.list()[0].input;
   assert.equal(input.note, "turn left");
-  assert.equal(input.previousScript, "S:\\t1.py");
-  assert.equal(input.previousStill, "S:\\c3.png");
+  assert.equal(input.previousScript, pb + ".py");
+  assert.equal(input.previousStill, pb + "_check3.png");
   assert.equal(input.base, DIR + "\\studio\\blender\\HF-02_t2");
   await tick(); await tick();
   const t = store.state.assets[1].takes[1];
   assert.equal(t.status, "done");
   assert.equal(t.script, meta.script);
   assert.deepEqual(t.checks, meta.checks);
+});
+
+test("blender redo after a failed take finds its last round script and still on disk", async () => {
+  const src = hf({ takes: [{ n: 1, prompt: "p", status: "done", file: "S:\\a.png", at: 1 }], chosen: 1, approved: true });
+  const pb = DIR + "\\studio\\blender\\HF-02_t1";
+  const prev = { n: 1, status: "failed", error: "The 3D render came out blank. Redo with a note.", at: 1 };
+  const { ctx, host, jobs } = await setup([src, bl({ takes: [prev], chosen: 1 })], idle);
+  await host.fs.mkdir(DIR + "\\studio\\blender");
+  for (const f of ["_r1.py", "_r2.py", "_check1.png", "_check2.png"]) host.files.set(pb + f, "x");
+  await startTake(ctx, "HF-02", { note: "camera further back" });
+  const input = jobs.list()[0].input;
+  assert.equal(input.previousScript, pb + "_r2.py");
+  assert.equal(input.previousStill, pb + "_check2.png");
+});
+
+test("blender redo with nothing on disk from the previous take sends no previous script or still", async () => {
+  const src = hf({ takes: [{ n: 1, prompt: "p", status: "done", file: "S:\\a.png", at: 1 }], chosen: 1, approved: true });
+  const { ctx, jobs } = await setup([src, bl({ takes: [{ n: 1, status: "failed", at: 1 }], chosen: 1 })], idle);
+  await startTake(ctx, "HF-02", { note: "n" });
+  const input = jobs.list()[0].input;
+  assert.equal(input.previousScript, undefined);
+  assert.equal(input.previousStill, undefined);
 });
 
 test("refuses a second take while one is running", async () => {

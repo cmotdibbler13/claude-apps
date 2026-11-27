@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FakeHost } from "./fake-host.mjs";
-import { makeBlenderRunner, blenderRunner, ensureVideoMediaType, NO_PICTURES, BLANK_TWICE } from "../js/tools/blender.js";
+import { makeBlenderRunner, blenderRunner, ensureVideoMediaType, NO_PICTURES, BLANK_TWICE, CLAUDE_WAIT_MS } from "../js/tools/blender.js";
 
 const DIR = "S:\\Youtube video ideas\\Film A";
 const OUT = DIR + "\\studio\\media\\HF-03_t2.mp4";
@@ -128,7 +128,7 @@ const BDIR = DIR + "\\studio\\blender";
 const asset3 = { id: "HF-03", desc: "3D line-art version of a stone dresser", line: "The dresser stood by the door." };
 
 // stills: per still run, "ok" (write the PNG), "crash" (exit 1 with a traceback) or "nofile" (exit 0, no PNG).
-function take3({ answers = [], stills = [], images = true, input = {}, files = {} } = {}) {
+function take3({ answers = [], stills = [], images = true, input = {}, files = {}, wait } = {}) {
   const host = new FakeHost();
   host.limitsScript(() => (images ? { images: { max: 5 } } : {}));
   host.files.set(SRC, "DRAWING");
@@ -154,11 +154,11 @@ function take3({ answers = [], stills = [], images = true, input = {}, files = {
     asks.push({ input: inputText, opts, texts, data: JSON.parse(inputText.split("DATA (JSON):\n")[1].split("\n\nAnswer")[0]) });
     const a = answers[n++];
     if (!a) throw new Error("no answer scripted");
-    return a;
+    return typeof a === "function" ? a() : a;
   });
   const ctx = { host, progress: (p, text) => progress.push([p, text]), setRef: () => {} };
   const job = { id: "j", tool: "blender", input: { kind: "blender", asset: asset3, take: 2, sourceFile: SRC, base: BASE, out: OUT, ...input } };
-  return { host, calls, asks, progress, ctx, job, runner: makeBlenderRunner({ settings }) };
+  return { host, calls, asks, progress, ctx, job, runner: makeBlenderRunner({ settings, ...(wait ? { claudeWaitMs: wait } : {}) }) };
 }
 const SCRIPT = (s, frames = 240) => ({ script: `import bpy\n# ${s}\n`, frames });
 const read = (host, p) => host.fs.read(p, "utf8");
@@ -308,4 +308,63 @@ test("redo with a missing previous still sends only the drawing", async () => {
   await t.runner.start(t.job, t.ctx);
   assert.deepEqual(t.asks[0].texts, ["DRAWING"]);
   assert.equal(t.asks[0].data.previousScript, undefined);
+});
+
+test("blank on the third round fails with the blank copy and no render", async () => {
+  const fix = (s) => ({ verdict: "fix", note: `fixed ${s}`, script: `# ${s}\n` });
+  const t = take3({ answers: [SCRIPT("one"), fix("two"), fix("three"), { verdict: "blank", note: "all navy", script: "# four\n" }] });
+  await assert.rejects(t.runner.start(t.job, t.ctx), (e) => e.message === BLANK_TWICE);
+  assert.equal(renders(t.calls).length, 0);
+  assert.equal(await t.host.fs.exists(BASE + ".py"), false);
+});
+
+test("blank, fix, blank is not blank twice in a row", async () => {
+  const t = take3({ answers: [SCRIPT("one"), { verdict: "blank", note: "b", script: "# two\n" }, { verdict: "fix", note: "f", script: "# three\n" }, { verdict: "fix", note: "f2", script: "# four\n" }] });
+  const r = await t.runner.start(t.job, t.ctx);
+  assert.equal(r.meta.checks.length, 3);
+  assert.equal(renders(t.calls).length, 1);
+});
+
+test("Run again after a saved blank round fails on a second blank in a row", async () => {
+  const check1 = JSON.stringify({ round: 1, still: BASE + "_check1.png", verdict: "blank", note: "navy", frames: 120 });
+  const t = take3({
+    answers: [{ verdict: "blank", note: "still navy", script: "# three\n" }],
+    files: { [BASE + "_r1.py"]: "# one\n", [BASE + "_check1.json"]: check1, [BASE + "_r2.py"]: "# two\n" },
+  });
+  await assert.rejects(t.runner.start(t.job, t.ctx), (e) => e.message === BLANK_TWICE);
+  assert.equal(renders(t.calls).length, 0);
+});
+
+test("matches after a crash is not accepted: the same script gets another still", async () => {
+  const t = take3({ answers: [SCRIPT("one"), { verdict: "matches", note: "fine" }, { verdict: "matches", note: "good" }], stills: ["crash", "ok"] });
+  const r = await t.runner.start(t.job, t.ctx);
+  assert.equal(await read(t.host, BASE + "_r2.py"), await read(t.host, BASE + "_r1.py"));
+  assert.equal(t.calls.filter((a) => a.includes("--still")).length, 2);
+  assert.deepEqual(r.meta.checks.map((c) => [c.round, c.still]), [[1, null], [2, BASE + "_check2.png"]]);
+  assert.equal(renders(t.calls).length, 1);
+});
+
+test("a Claude refusal mid-loop fails the take with a readable message and no render", async () => {
+  const refuse = () => { const e = new Error("Claude declined this request."); e.code = "refused"; throw e; };
+  const t = take3({ answers: [SCRIPT("one"), refuse] });
+  await assert.rejects(t.runner.start(t.job, t.ctx), (e) => {
+    assert.equal(e.message, "Claude stopped on the Blender check: Claude declined this request. Press Run again, or Redo with a note.");
+    assert.equal(e.code, "refusal");
+    return true;
+  });
+  assert.equal(renders(t.calls).length, 0);
+});
+
+test("a Claude call that never answers fails after the wait, for the script and for the check", async () => {
+  const never = () => new Promise(() => {});
+  const s = take3({ answers: [never], wait: 20 });
+  await assert.rejects(s.runner.start(s.job, s.ctx), (e) => e.message === "Claude didn't answer the Blender script in 5 minutes. Press Run again.");
+  assert.equal(s.calls.length, 0);
+  const c = take3({ answers: [SCRIPT("one"), never], wait: 20 });
+  await assert.rejects(c.runner.start(c.job, c.ctx), (e) => e.message === "Claude didn't answer the Blender check in 5 minutes. Press Run again.");
+  assert.equal(renders(c.calls).length, 0);
+});
+
+test("the default wait for Claude is 5 minutes", () => {
+  assert.equal(CLAUDE_WAIT_MS, 5 * 60 * 1000);
 });
