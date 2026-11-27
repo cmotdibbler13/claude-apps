@@ -5,7 +5,8 @@ import { openFilm } from "../js/store.js";
 import { makeJobs } from "../js/jobs.js";
 import { watchJobs, holders } from "../js/redo.js";
 import { startJoin, startFit, startMix, useStemRemixerExport, approveMix, fitStale, mixStale, OUT_OF_DATE, parseCsv,
-  openFitInStemRemixer, REJOIN, pastedPath } from "../js/mixplan.js";
+  openFitInStemRemixer, REJOIN, pastedPath, pacingStale } from "../js/mixplan.js";
+import { marksSig } from "../js/pacing.js";
 import { MSG_NO_STEM_REMIXER, MSG_SET_STEM_REMIXER } from "../js/tools/stemfit.js";
 
 const DIR = "S:\\Youtube video ideas\\Film A";
@@ -47,7 +48,7 @@ async function setup({ settings = {}, audio, csv = CSV, python = true, exportS =
       const wav = VO + "\\film_a_voiceover.wav", csv = VO + "\\film_a_voiceover_timings.csv";
       await host.fs.mkdir(VO);
       await host.fs.write(csv, csvText);
-      return { file: wav, meta: { wav, csv, transcript: VO + "\\t.json", lengthS: 30.5, tightened: [{ id: "01.1", at_s: 1, from_s: 0.9, to_s: 0.3 }], extra: [], silent: [],
+      return { file: wav, meta: { wav, csv, transcript: VO + "\\t.json", lengthS: 30.5, tightened: [{ id: "01.1", at_s: 1, from_s: 0.9, to_s: 0.3 }], tight: [{ id: "01.1", at_s: 2 }], extra: [], silent: [],
         duplicates: [{ id: "01.1", files: [REC + "\\film_a\\film_a_01.1.wav", REC + "\\old\\film_a_01.1.wav"] }] } };
     } },
     stemfit: { lane: "gpu", async start(job) {
@@ -379,4 +380,45 @@ test("an export more than 1 s off the film's length asks first; confirmed, it is
 test("parseCsv reads the timings, quoted fields too", () => {
   assert.deepEqual(parseCsv('a,b\n1,"x, ""y"""\n'), [{ a: "1", b: 'x, "y"' }]);
   assert.equal(parseCsv(CSV).length, 2);
+});
+
+test("startJoin with pauses writes the file, passes its path and keeps the sig on the holder", async () => {
+  const s = await setup();
+  const file = { inside: { "01.1": [{ at_s: 1.2, add_s: 0.6 }] }, after: {} };
+  await startJoin(s.ctx, { pauses: { file, sig: "SIG1", applied: { "01.1": [] }, allowedIds: ["02.1"] } });
+  const path = MIXD + "\\Film_A_pauses.json";
+  assert.equal(s.jobs.list()[0].input.pauses, path);
+  assert.deepEqual(JSON.parse(await s.host.fs.read(path, "utf8")), file);
+  await until(() => st(s).voiceover.status === "done");
+  const v = st(s).voiceover;
+  assert.equal(v.pausesSig, "SIG1");
+  assert.deepEqual(v.pausesApplied, { "01.1": [] });
+  assert.deepEqual(v.allowedIds, ["02.1"]);
+  assert.deepEqual(v.tight, [{ id: "01.1", at_s: 2 }]);
+});
+
+test("startJoin without pauses stores no sig and the caller's not-OK ids", async () => {
+  const s = await setup();
+  s.ctx.notOkIds = ["03.1"];
+  await startJoin(s.ctx);
+  assert.ok(!("pauses" in s.jobs.list()[0].input));
+  await until(() => st(s).voiceover.status === "done");
+  const v = st(s).voiceover;
+  assert.equal(v.pausesSig, null);
+  assert.deepEqual(v.pausesApplied, {});
+  assert.deepEqual(v.allowedIds, ["03.1"]);
+});
+
+test("pacingStale: true after the marks change, false right after a join with that sig", async () => {
+  const s = await setup();
+  const empty = marksSig({ lines: {} }, {});
+  assert.equal(pacingStale(s.store.state, empty), false, "no voiceover");
+  await joined(s);
+  assert.equal(pacingStale(s.store.state, empty), false, "joined without marks, none now");
+  const marked = marksSig({ lines: { "01.1": { pauses: [{ key: "end", size: "long" }] } } }, {});
+  assert.equal(pacingStale(s.store.state, marked), true);
+  await startJoin(s.ctx, { pauses: { file: { inside: {}, after: {} }, sig: marked, applied: {}, allowedIds: [] } });
+  await until(() => st(s).voiceover.status === "done" && st(s).voiceover.pausesSig === marked);
+  assert.equal(pacingStale(s.store.state, marked), false);
+  assert.equal(pacingStale(s.store.state, empty), true);
 });

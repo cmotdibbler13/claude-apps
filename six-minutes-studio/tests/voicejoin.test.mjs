@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FakeHost } from "./fake-host.mjs";
-import { makeVoiceJoinRunner } from "../js/tools/voicejoin.js";
+import { makeVoiceJoinRunner, joinArgs } from "../js/tools/voicejoin.js";
 import { runJsonLines } from "../js/proc.js";
 
 const AUTOCUE = "C:\\Users\\Jon\\desktop autocue";
@@ -48,7 +48,7 @@ test("progress lines reach ctx.progress, split across chunks, and the done line 
   const res = await r.promise;
   assert.deepEqual(r.progress, [0.1, 0.5]);
   assert.equal(res.file, DONE.wav);
-  assert.deepEqual(res.meta, { wav: DONE.wav, csv: DONE.csv, transcript: DONE.transcript, lengthS: 361.25, tightened: DONE.tightened, extra: DONE.extra, silent: [], duplicates: DONE.duplicates });
+  assert.deepEqual(res.meta, { wav: DONE.wav, csv: DONE.csv, transcript: DONE.transcript, lengthS: 361.25, tightened: DONE.tightened, tight: [], extra: DONE.extra, silent: [], duplicates: DONE.duplicates });
 });
 
 test("an error line becomes the error, whatever the exit code", async () => {
@@ -86,4 +86,20 @@ test("runJsonLines: exit 0 with no done line is an error", async () => {
   const host = new FakeHost();
   host.spawnScript((cmd, args, opts, p) => { p.out("hello\n"); p.exit(0); });
   await assert.rejects(runJsonLines(host, "py", [], { name: "The thing" }), /The thing finished without a result:\nhello/);
+});
+
+test("joinArgs appends --pauses only when a path is given", () => {
+  const base = { script: "s", takes: "t", out: "o" };
+  const plain = joinArgs(settings, base);
+  assert.ok(!plain.includes("--pauses"));
+  const withP = joinArgs(settings, { ...base, pauses: "S:\\f\\p.json" });
+  assert.deepEqual(withP.slice(-2), ["--pauses", "S:\\f\\p.json"]);
+  assert.ok(!joinArgs(settings, { ...base, pauses: "" }).includes("--pauses"));
+});
+
+test("the runner's meta carries tight from the done JSON", async () => {
+  const r = run((p) => { p.out(JSON.stringify({ ...DONE, tight: [{ id: "03.2", at_s: 4.1 }] }) + "\n"); p.exit(0); });
+  assert.deepEqual((await r.promise).meta.tight, [{ id: "03.2", at_s: 4.1 }]);
+  const r2 = run((p) => { p.out(JSON.stringify(DONE) + "\n"); p.exit(0); });
+  assert.deepEqual((await r2.promise).meta.tight, []);
 });
