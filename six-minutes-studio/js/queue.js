@@ -92,16 +92,34 @@ export async function pendingRequests(host, root) {
   return out.sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
 }
 
-// Is the answer file in the queue folder? Throws when it can't tell (so a failed look is never "absent").
-export const answerInQueue = async (host, root, id) => !!(await host.fs.exists(join(dirOf(root), `${id}${ANSWER}`)));
+// Presence is decided from listings, never from exists(): an exists() that can't reach the drive may just say
+// false, while a listing that fails throws. These answer false only from listings that worked.
+// The queue folder's entries; [] only when the project folder lists fine and has no queue folder yet.
+async function queueEntries(host, root) {
+  try { return await host.fs.list(dirOf(root)); } catch (e) {
+    const top = await host.fs.list(root); // throws when the project folder can't be read either
+    if (top.some((t) => lower(t.name) === lower(QUEUE_DIR))) throw e;
+    return [];
+  }
+}
+// File names in finished\; [] only when the queue folder's listing shows there is no finished\ yet.
+async function finishedNames(host, root) {
+  const q = await queueEntries(host, root);
+  if (!q.some((e) => lower(e.name) === FINISHED && e.isDirectory !== false)) return { queue: fileNames(q), finished: [] };
+  return { queue: fileNames(q), finished: fileNames(await host.fs.list(join(dirOf(root), FINISHED))) };
+}
+
+// Is the answer file in the queue folder? Throws when it can't tell.
+export async function answerInQueue(host, root, id) {
+  return fileNames(await queueEntries(host, root)).some((n) => lower(n) === lower(`${id}${ANSWER}`));
+}
 
 // Is this request anywhere, in the queue folder or in finished\? Throws when it can't tell.
 export async function requestAnywhere(host, root, id) {
-  const name = `${id}${REQUEST}`;
-  if (await host.fs.exists(join(dirOf(root), name))) return true;
-  const fin = join(dirOf(root), FINISHED);
-  if (!(await host.fs.exists(fin))) return false;
-  return fileNames(await host.fs.list(fin)).some((n) => filedAs(n, id, REQUEST));
+  const q = await queueEntries(host, root);
+  if (fileNames(q).some((n) => lower(n) === lower(`${id}${REQUEST}`))) return true;
+  const { finished } = await finishedNames(host, root);
+  return finished.some((n) => filedAs(n, id, REQUEST));
 }
 
 // A file name in finished\ for this id and kind: the plain name, or the plain name with `_<ms>` added.
@@ -110,13 +128,14 @@ const filedAs = (n, id, suffix) => {
   return lower(n) === `${stem}.json` || (lower(n).startsWith(`${stem}_`) && lower(n).endsWith(".json"));
 };
 
-// The desktop's answer once it has been filed in finished\ (the latest one if there are several), or null.
+// The desktop's answer once it has been filed in finished\ (the latest one if there are several), or null when
+// the listings worked and there is none. A failed listing or read throws, so the caller looks again later.
 export async function readFinishedAnswer(host, root, id) {
   const fin = join(dirOf(root), FINISHED);
-  const found = (await names(host, fin)).filter((n) => filedAs(n, id, ANSWER)).sort();
+  const found = (await finishedNames(host, root)).finished.filter((n) => filedAs(n, id, ANSWER)).sort();
   for (const n of found.reverse()) {
-    const v = await readJson(host, join(fin, n));
-    if (v) return v;
+    const v = JSON.parse(await host.fs.read(join(fin, n), "utf8"));
+    if (v && typeof v === "object") return v;
   }
   return null;
 }

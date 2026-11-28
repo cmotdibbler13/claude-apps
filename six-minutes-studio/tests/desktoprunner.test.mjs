@@ -314,3 +314,70 @@ test("withdraw race: a running answer that lands while the laptop files its requ
   await settle();
   assert.equal(jobs.list()[0].status, "done");
 });
+
+// Request and answer both filed in finished\ (Studio closed before done was saved).
+async function filedDone(host, id) {
+  const { moveMine } = await import("../js/queue.js");
+  await writeRequest(host, ROOT, { id, from: "LAP", root: ROOT, job: {} });
+  await writeAnswer(host, ROOT, answer({ id, status: "done", file: "S:\\Youtube video ideas\\a.mp4" }));
+  await moveMine(host, ROOT, id, "laptop");
+  await moveMine(host, ROOT, id, "desktop");
+}
+const savedJob = (id) => ({ id, ...spec(), lane: "gpu", status: "running", progress: null, eta: null, jobRef: `LAP-${id}` });
+
+test("N1: a spurious false from exists, or a failed listing, never writes a second request", async () => {
+  const host = new FakeHost();
+  await host.fs.mkdir(ROOT);
+  await filedDone(host, "LAP-j1");
+  const { exists, list } = host.fs;
+  host.fs.exists = async (p) => (/finished/i.test(p) ? false : exists(p));
+  let fails = 2;
+  host.fs.list = async (d) => { if (fails-- > 0) throw new Error("EIO"); return list(d); };
+  const jobs = reopen(host, [savedJob("j1")]);
+  await settle(60);
+  host.fs.list = list; host.fs.exists = exists;
+  assert.equal((await listRequests(host, ROOT)).length, 0);
+  assert.equal(jobs.list()[0].status, "done");
+  assert.equal(jobs.list()[0].file, "N:\\Youtube video ideas\\a.mp4");
+});
+
+test("N2: a failed read or listing of finished\\ keeps waiting, then records the take", async () => {
+  for (const kind of ["read", "list"]) {
+    const host = new FakeHost();
+    await host.fs.mkdir(ROOT);
+    await filedDone(host, "LAP-j1");
+    const orig = host.fs[kind];
+    let fails = 1;
+    host.fs[kind] = async (p, ...r) => {
+      const hit = kind === "read" ? /finished.*answer/i.test(p) : /finished$/i.test(p);
+      if (hit && fails-- > 0) throw new Error("EIO");
+      return orig(p, ...r);
+    };
+    const jobs = reopen(host, [savedJob("j1")]);
+    await settle(60);
+    assert.ok(fails < 0 || fails === 0, `${kind} failed once`);
+    assert.equal(jobs.list()[0].status, "done", kind);
+  }
+});
+
+test("N3: a failed read after filing on the withdraw path keeps waiting; the desktop's answer wins", async () => {
+  const { host, jobs, state } = await setup({ peers: [] });
+  const id = jobs.add(spec());
+  await settle();
+  const rid = `LAP-${id}`;
+  const { rename, read } = host.fs;
+  let moved = false, fails = 1;
+  host.fs.rename = async (a, b) => {
+    if (!moved && /finished/i.test(b) && /request/.test(a)) { moved = true; await writeAnswer(host, ROOT, answer({ id: rid, progress: 0.1 })); }
+    return rename(a, b);
+  };
+  host.fs.read = async (p, ...r) => { if (moved && /answer/.test(p) && fails-- > 0) throw new Error("EIO"); return read(p, ...r); };
+  await withdraw(host, ROOT, jobs.list()[0]);
+  await settle();
+  assert.ok(moved && fails < 1);
+  assert.equal(jobs.list()[0].status, "running");
+  state.peers = [peer()];
+  await writeAnswer(host, ROOT, answer({ id: rid, status: "done", file: "S:\\Youtube video ideas\\a.mp4" }));
+  await settle();
+  assert.equal(jobs.list()[0].status, "done");
+});

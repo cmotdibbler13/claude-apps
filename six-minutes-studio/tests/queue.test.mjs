@@ -151,6 +151,7 @@ test("pendingRequests lists the folder once: a failed listing shows nothing pend
 test("readFinishedAnswer reads a filed answer; none is null", async () => {
   const { readFinishedAnswer } = await import("../js/queue.js");
   const h = new FakeHost();
+  await h.fs.mkdir(ROOT);
   assert.equal(await readFinishedAnswer(h, ROOT, ID), null);
   await writeRequest(h, ROOT, req(ID));
   await writeAnswer(h, ROOT, ans(ID, { file: "S:\\a.mp4" }));
@@ -168,6 +169,46 @@ test("requestAnywhere: in the queue, in finished, or nowhere; a failed look thro
   assert.equal(await requestAnywhere(h, ROOT, ID), true);
   await moveMine(h, ROOT, ID, "laptop");
   assert.equal(await requestAnywhere(h, ROOT, ID), true);
-  h.fs.exists = async () => { throw new Error("EIO"); };
+  h.fs.list = async () => { throw new Error("EIO"); };
   await assert.rejects(requestAnywhere(h, ROOT, ID));
+});
+
+test("presence is decided from listings: a spurious false from exists changes nothing; a failed listing throws", async () => {
+  const { requestAnywhere, answerInQueue } = await import("../js/queue.js");
+  const h = new FakeHost();
+  await h.fs.mkdir(ROOT);
+  // No queue folder yet, but the project folder lists fine: really nowhere.
+  assert.equal(await requestAnywhere(h, ROOT, ID), false);
+  assert.equal(await answerInQueue(h, ROOT, ID), false);
+  await writeRequest(h, ROOT, req(ID));
+  await writeAnswer(h, ROOT, ans("LAPTOP-JON-j2"));
+  await moveMine(h, ROOT, ID, "laptop");
+  h.fs.exists = async () => false; // a drive waking up
+  assert.equal(await requestAnywhere(h, ROOT, ID), true);
+  assert.equal(await answerInQueue(h, ROOT, "LAPTOP-JON-j2"), true);
+  assert.equal(await answerInQueue(h, ROOT, ID), false);
+  const list = h.fs.list;
+  h.fs.list = async () => { throw new Error("EIO"); };
+  await assert.rejects(requestAnywhere(h, ROOT, ID));
+  await assert.rejects(answerInQueue(h, ROOT, ID));
+  // finished\ listed in the queue folder but its own listing fails: can't tell
+  h.fs.list = async (d) => { if (/finished/i.test(d)) throw new Error("EIO"); return list(d); };
+  await assert.rejects(requestAnywhere(h, ROOT, ID));
+});
+
+test("readFinishedAnswer throws on a failed listing or read, so a filed answer is never taken for none", async () => {
+  const { readFinishedAnswer } = await import("../js/queue.js");
+  const h = new FakeHost();
+  await writeRequest(h, ROOT, req(ID));
+  await writeAnswer(h, ROOT, ans(ID, { file: "S:\\a.mp4" }));
+  await moveMine(h, ROOT, ID, "laptop");
+  await moveMine(h, ROOT, ID, "desktop");
+  const { list, read } = h.fs;
+  h.fs.list = async () => { throw new Error("EIO"); };
+  await assert.rejects(readFinishedAnswer(h, ROOT, ID));
+  h.fs.list = list;
+  h.fs.read = async () => { throw new Error("EIO"); };
+  await assert.rejects(readFinishedAnswer(h, ROOT, ID));
+  h.fs.read = read;
+  assert.equal(await readFinishedAnswer(h, ROOT, "LAPTOP-JON-j9"), null);
 });

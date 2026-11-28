@@ -62,17 +62,20 @@ export function makeDesktopRunner({ root, computer, spellings, peers, poll = 500
         if (ensureSent) ensureSent = !(await sendIfNeverSent(host, job));
         if (await requestFinished(host, root, id)) {
           // Filed already (Studio closed before the result was saved): the desktop's answer is in finished\.
-          const filed = await readFinishedAnswer(host, root, id);
-          let inQueue = false;
-          if (!filed) { try { inQueue = await answerInQueue(host, root, id); } catch { inQueue = true; } }
+          // Decided only from listings and reads that worked; any failure keeps waiting and looks again next poll.
+          let filed = null, inQueue = true;
+          try {
+            filed = await readFinishedAnswer(host, root, id);
+            inQueue = !filed && await answerInQueue(host, root, id);
+          } catch { filed = null; inQueue = true; }
           if (!inQueue) {
             await moveMine(host, root, id, "laptop");
             return finish(filed);
           }
         } else if (await hasWithdrawn(host, root, id) && !desktopState(peers()).ready) {
           await moveMine(host, root, id, "laptop");
-          // The desktop may have taken it meanwhile: its answer wins.
-          if (!(await readAnswer(host, root, id))) throw withdrawn();
+          // The desktop may have taken it meanwhile: its answer wins. With the request now filed, the next look
+          // decides from listings (an answer in the queue folder or in finished\, or none), never from one failed read.
           continue;
         }
         waiting("waiting");

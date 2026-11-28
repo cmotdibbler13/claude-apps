@@ -379,3 +379,35 @@ test("a restarted worker meeting a job whose answer is filed settles it; a faile
   assert.equal(a.progress, 0.5);
   assert.equal(a.eta, "1 min");
 });
+
+test("N1: a failed read with a spurious false from exists, or a failed listing, settles nothing", async () => {
+  for (const how of ["exists", "list"]) {
+    const { host, jobs, w } = await setup();
+    let ctx;
+    const blender = { lane: "gpu", start: (_j, c) => { ctx = c; return new Promise(() => {}); } };
+    const jobs2 = makeJobs(host, { runners: { blender } });
+    await send(host, ID);
+    await w.tick(); await settle();
+    w.stop();
+    void jobs;
+    // A restarted desktop meets the job: its answer read fails once, and the presence check misleads or fails.
+    jobs2.add({ film: "S:\\f", assetId: "A", take: 1, tool: "blender", input: {}, from: "LAPTOP", request: ID });
+    await settle();
+    const { read, exists, list } = host.fs;
+    let fails = 1;
+    host.fs.read = async (p, ...r) => { if (/answer/.test(p) && fails-- > 0) throw new Error("EIO"); return read(p, ...r); };
+    if (how === "exists") host.fs.exists = async () => false;
+    else host.fs.list = async (d) => { if (fails >= 0) throw new Error("EIO"); return list(d); };
+    const w2 = makeDesktopWorker({ host, root: ROOT, computer: "DESK", jobs: jobs2, spellings: [], paused: () => false, now: () => host.now() });
+    ctx.progress(0.3);
+    await settle();
+    assert.ok(fails <= 0, how);
+    host.fs.exists = exists; host.fs.list = list;
+    ctx.progress(0.5, "1 min");
+    host.t += 6000;
+    await w2.tick(); await settle();
+    const a = await readAnswer(host, ROOT, ID);
+    assert.equal(a.progress, 0.5, how);
+    w2.stop();
+  }
+});
