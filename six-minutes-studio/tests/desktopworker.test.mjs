@@ -211,7 +211,8 @@ test("a check on a resumable failed job puts the job back to running", async () 
   const saved = jobs.list().map((j) => ({ ...j, jobRef: "r" }));
   jobs.restore(saved);
   await settle();
-  ds[1]?.reject(Object.assign(new Error("lost"), { ambiguous: true }));
+  assert.ok(ds[1], "the resume started");
+  ds[1].reject(Object.assign(new Error("lost"), { ambiguous: true }));
   await settle();
   assert.equal(jobs.list()[0].status, "failed");
   assert.equal((await readAnswer(host, ROOT, ID)).status, "failed");
@@ -248,4 +249,42 @@ test("stop unsubscribes from job changes", async () => {
   jobs.restore(jobs.list());
   await settle();
   assert.equal((await readAnswer(host, ROOT, ID)).status, "running");
+});
+
+test("after a restart an interrupted laptop job is answered, and a filed one is never read again", async () => {
+  const first = await setup();
+  const { host } = first;
+  await send(host, ID);
+  await first.w.tick();
+  await settle();
+  const saved = first.jobs.list();
+  first.w.stop();
+  // New process: fresh jobs, fresh worker, same shared folder.
+  const jobs = makeJobs(host, { runners: { blender: { lane: "gpu", start: () => new Promise(() => {}) } } });
+  jobs.restore(saved);
+  const w = makeDesktopWorker({ host, root: ROOT, computer: "DESK", jobs, spellings: [], paused: () => false, now: () => host.now() });
+  await w.reconcile();
+  await w.tick();
+  await settle();
+  assert.equal(jobs.list().length, 1);
+  const a = await readAnswer(host, ROOT, ID);
+  assert.equal(a.status, "failed");
+  assert.equal(a.error, "Interrupted on the desktop; press Retry");
+  await moveMine(host, ROOT, ID, "laptop");
+  await w.tick();
+  assert.ok(!host.files.has(q(`${ID}.answer.json`)));
+  // Own job on the desktop reports progress: the filed laptop job's answer is not touched.
+  let ctx;
+  jobs.add({ film: "S:\\f", assetId: "A", take: 1, tool: "blender", input: {} });
+  await settle();
+  const calls = [];
+  for (const k of ["read", "exists", "list"]) {
+    const orig = host.fs[k];
+    host.fs[k] = async (p, ...r) => { if (String(p).includes(`${ID}.answer`)) calls.push(k); return orig(p, ...r); };
+  }
+  jobs.list(); void ctx;
+  jobs.restore(jobs.list()); // fires change events
+  await settle();
+  await w.tick();
+  assert.deepEqual(calls, []);
 });

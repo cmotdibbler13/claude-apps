@@ -28,6 +28,7 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 export function makeDesktopWorker({ host, root, computer, jobs, spellings = [], paused = () => false, now = () => host.now() }) {
   const cache = new Map(); // request id -> the answer as last written
   const wroteAt = new Map();
+  const settled = new Set(); // request ids with no answer of ours left to keep up to date: never read again
   let waiting = 0;
   let chain = Promise.resolve();
   const serial = (fn) => {
@@ -48,11 +49,11 @@ export function makeDesktopWorker({ host, root, computer, jobs, spellings = [], 
   // Bring each laptop job's answer in line with the job.
   async function follow(list) {
     for (const job of list) {
-      if (!job.request) continue;
+      if (!job.request || settled.has(job.request)) continue;
       let cur = cache.get(job.request);
       if (!cur) {
         const onDisk = await readAnswer(host, root, job.request);
-        if (!onDisk || onDisk.by !== computer) continue;
+        if (!onDisk || onDisk.by !== computer) { settled.add(job.request); continue; }
         cur = { checks: [], ...onDisk };
         cache.set(job.request, cur);
       }
@@ -120,6 +121,7 @@ export function makeDesktopWorker({ host, root, computer, jobs, spellings = [], 
         if (!FINAL.has(a.status) || !(await requestFinished(host, root, a.id))) continue;
         await moveMine(host, root, a.id, "desktop");
         cache.delete(a.id);
+        settled.add(a.id);
         wroteAt.delete(a.id);
       }
     });
