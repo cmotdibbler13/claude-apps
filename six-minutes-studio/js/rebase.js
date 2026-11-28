@@ -17,6 +17,16 @@ export function rebasePath(p, spellings, root) {
   return p;
 }
 
+// A copy of value with every string (any depth, in arrays and plain objects) passed through rebasePath.
+export function rebaseDeep(value, spellings, root) {
+  if (typeof value === "string") return rebasePath(value, spellings, root);
+  if (Array.isArray(value)) return value.map((v) => rebaseDeep(v, spellings, root));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, rebaseDeep(v, spellings, root)]));
+  }
+  return value;
+}
+
 // Returns a new host. Every path-taking method rebases its string path arguments; the rest
 // (platform, mcp, claude, notify, now ...) is passed through untouched.
 export function withRebase(host, spellings, root) {
