@@ -25,9 +25,11 @@ export function filmRow(film, jobs = []) {
   };
 }
 
-export function filmsModel({ root, films = [], jobs = [], error = null, tools = null }) {
+export const chosenMissingMessage = (path) => `Can't reach the project folder you chose (${path}). Choose another in Probe.`;
+
+export function filmsModel({ root, films = [], jobs = [], error = null, tools = null, chosenMissing = null }) {
   if (error) return { failed: true, unreachable: false, message: `Couldn't load your films: ${error}`, rows: [], empty: false };
-  if (!root) return { unreachable: true, message: UNREACHABLE, rows: [], empty: false };
+  if (!root) return { unreachable: true, message: chosenMissing ? chosenMissingMessage(chosenMissing) : UNREACHABLE, rows: [], empty: false };
   const rows = films.map((f) => filmRow(f, jobs));
   return { unreachable: false, message: null, rows, empty: rows.length === 0, tools: tools || null };
 }

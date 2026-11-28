@@ -1,8 +1,10 @@
 // Boot: host, install gate, project root, jobs, routing and re-rendering of the three screens.
 import { makeHost } from "./host.js";
 import { accessGate } from "./gate.js";
-import { resolveRoot, join, filmKey } from "./paths.js";
+import { join, filmKey } from "./paths.js";
 import { loadSettings } from "./settings.js";
+import { setToolPaths } from "./toolpaths.js";
+import { findRoot, rebasedHost, liveHost } from "./boot.js";
 import { withRerecord, rerecordsToClear, lineWords, takeSig, addMark, setSize, moveMark, removeMark, placeFromNotes, newTakeIds } from "./pacing.js";
 import { applyPauses, JOINED_WITHOUT } from "./pacingchain.js";
 import { findLineScript, loadLineScript, refreshLineScript, narrationStatus } from "./narration.js";
@@ -49,9 +51,14 @@ import { prompterBar } from "./ui/prompter.js";
 const $ = (id) => document.getElementById(id);
 const msg = (e) => String(e?.message ?? e);
 const LAYOUT_KEY = "six-minutes-studio.reviewLayout";
+// For everything made before (or kept across) a root change: always the current app.host.
+const live = liveHost(() => app.host);
 
 const app = {
-  host: null, root: null, jobs: null, films: [], view: "films",
+  // rawHost: the host as made (this computer's name, its local record, the root search).
+  // host: once the root is known, the same host re-basing project-folder paths saved on another computer.
+  rawHost: null, host: null, computer: null, chosenRoot: null, chosenMissing: null,
+  root: null, jobs: null, films: [], view: "films",
   film: null, store: null, session: null, playing: null, retried: new Set(), goneJobs: new Map(), movedAside: null, stateError: null, bootError: null, openError: null,
   review: { making: false, listError: null, cardErrors: new Map(), pending: new Set(), estimating: new Set(), noteFor: null, draft: "", oc: {} },
   starter: null, saBusy: false,
@@ -187,7 +194,7 @@ async function renderNow() {
   if (app.view === "films" && app.nf) {
     paint("films", $("view-films"), newFilmModelNow(), newFilmView, newFilmActions);
   } else if (app.view === "films") {
-    paint("films", $("view-films"), filmsView.filmsModel({ root: app.root, films: app.films, jobs: list, error: app.bootError,
+    paint("films", $("view-films"), filmsView.filmsModel({ root: app.root, films: app.films, jobs: list, error: app.bootError, chosenMissing: app.chosenMissing,
       tools: app.comfyStarter ? toolsLine({ comfy: app.comfyStarter, stableAudio: app.starter }) : null }), filmsView, filmsActions);
   } else if (app.view === "jobs") {
     const log = app.store ? await app.store.readLog(50) : null;
@@ -233,18 +240,26 @@ async function choosePresenterPhotos(files) {
 
 async function reloadSettings() {
   if (!app.root || !app.settings) return;
-  const fresh = await loadSettings(app.host, app.root);
+  const fresh = await loadSettings(app.host, app.root, { computer: app.computer });
   for (const k of Object.keys(app.settings)) if (!(k in fresh)) delete app.settings[k];
   Object.assign(app.settings, fresh);
+  setToolPaths(app.settings);
 }
 
 // ---- films ----
 async function loadRoot() {
-  const { host } = app;
-  app.root = await resolveRoot(host);
-  if (!app.root) { app.films = []; render(); return; }
+  // This computer, its chosen project folder (if any), then the host that re-bases paths onto it.
+  const found = await findRoot(app.rawHost, { computer: app.computer ?? undefined });
+  app.computer = found.computer;
+  app.chosenRoot = found.chosenRoot;
+  app.chosenMissing = found.chosenMissing;
+  app.root = found.root;
+  if (!app.root) { app.host = app.rawHost; app.films = []; render(); return; }
+  app.host = await rebasedHost(app.rawHost, app.root);
+  const host = live;
   if (!app.jobs) {
-    const settings = await loadSettings(host, app.root);
+    const settings = await loadSettings(app.host, app.root, { computer: app.computer });
+    setToolPaths(settings);
     app.settings = settings;
     const file = join(app.root, ".studio-jobs.json");
     // One Stable Audio starter for the app: the runner starts it when a take needs it, Review shows its state.
@@ -1325,16 +1340,17 @@ async function boot() {
     }
     return;
   }
+  app.rawHost = host;
   app.host = host;
   // Credits left in Higgsfield and ElevenLabs, in the top bar and the tray: now, every 10 minutes, after paid takes.
-  app.credits = makeCredits(host);
+  app.credits = makeCredits(live);
   app.credits.onChange(() => { paintCredits(); updateTray(); });
   app.credits.refresh();
   setInterval(() => app.credits.refresh(), 10 * 60_000);
   const desktop = await window.claude.use("desktop");
   desktop.app?.dock?.setIcon(drawIcon()).catch(() => {});
   // Probe re-reads .studio-settings.json and updates the one settings object every runner holds.
-  mountProbe(host, $("run-probe"), $("probe-results"), () => app.settings, reloadSettings,
+  mountProbe(live, $("run-probe"), $("probe-results"), () => app.settings, reloadSettings,
     () => ({ comfy: app.comfyStarter, stableAudio: app.starter }), () => refreshI2v(), choosePresenterPhotos, () => app.root);
   await startWithAccess();
 }

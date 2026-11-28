@@ -115,3 +115,24 @@ test("part 1 done: state.waiting is kept", async () => {
   assert.equal(f.parts[1], "done");
   assert.equal(f.waiting, "Shot list ready");
 });
+
+// Films message when this computer's chosen project folder can't be reached
+import { filmsModel, UNREACHABLE } from "../js/ui/films.js";
+
+test("chosen folder missing: Films says so and points at Probe", () => {
+  const m = filmsModel({ root: null, chosenMissing: "N:\\Youtube video ideas" });
+  assert.equal(m.unreachable, true);
+  assert.equal(m.message, "Can't reach the project folder you chose (N:\\Youtube video ideas). Choose another in Probe.");
+});
+
+test("no chosen folder: the generic message is unchanged", () => {
+  assert.equal(filmsModel({ root: null }).message, UNREACHABLE);
+  assert.equal(filmsModel({ root: null, chosenMissing: null }).message, UNREACHABLE);
+  assert.equal(UNREACHABLE, "Can't reach S:\\Youtube video ideas or the server copy. Check the drive is connected.");
+});
+
+test("a reachable root ignores chosenMissing", () => {
+  const m = filmsModel({ root: "N:\\Youtube video ideas", chosenMissing: null, films: [] });
+  assert.equal(m.unreachable, false);
+  assert.equal(m.empty, true);
+});
