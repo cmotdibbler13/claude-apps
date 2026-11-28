@@ -1,5 +1,6 @@
 // Probe view: checks the PC and connectors. Never calls a generate tool.
 import { runProcess } from "../proc.js";
+import { cmdCheck, stemRemixerCheck } from "../toolchecks.js";
 import { tool } from "../toolpaths.js";
 import { DEFAULT_SETTINGS } from "../settings.js";
 import { autocueJoinState, installAutocueJoin } from "../autocueinstall.js";
@@ -18,13 +19,6 @@ const listCheck = (path) => async (host) => {
   const entries = await host.fs.list(path);
   return `${entries.length} entries`;
 };
-// The same way the app runs them: spawn with an argument list, no shell.
-const cmdCheck = (cmd, args) => async (host) => {
-  const r = await runProcess(host, cmd, args, { timeout: 15000 });
-  if (r.code !== 0) throw new Error(`exit ${r.code}: ${(r.stderr || r.stdout).trim()}`);
-  return (r.stdout || r.stderr).trim().split(/\r?\n/)[0];
-};
-
 // ComfyUI: curl GET <url>/system_stats, then the workflow file the runner will load.
 const comfyCheck = (comfy) => async (host) => {
   const url = String(comfy.url || DEFAULT_SETTINGS.comfy.url).replace(/\/+$/, "");
@@ -57,26 +51,6 @@ const stableAudioCheck = (sa) => async (host) => {
 
 // Stem Remixer: its own Python plus fit.py and measure.py (1.9.0 or newer). Never starts it.
 export { MSG_SET_STEM_REMIXER };
-const NEED_VERSION = [1, 9, 0];
-const older = (v, want) => {
-  const a = String(v).split(".").map((x) => parseInt(x, 10) || 0);
-  for (let i = 0; i < want.length; i++) if ((a[i] ?? 0) !== want[i]) return (a[i] ?? 0) < want[i];
-  return false;
-};
-const stemRemixerCheck = (dir) => async (host) => {
-  if (!dir) throw new Error(MSG_SET_STEM_REMIXER);
-  if (!(await host.fs.exists(dir))) throw new Error(`No folder at ${dir}. ${MSG_SET_STEM_REMIXER}`);
-  if (!(await host.fs.exists(stemPython(dir)))) {
-    throw new Error(`Stem Remixer's Python isn't at ${stemPython(dir)}. Run Install.cmd in ${dir}, then Probe again.`);
-  }
-  for (const f of ["fit.py", "measure.py"]) {
-    if (!(await host.fs.exists(join(dir, f)))) throw new Error(`${f} isn't in ${dir}. Press Update in Stem Remixer (1.9.0 or newer).`);
-  }
-  let v = null;
-  try { v = String(await host.fs.read(join(dir, "VERSION"), "utf8")).trim() || null; } catch { /* no VERSION file */ }
-  if (v && older(v, NEED_VERSION)) throw new Error(`Stem Remixer is ${v}; update it to 1.9.0 or newer (its Update button)`);
-  return v ? `Stem Remixer ${v}` : "ready";
-};
 
 // The join files Studio carries must match the ones in Autocue Studio's folder; Install join script fixes it.
 export const MSG_JOIN_MISSING = "The join script isn't installed. Press Install join script below.";
