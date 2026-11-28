@@ -11,13 +11,29 @@ import { photoPicker } from "./photopick.js";
 import { MSG_SET_STEM_REMIXER, stemPython } from "../tools/stemfit.js";
 import { readCatalogue } from "../libraryio.js";
 import { nextBrNumber } from "../library.js";
+import { GET_IT, openLink, findCandidates, checkChoice } from "../findtools.js";
+import { candidateRoots } from "../paths.js";
+import { localStore, saveComputerSettings } from "../computer.js";
+import { h, btn } from "./dom.js";
 
 const ROOT = "S:\\Youtube video ideas\\";
-const UNC = "\\\\192.168.1.171\\jon\\Youtube video ideas\\";
+const trimSlash = (p) => String(p ?? "").replace(/\\+$/, "");
+const samePath = (a, b) => trimSlash(a).toLowerCase() === trimSlash(b).toLowerCase();
 
-const listCheck = (path) => async (host) => {
-  const entries = await host.fs.list(path);
-  return `${entries.length} entries`;
+// This computer's role, and the graphics rows a laptop leaves to the desktop.
+export const ROLE_LABEL = { desktop: "Desktop (everything)", laptop: "Laptop (scripts and audio)" };
+export const ROLE_QUESTION = "Is this computer the desktop (everything) or a laptop (scripts and audio)?";
+export const ON_DESKTOP = "On the desktop";
+export const GRAPHICS_ROWS = ["Blender", "ComfyUI", "Animate workflow", "Stable Audio"];
+export const roleLine = (computer, role) => `${computer} \u00B7 ${ROLE_LABEL[role === "laptop" ? "laptop" : "desktop"]}`;
+const onDesktopCheck = async () => { throw Object.assign(new Error(ON_DESKTOP), { neutral: true, onDesktop: true }); };
+
+// Project folder: the folder in use, readable. A chosen folder that can't be reached says so.
+const projectCheck = (root, chosenMissing) => async (host) => {
+  if (chosenMissing) throw Object.assign(new Error(`Can't reach the project folder you chose (${chosenMissing})`), { chooseRoot: true });
+  try { await host.fs.list(root); }
+  catch (e) { throw Object.assign(new Error(`Can't read ${trimSlash(root)}: ${e?.message ?? e}`), { chooseRoot: true }); }
+  return trimSlash(root);
 };
 // ComfyUI: curl GET <url>/system_stats, then the workflow file the runner will load.
 const comfyCheck = (comfy) => async (host) => {
@@ -107,9 +123,16 @@ const toolsCheck = (server, want) => async (host) => {
 };
 
 // root: the films folder (the app's resolved root), where the B-roll library lives.
-export const makeChecks = (settings = DEFAULT_SETTINGS, root = ROOT) => [
-  { name: "S: root readable", run: listCheck(ROOT) },
-  { name: "UNC root readable", run: listCheck(UNC) },
+// here: graphics rows Jon chose to set up on this laptop anyway (this session only).
+// chosenMissing: the chosen project folder, when it can't be reached.
+export const makeChecks = (settings = DEFAULT_SETTINGS, root = ROOT, { here = new Set(), chosenMissing = null } = {}) => {
+  const laptop = settings?.role === "laptop";
+  const g = (c) => (laptop && GRAPHICS_ROWS.includes(c.name) && !here.has(c.name) ? { name: c.name, run: onDesktopCheck } : c);
+  return allChecks(settings, root, chosenMissing).map(g);
+};
+
+const allChecks = (settings, root, chosenMissing) => [
+  { name: "Project folder", run: projectCheck(root || ROOT, chosenMissing) },
   { name: "Blender", run: cmdCheck(settings.blenderPath || DEFAULT_SETTINGS.blenderPath, ["--version"]) },
   { name: "ffmpeg", run: (host) => cmdCheck(tool("ffmpeg"), ["-version"])(host) },
   { name: "curl", run: cmdCheck("curl", ["--version"]) },
@@ -147,22 +170,176 @@ export const makeChecks = (settings = DEFAULT_SETTINGS, root = ROOT) => [
 
 export const CHECKS = makeChecks();
 
-export async function runChecks(host, onResult = () => {}, settings = DEFAULT_SETTINGS, root = ROOT) {
+async function runOne(host, c) {
+  try { return { name: c.name, ok: true, detail: await c.run(host) }; }
+  catch (e) {
+    return { name: c.name, ok: false, detail: String(e?.message ?? e), install: !!e?.install, ...(e?.neutral ? { neutral: true } : {}), ...(e?.warn ? { warn: true } : {}),
+      ...(e?.start ? { start: e.start } : {}), ...(e?.onDesktop ? { onDesktop: true } : {}), ...(e?.chooseRoot ? { chooseRoot: true } : {}) };
+  }
+}
+
+export async function runChecks(host, onResult = () => {}, settings = DEFAULT_SETTINGS, root = ROOT, opts = {}) {
   const out = [];
-  for (const c of makeChecks(settings, root)) {
-    let r;
-    try { r = { name: c.name, ok: true, detail: await c.run(host) }; }
-    catch (e) { r = { name: c.name, ok: false, detail: String(e?.message ?? e), install: !!e?.install, ...(e?.neutral ? { neutral: true } : {}), ...(e?.warn ? { warn: true } : {}), ...(e?.start ? { start: e.start } : {}) }; }
+  for (const c of makeChecks(settings, root, opts)) {
+    const r = await runOne(host, c);
     out.push(r);
     onResult(r);
   }
   return out;
 }
 
+// ---- fix buttons ----
+// Each failing tool row says how to put it right. The Project folder row can always be changed.
+const FIXES = {
+  "Project folder": [["root", null]],
+  ffmpeg: [["choose", "ffmpeg"], ["get", "ffmpeg"]],
+  Blender: [["choose", "blender"], ["get", "blender"]],
+  ComfyUI: [["get", "comfyui"]],
+  "Stable Audio": [["get", "pinokio"]],
+  "Stem Remixer": [["choose", "stemremixer"], ["install", "stemremixer"]],
+  "Autocue join": [["choose", "autocue"], ["install", "autocue"]],
+  "Python for installs": [["choose", "python"], ["get", "python"]],
+};
+const FIX_LABEL = { root: "Choose\u2026", choose: "Choose where it is\u2026", install: "Install here\u2026" };
+const getLabel = (kind) => (kind === "pinokio" ? "Get it: Pinokio" : "Get it");
+
+export function fixesFor(r) {
+  if (!r || (r.name !== "Project folder" && (r.ok || r.neutral))) return [];
+  return (FIXES[r.name] ?? []).map(([type, kind]) => (type === "get"
+    ? { type, kind, label: getLabel(kind), url: GET_IT[kind] }
+    : { type, kind, label: FIX_LABEL[type] }));
+}
+
+// The setting a choice saves, for this computer only.
+export function choicePatch(kind, path) {
+  if (kind === "ffmpeg") return { ffmpegPath: path };
+  if (kind === "blender") return { blenderPath: path };
+  if (kind === "python") return { autocuePython: path };
+  if (kind === "autocue") return { autocueDir: path, autocueRecordings: join(path, "Recordings") };
+  if (kind === "stemremixer") return { stemRemixerDir: path };
+  throw new Error(`Unknown kind: ${kind}.`);
+}
+
+// A project folder choice: kept on this computer, and recorded in the shared file (other computers re-base with it).
+export async function saveRoot(rawHost, computer, path, { now } = {}) {
+  const store = localStore(rawHost);
+  let local = {};
+  try { local = (await store.read()) ?? {}; } catch { /* nothing kept yet */ }
+  await store.write({ ...local, root: path });
+  await saveComputerSettings(rawHost, path, computer, { root: path }, now === undefined ? undefined : { now });
+}
+
+const say = (el, t) => { el.textContent = t; };
+
+// "Choose where it is…": what Studio found, as buttons, plus a typed path. A pick is checked before it is saved.
+export async function choosePanel(host, kind, save, rerun) {
+  const msg = h("span", { class: "detail" });
+  const typed = h("input", { type: "text", class: "fixpath", placeholder: "Or type the full path", "aria-label": "Full path" });
+  const pick = async (path) => {
+    const p = String(path ?? "").trim();
+    if (!p) { say(msg, "Type the full path first."); return; }
+    say(msg, "Checking\u2026");
+    const r = await checkChoice(host, kind, p);
+    if (!r.ok) { say(msg, r.detail); return; }
+    try { await save(choicePatch(kind, p)); }
+    catch (e) { say(msg, `Couldn't save: ${e?.message ?? e}`); return; }
+    say(msg, `Saved ${p}. Checking again\u2026`);
+    await rerun();
+  };
+  let found = [];
+  try { found = await findCandidates(host, kind); } catch { /* none found */ }
+  return h("div", { class: "fixpanel" },
+    found.length ? h("div", { class: "fixpicks" }, found.map((p) => btn(p, () => pick(p), { ghost: true, cls: "fixpick" })))
+      : h("span", { class: "detail", text: "Studio didn't find it. Type where it is." }),
+    h("div", { class: "fixtype" }, typed, btn("Use this", () => pick(typed.value), { ghost: true })),
+    msg);
+}
+
+// Choose… on the project folder: every project folder Studio can see, the one in use marked.
+async function rootPanel(rawHost, inUse, chooseRoot, rerun) {
+  const msg = h("span", { class: "detail" });
+  let found = [];
+  try { found = await candidateRoots(rawHost); } catch { /* none */ }
+  const pick = async (p) => {
+    say(msg, `Switching to ${p}\u2026`);
+    try { await chooseRoot(p); }
+    catch (e) { say(msg, `Couldn't switch: ${e?.message ?? e}`); return; }
+    await rerun();
+  };
+  return h("div", { class: "fixpanel" },
+    found.length ? h("div", { class: "fixpicks" }, found.map((p) => samePath(p, inUse)
+      ? btn(`${p} (in use)`, () => {}, { ghost: true, cls: "fixpick on", disabled: true })
+      : btn(p, () => pick(p), { ghost: true, cls: "fixpick" })))
+      : h("span", { class: "detail", text: "Studio can't see a Youtube video ideas folder on any drive or the network path." }),
+    msg);
+}
+
+const parentDefault = async (host) => { try { return (await host.fs.exists("D:\\")) ? "D:\\Apps" : "C:\\Apps"; } catch { return "C:\\Apps"; } };
+
+// "Install here…": needs a Python that runs; asks for the parent folder, shows each step, then Probe runs again.
+async function installPanel(host, app, python, install, rerun) {
+  const msg = h("span", { class: "detail" });
+  const py = await checkChoice(host, "python", python);
+  if (!py.ok) {
+    return h("div", { class: "fixpanel" },
+      h("div", { class: "fixtype" }, btn("Set up Python first", () => {}, { disabled: true }), btn("Get it", () => openLink(host, GET_IT.python).catch((e) => say(msg, String(e?.message ?? e))), { ghost: true })),
+      msg);
+  }
+  const parent = h("input", { type: "text", class: "fixpath", "aria-label": "Folder to install into" });
+  parent.value = await parentDefault(host);
+  const go = btn("Install", async () => {
+    const where = String(parent.value ?? "").trim();
+    if (!where) { say(msg, "Type the folder to install into."); return; }
+    go.disabled = true;
+    say(msg, "Starting\u2026");
+    try { await install({ app, parent: where, python, onStep: (t) => say(msg, t) }); }
+    catch (e) { say(msg, `Couldn't install: ${e?.message ?? e}`); go.disabled = false; return; }
+    await rerun();
+  });
+  return h("div", { class: "fixpanel" },
+    h("span", { class: "detail", text: "Studio puts the app in its own folder inside this one:" }),
+    h("div", { class: "fixtype" }, parent, go),
+    msg);
+}
+
+function fixRow(host, r, ctx) {
+  const area = h("div", { class: "fixarea" });
+  const open = async (make) => { area.replaceChildren(h("span", { class: "detail", text: "Looking\u2026" })); area.replaceChildren(await make()); };
+  const buttons = [];
+  if (r.onDesktop) {
+    buttons.push(btn("Set up here anyway", () => { ctx.here.add(r.name); return ctx.rerun(); }, { ghost: true }));
+  }
+  for (const f of fixesFor(r)) {
+    if (f.type === "get") buttons.push(btn(f.label, () => openLink(host, f.url).catch((e) => area.replaceChildren(h("span", { class: "err", text: String(e?.message ?? e) }))), { ghost: true }));
+    else if (f.type === "root") buttons.push(btn(f.label, () => open(() => rootPanel(ctx.rawHost, ctx.root, ctx.setup.chooseRoot, ctx.rerun)), { ghost: true }));
+    else if (f.type === "choose") buttons.push(btn(f.label, () => open(() => choosePanel(host, f.kind, ctx.save, ctx.rerun)), { ghost: true }));
+    else if (f.type === "install") buttons.push(btn(f.label, () => open(() => installPanel(host, f.kind, ctx.python, ctx.install, ctx.rerun)), { ghost: true }));
+  }
+  if (!buttons.length) return null;
+  return h("li", { class: "install fix" }, h("div", { class: "fixbtns" }, buttons), area);
+}
+
+function roleQuestionRow(save) {
+  return h("li", { class: "install role" },
+    h("span", { class: "detail", text: ROLE_QUESTION }),
+    h("div", { class: "fixbtns" }, ["desktop", "laptop"].map((k) => btn(ROLE_LABEL[k], () => save({ role: k })))));
+}
+
+function roleRow(computer, role, save) {
+  const pick = h("div", { class: "fixbtns", hidden: true }, ["desktop", "laptop"].map((k) =>
+    h("button", { type: "button", class: "btn ghost", "aria-pressed": String(k === role), onclick: () => (k === role ? (pick.hidden = true) : save({ role: k })) }, ROLE_LABEL[k])));
+  const change = btn("Change", () => { pick.hidden = !pick.hidden; }, { ghost: true });
+  return h("li", { class: "pass role" },
+    h("span", { class: "st", text: "Set" }),
+    h("span", { text: "This computer" }),
+    h("span", { class: "detail" }, roleLine(computer, role), " ", change),
+    pick);
+}
+
 export function probeRow(r) {
   const li = document.createElement("li");
   li.className = r.ok ? "pass" : r.neutral ? "neutral" : r.warn ? "warn" : "fail";
-  const st = document.createElement("span"); st.className = "st"; st.textContent = r.ok ? "Pass" : r.neutral ? "Optional" : r.warn ? "Warning" : "Fail";
+  const st = document.createElement("span"); st.className = "st"; st.textContent = r.ok ? "Pass" : r.onDesktop ? "Desktop" : r.neutral ? "Optional" : r.warn ? "Warning" : "Fail";
   const nm = document.createElement("span"); nm.textContent = r.name;
   const d = document.createElement("span"); d.className = "detail"; d.textContent = r.detail;
   li.append(st, nm, d);
@@ -175,13 +352,43 @@ export function probeRow(r) {
 // onDone(results), when given, runs after each Probe (the app re-checks what depends on the settings).
 // choosePhotos(files), when given, adds a "Choose presenter photos…" row (saves them, then Probe runs again).
 // getRoot(): the films folder once it is resolved (the B-roll library row reads its catalogue there).
-export function mountProbe(host, button, list, getSettings = () => DEFAULT_SETTINGS, reload = null, getStarters = () => ({}), onDone = null, choosePhotos = null, getRoot = () => null) {
+// setup, when given, adds this computer's row and the fix buttons:
+//   computer(), rawHost() (the host without re-basing, for finding project folders), chosenMissing(),
+//   roleNeeded() (ask the role first), save(patch) (this computer's settings, then re-read),
+//   chooseRoot(path) (switch project folder), install({app, parent, python, onStep}).
+export function mountProbe(host, button, list, getSettings = () => DEFAULT_SETTINGS, reload = null, getStarters = () => ({}), onDone = null, choosePhotos = null, getRoot = () => null, setup = null) {
+  const here = new Set(); // graphics rows set up on this laptop anyway, for this session
+  const saveThen = async (patch) => { await setup.save(patch); await run(); };
   const run = async () => {
     button.disabled = true;
     list.replaceChildren();
     if (reload) { try { await reload(); } catch { /* keep the settings already loaded */ } }
+    if (setup?.roleNeeded) {
+      let ask = false;
+      try { ask = !!(await setup.roleNeeded()); } catch { /* treat as answered */ }
+      if (ask) { list.append(roleQuestionRow(saveThen)); button.disabled = false; return; }
+    }
     const settings = getSettings() ?? DEFAULT_SETTINGS;
-    const results = await runChecks(host, (r) => list.append(probeRow(r)), settings, getRoot?.() || ROOT);
+    const root = getRoot?.() || ROOT;
+    const ctx = setup ? {
+      setup, here, rerun: run, root, rawHost: setup.rawHost?.() ?? host,
+      save: async (patch) => { await setup.save(patch); },
+      install: async (opts) => { await setup.install(opts); },
+      python: settings.autocuePython || DEFAULT_SETTINGS.autocuePython,
+    } : null;
+    if (setup) list.append(roleRow(setup.computer?.() ?? "THIS-PC", settings.role, saveThen));
+    const show = (r) => {
+      list.append(probeRow(r));
+      const fix = ctx ? fixRow(host, r, ctx) : null;
+      if (fix) list.append(fix);
+    };
+    const results = await runChecks(host, show, settings, root, { here, chosenMissing: setup?.chosenMissing?.() ?? null });
+    // Installing Jon's apps needs a Python that runs: shown when one of them isn't set up.
+    if (setup && results.some((r) => !r.ok && (r.name === "Stem Remixer" || r.name === "Autocue join"))) {
+      const py = await runOne(host, { name: "Python for installs", run: cmdCheck(ctx.python, ["--version"]) });
+      results.push(py);
+      show(py);
+    }
     // A missing or old join script can be put right from here: Studio carries the current copy.
     if (results.some((r) => r.install)) list.append(installRow(host, settings.autocueDir ?? DEFAULT_SETTINGS.autocueDir, run));
     const starters = getStarters?.() ?? {};

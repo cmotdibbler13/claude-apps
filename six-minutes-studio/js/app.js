@@ -4,7 +4,9 @@ import { accessGate } from "./gate.js";
 import { join, filmKey } from "./paths.js";
 import { loadSettings } from "./settings.js";
 import { setToolPaths } from "./toolpaths.js";
-import { findRoot, rebasedHost, liveHost } from "./boot.js";
+import { findRoot, rebasedHost, liveHost, readRawSettings } from "./boot.js";
+import { computerName, roleNeeded, saveComputerSettings } from "./computer.js";
+import { installApp } from "./installapps.js";
 import { withRerecord, rerecordsToClear, lineWords, takeSig, addMark, setSize, moveMark, removeMark, placeFromNotes, newTakeIds } from "./pacing.js";
 import { applyPauses, JOINED_WITHOUT } from "./pacingchain.js";
 import { findLineScript, loadLineScript, refreshLineScript, narrationStatus } from "./narration.js";
@@ -34,7 +36,7 @@ import { makeVoiceJoinRunner } from "./tools/voicejoin.js";
 import { makeStemFitRunner, listExports } from "./tools/stemfit.js";
 import { makeMixdownRunner } from "./tools/mixdown.js";
 import { startFit, startMix, useStemRemixerExport, approveMix, parseCsv, openFitInStemRemixer, stemExportDir, pastedPath, goodFrame } from "./mixplan.js";
-import { mountProbe } from "./ui/probe.js";
+import { mountProbe, saveRoot } from "./ui/probe.js";
 import { approvePart2, part2InFlight, alreadyText } from "./part2run.js";
 import { createFilm, currentDraft, part1Busy, writeScript, redoOne, editClip, editLists, restoreDraft, setPicks, approvePart1 } from "./part1run.js";
 import { filmFolders, takenPrefixes, briefsIn, addBrief } from "./part1setup.js";
@@ -215,6 +217,7 @@ async function renderNow() {
       lineScript: r.lineScript ?? null, transcript: r.transcript ?? null, transcriptAt: r.transcript ? r.transcriptAt ?? null : undefined,
       onCamera: { estimates: estimatesView(), photosOk: !!r.oc.photosOk, ui: r.oc },
       part2Ui: part2UiNow(),
+      role: app.settings?.role ?? "desktop",
     });
     r.paceSource = model.mix?.pacing?.source ?? null;
     // No voiceover player in the review now (a rejoin is running, or the mix is current): stop the old one, unseen.
@@ -245,6 +248,36 @@ async function reloadSettings() {
   Object.assign(app.settings, fresh);
   setToolPaths(app.settings);
 }
+
+// Probe's This computer row and fix buttons. Every save is this computer's entry in the shared settings file,
+// written through the host without re-basing; then the settings are re-read and Probe runs again.
+const thisComputer = async () => app.computer ?? (app.computer = await computerName(app.rawHost));
+const needRoot = () => { if (!app.root) throw new Error("Studio can't see your films folder yet."); };
+const probeSetup = {
+  computer: () => app.computer ?? "THIS-PC",
+  rawHost: () => app.rawHost,
+  chosenMissing: () => app.chosenMissing,
+  roleNeeded: async () => !!app.root && roleNeeded(await readRawSettings(app.rawHost, app.root), await thisComputer()),
+  async save(patch) {
+    needRoot();
+    await saveComputerSettings(app.rawHost, app.root, await thisComputer(), patch);
+    await reloadSettings();
+  },
+  // A new project folder: kept on this computer and recorded for the others, then films, settings and paths follow it.
+  async chooseRoot(path) {
+    let why = null;
+    try { await saveRoot(app.rawHost, await thisComputer(), path); } catch (e) { why = e; }
+    await loadRoot();
+    await reloadSettings();
+    render();
+    if (why) throw new Error(`Studio is using ${path}, but couldn't record it in .studio-settings.json: ${msg(why)}`);
+  },
+  async install(opts) {
+    needRoot();
+    await installApp(app.rawHost, { ...opts, root: app.root, computer: await thisComputer() });
+    await reloadSettings();
+  },
+};
 
 // ---- films ----
 async function loadRoot() {
@@ -1351,7 +1384,7 @@ async function boot() {
   desktop.app?.dock?.setIcon(drawIcon()).catch(() => {});
   // Probe re-reads .studio-settings.json and updates the one settings object every runner holds.
   mountProbe(live, $("run-probe"), $("probe-results"), () => app.settings, reloadSettings,
-    () => ({ comfy: app.comfyStarter, stableAudio: app.starter }), () => refreshI2v(), choosePresenterPhotos, () => app.root);
+    () => ({ comfy: app.comfyStarter, stableAudio: app.starter }), () => refreshI2v(), choosePresenterPhotos, () => app.root, probeSetup);
   await startWithAccess();
 }
 

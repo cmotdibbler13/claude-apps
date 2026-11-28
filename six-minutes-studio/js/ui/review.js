@@ -11,6 +11,7 @@ import { onCameraModel, onCameraSection, costLabel, STALE_PORTRAIT, ON_CAMERA } 
 import { clipLock, lineLengthS, clipSeconds, onCameraConflict, VOICEOVER_CHANGED } from "../presenter.js";
 import { part2Model, part2Bar } from "./part2.js";
 import { part1Section } from "./part1.js";
+import { MAKE_ON_DESKTOP, DESKTOP_TOOLS } from "../labels.js";
 
 const busyTake = (t) => t.status === "queued" || t.status === "running";
 const isBusy = (a) => a.takes.some(busyTake);
@@ -56,7 +57,10 @@ function clipCost(asset, transcript, estimates) {
 
 // state/transcript: the film's state and the last good join's transcript (clip locks, the on-camera conflict).
 // estimates/confirm: clip costs and the card whose unknown-cost press is waiting for a second press.
-export function cardModel(asset, assets, { pending = false, error = null, i2v = null, confirmRemove = false, state = null, transcript = null, transcriptAt, estimates = null, confirm = null } = {}) {
+export function cardModel(asset, assets, { pending = false, error = null, i2v = null, confirmRemove = false, state = null, transcript = null, transcriptAt, estimates = null, confirm = null, role = "desktop" } = {}) {
+  const laptop = role === "laptop";
+  // On a laptop, ComfyUI and Blender takes are made on the desktop.
+  const onDesktop = laptop && DESKTOP_TOOLS.has(asset.tool) ? MAKE_ON_DESKTOP : null;
   const chosen = chosenOf(asset);
   const busy = isBusy(asset);
   const presenter = asset.kind === "presenter";
@@ -99,12 +103,15 @@ export function cardModel(asset, assets, { pending = false, error = null, i2v = 
     canPick: free && asset.takes.length > 1,
     canApprove: free && !asset.approved && chosen?.status === "done",
     canUndo: free && !!asset.approved,
-    canMakeFirst: free && !locked && asset.takes.length === 0,
-    canRedo: free && !locked && asset.takes.length > 0,
-    can3d: free && asset.kind === "lineart" && !has3d(assets, asset.id),
+    canMakeFirst: free && !locked && asset.takes.length === 0 && !onDesktop,
+    canRedo: free && !locked && asset.takes.length > 0 && !onDesktop,
+    onDesktop,
+    show3d: asset.kind === "lineart" && !has3d(assets, asset.id),
+    can3d: free && asset.kind === "lineart" && !has3d(assets, asset.id) && !laptop,
+    why3d: laptop ? MAKE_ON_DESKTOP : null,
     showAnimate: asset.kind === "lineart" && !hasDerived(assets, asset.id, "animated"),
-    canAnimate: free && asset.kind === "lineart" && !hasDerived(assets, asset.id, "animated") && !!i2v?.ok,
-    animateWhy: i2v?.ok ? null : MSG_I2V_SETUP,
+    canAnimate: free && asset.kind === "lineart" && !hasDerived(assets, asset.id, "animated") && !!i2v?.ok && !laptop,
+    animateWhy: laptop ? MAKE_ON_DESKTOP : i2v?.ok ? null : MSG_I2V_SETUP,
     removable,
     removeLabel: conflict ? "Remove" : "Remove this version",
     canRemove: free && removable,
@@ -169,7 +176,7 @@ function narrationSection(n, actions) {
 // onCamera: { estimates, photosOk, ui } for the On camera step (oncamera.onCameraModel).
 // part1: the Part 1 step (part1.part1Model), passed while the film has no Part 1 handover. Until it is approved the
 // review shows only the film heading and that step; once approved the step stays above the Part 2 sections.
-export function reviewModel({ part1 = null, film, state, layout = "script", making = false, listError = null, cardErrors = new Map(), pending = new Set(), noteFor = null, openError = null, prefError = null, i2v = null, removeFor = null, narration = null, playing = null, paused = false, audio, sa = null, audioUi = {}, mixUi = {}, lineScript = null, transcript = null, transcriptAt, onCamera = {}, part2Ui = {} }) {
+export function reviewModel({ part1 = null, film, state, layout = "script", making = false, listError = null, cardErrors = new Map(), pending = new Set(), noteFor = null, openError = null, prefError = null, i2v = null, removeFor = null, narration = null, playing = null, paused = false, audio, sa = null, audioUi = {}, mixUi = {}, lineScript = null, transcript = null, transcriptAt, onCamera = {}, part2Ui = {}, role = "desktop" }) {
   if (openError) return { openFailed: true, dir: openError.dir, title: openError.title, message: `Couldn't open ${openError.title}: ${openError.message}` };
   if (!film) return { noFilm: true };
   if (part1 && !part1.approved) return { noFilm: false, part1Only: true, title: film.title, eyebrow: `${film.title} / Part 1 script / review`, part1 };
@@ -178,7 +185,7 @@ export function reviewModel({ part1 = null, film, state, layout = "script", maki
   const shots = ordered.filter((a) => a.kind !== "presenter");
   const oc = onCamera ?? {};
   const cardFor = (a) => cardModel(a, assets, { pending: pending.has(a.id), error: cardErrors.get(a.id) ?? null, i2v, confirmRemove: removeFor === a.id,
-    state, transcript, transcriptAt, estimates: oc.estimates ?? null, confirm: oc.ui?.confirm ?? null });
+    state, transcript, transcriptAt, estimates: oc.estimates ?? null, confirm: oc.ui?.confirm ?? null, role });
   const onCam = lineScript || state?.presenter?.lines?.length ? {
     ...onCameraModel({ state, lineScript, transcript, estimates: oc.estimates ?? {}, photosOk: !!oc.photosOk, ui: oc.ui ?? {} }),
     // In line-script order (lineIndex is the line script's), not among the b-roll.
@@ -197,7 +204,7 @@ export function reviewModel({ part1 = null, film, state, layout = "script", maki
     making,
     listError,
     narration: narrationModel(narration, playing),
-    audio: audioModel(audio === undefined ? state?.audio : audio, { pending, cardErrors, noteFor, playing, sa, ...audioUi }),
+    audio: audioModel(audio === undefined ? state?.audio : audio, { pending, cardErrors, noteFor, playing, sa, role, ...audioUi }),
     mix: mixModel({ state, narration, pending, cardErrors, noteFor, playing, settings: mixUi.settings ?? {}, jobs: mixUi.jobs ?? [], ui: mixUi.ui ?? {}, pacingUi: mixUi.pacing ?? {} }),
     summary: summarize(shots), // b-roll only: clips are counted in On camera
     part2: part2Model({ state, ui: part2Ui }),
@@ -264,12 +271,18 @@ function controls(c, model, actions) {
       onclick: () => { if (!o.pressed) actions.setTool(c.id, o.tool); } }, o.label))) : null;
   const row = [takes];
   if (c.locked) row.push(h("span", { class: "locked", text: c.lockText }));
+  else if (c.onDesktop && !c.takes.length) row.push(btn(c.onDesktop, () => {}, { disabled: true }));
   else if (c.canMakeFirst || (!c.takes.length && (c.busy || c.pending))) {
     row.push(btn(c.clip ? c.clip.makeLabel : "Make first take", () => actions.first(c.id), { disabled: !c.canMakeFirst || (c.clip && !c.clip.costReady) }));
   }
   else if (c.approved) row.push(h("span", { class: "ok-tag", text: "\u2713 Approved" }), btn("Undo", () => actions.unapprove(c.id), { ghost: true, disabled: !c.canUndo }));
-  else row.push(btn("Approve", () => actions.approve(c.id), { disabled: !c.canApprove }), btn("Redo\u2026", () => actions.openNote(c.id), { ghost: true, disabled: !c.canRedo }));
-  if (c.can3d) row.push(btn("Make 3D in Blender", () => actions.make3d(c.id), { ghost: true }));
+  else row.push(btn("Approve", () => actions.approve(c.id), { disabled: !c.canApprove }),
+    c.onDesktop ? btn(c.onDesktop, () => {}, { ghost: true, disabled: true }) : btn("Redo\u2026", () => actions.openNote(c.id), { ghost: true, disabled: !c.canRedo }));
+  if (c.can3d || (c.show3d && c.why3d)) {
+    const b = btn("Make 3D in Blender", () => actions.make3d(c.id), { ghost: true, disabled: !c.can3d });
+    if (c.why3d) b.setAttribute("title", c.why3d);
+    row.push(b);
+  }
   if (c.showAnimate) {
     const b = btn("Animate with ComfyUI", () => actions.animate(c.id), { ghost: true, disabled: !c.canAnimate });
     if (c.animateWhy) b.setAttribute("title", c.animateWhy);

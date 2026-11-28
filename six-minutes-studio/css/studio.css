@@ -379,3 +379,18 @@ textarea{width:100%;background:var(--s0);color:var(--ink);border:1px solid var(-
 .p1notes ul{margin:2px 0 0;padding-left:1.4em;color:var(--mut)}
 .p1ep{font-size:14px}
 .p1 .h3row{margin:12px 0 0}
+/* Probe: this computer and the fix buttons under a row */
+.checks li.role .st{color:var(--tide)}
+.checks li.role .fixbtns{grid-column:2}
+.checks li.install.role{grid-template-columns:minmax(0,1fr)}
+.checks li.fix{grid-template-columns:minmax(0,1fr);margin-top:-6px;border-top-style:dashed}
+.checks li.fix .detail{grid-column:auto}
+.fixbtns{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.fixbtns[hidden]{display:none}
+.fixarea:empty{display:none}
+.fixpanel{display:flex;flex-direction:column;align-items:flex-start;gap:8px}
+.fixpicks{display:flex;flex-direction:column;align-items:stretch;gap:4px;align-self:stretch}
+.fixpick{text-align:left;text-transform:none;letter-spacing:0;font-weight:400;font-size:13px;overflow-wrap:anywhere}
+.fixpick.on{border-color:var(--brass)}
+.fixtype{display:flex;flex-wrap:wrap;gap:8px;align-self:stretch;align-items:center}
+.fixpath{flex:1 1 16em;background:var(--s0);color:var(--ink);border:1px solid var(--rule);font:13px Inter,"Helvetica Neue",Arial,sans-serif;padding:6px 8px}

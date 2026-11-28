@@ -346,3 +346,288 @@ test("Pronunciations: passes when the file exists, else a warning (not a failure
   assert.equal(ok.ok, true);
   assert.equal(ok.detail, "S:\\ref\\pronunciations.md");
 });
+
+// ---- Task 7: this computer, project folder, fix buttons ----
+import { fixesFor, choicePatch, roleLine, saveRoot, choosePanel, mountProbe, probeRow, ROLE_QUESTION, ON_DESKTOP, GRAPHICS_ROWS } from "../js/ui/probe.js";
+import { GET_IT } from "../js/findtools.js";
+
+function withDom(fn) {
+  const mk = (tag) => {
+    const el = { tag, attrs: {}, children: [], listeners: {}, style: {}, className: "", textContent: "", value: "",
+      setAttribute(k, v) { this.attrs[k] = v; }, getAttribute(k) { return this.attrs[k] ?? null; },
+      addEventListener(k, f) { (this.listeners[k] ||= []).push(f); },
+      append(...k) { this.children.push(...k); }, replaceChildren(...k) { this.children = [...k]; } };
+    Object.setPrototypeOf(el, globalThis.Node.prototype);
+    return el;
+  };
+  const saved = { d: globalThis.document, n: globalThis.Node };
+  globalThis.Node = class {};
+  globalThis.document = { createElement: mk, createTextNode: (t) => ({ t }) };
+  return Promise.resolve().then(fn).finally(() => { globalThis.document = saved.d; globalThis.Node = saved.n; });
+}
+const all = (el, pred, out = []) => {
+  if (!el || typeof el !== "object") return out;
+  if (pred(el)) out.push(el);
+  for (const c of el.children ?? []) all(c, pred, out);
+  return out;
+};
+const textOf = (el) => (el.textContent ?? "") + (el.children ?? []).map((c) => (c.t ?? textOf(c))).join("");
+const buttonsIn = (el) => all(el, (x) => x.tag === "button");
+const byText = (el, t) => buttonsIn(el).find((b) => textOf(b) === t);
+const press = async (el) => { for (const f of el.listeners.click ?? []) await f({}); if (el.onclick) await el.onclick({}); };
+const fakeList = () => { const l = { children: [], replaceChildren(...k) { l.children = [...k]; }, append(...k) { l.children.push(...k); } }; return l; };
+const allOk = (host) => { host.spawnScript((cmd, args, o, p) => { p.out("ok 1.0"); p.exit(0); }); host.fs.list = async () => []; };
+
+test("the project folder row replaces the two root rows and passes with the path in use", async () => {
+  const names = makeChecks({}, "N:\\Youtube video ideas").map((c) => c.name);
+  assert.ok(!names.includes("S: root readable") && !names.includes("UNC root readable"));
+  assert.equal(names[0], "Project folder");
+  const host = new FakeHost();
+  allOk(host);
+  const rows = await runChecks(host, () => {}, {}, "N:\\Youtube video ideas");
+  const pf = named(rows, "Project folder");
+  assert.equal(pf.ok, true);
+  assert.equal(pf.detail, "N:\\Youtube video ideas");
+  const gone = named(await runChecks(host, () => {}, {}, "N:\\Youtube video ideas", { chosenMissing: "M:\\Films" }), "Project folder");
+  assert.equal(gone.ok, false);
+  assert.equal(gone.detail, "Can't reach the project folder you chose (M:\\Films)");
+  assert.equal(gone.chooseRoot, true);
+  host.fs.list = async () => { throw new Error("ENOENT"); };
+  const none = named(await runChecks(host, () => {}, {}, "S:\\Youtube video ideas"), "Project folder");
+  assert.equal(none.ok, false);
+  assert.equal(none.chooseRoot, true);
+});
+
+test("on a laptop the graphics rows are neutral On the desktop and aren't run; Set up here anyway runs one", async () => {
+  assert.deepEqual(GRAPHICS_ROWS, ["Blender", "ComfyUI", "Animate workflow", "Stable Audio"]);
+  const host = new FakeHost();
+  const spawned = [];
+  host.spawnScript((cmd, args, o, p) => { spawned.push(cmd); p.out("ok"); p.exit(0); });
+  host.fs.list = async () => [];
+  const s = { ...settings, role: "laptop" };
+  let rows = await runChecks(host, () => {}, s);
+  for (const n of GRAPHICS_ROWS) {
+    const r = named(rows, n);
+    assert.equal(r.ok, false);
+    assert.equal(r.neutral, true);
+    assert.equal(r.onDesktop, true);
+    assert.equal(r.detail, ON_DESKTOP);
+    assert.deepEqual(fixesFor(r), []);
+  }
+  assert.ok(!spawned.includes(settings.blenderPath));
+  rows = await runChecks(host, () => {}, s, undefined, { here: new Set(["Blender"]) });
+  assert.equal(named(rows, "Blender").ok, true);
+  assert.ok(spawned.includes(settings.blenderPath));
+  assert.equal(named(rows, "ComfyUI").onDesktop, true);
+  // On the desktop nothing changes.
+  rows = await runChecks(host, () => {}, settings);
+  assert.ok(!rows.some((r) => r.onDesktop));
+  await withDom(() => {
+    const li = probeRow({ name: "Blender", ok: false, neutral: true, onDesktop: true, detail: ON_DESKTOP });
+    assert.equal(li.className, "neutral");
+    assert.equal(textOf(li.children[2]), ON_DESKTOP);
+  });
+});
+
+test("fix buttons by kind for failing rows; passing and neutral rows get none", () => {
+  const f = (name, o = {}) => fixesFor({ name, ok: false, detail: "x", ...o }).map((x) => [x.type, x.kind, x.label]);
+  const choose = (k) => ["choose", k, "Choose where it is…"];
+  const get = (k) => ["get", k, "Get it"];
+  const install = (k) => ["install", k, "Install here…"];
+  assert.deepEqual(f("ffmpeg"), [choose("ffmpeg"), get("ffmpeg")]);
+  assert.deepEqual(f("Blender"), [choose("blender"), get("blender")]);
+  assert.deepEqual(f("ComfyUI"), [get("comfyui")]);
+  assert.deepEqual(f("Stable Audio"), [["get", "pinokio", "Get it: Pinokio"]]);
+  assert.deepEqual(f("Stem Remixer"), [choose("stemremixer"), install("stemremixer")]);
+  assert.deepEqual(f("Autocue join"), [choose("autocue"), install("autocue")]);
+  assert.deepEqual(f("Python for installs"), [choose("python"), get("python")]);
+  assert.deepEqual(f("Project folder"), [["root", null, "Choose…"]]);
+  assert.deepEqual(f("Project folder", { ok: true }), [["root", null, "Choose…"]]);
+  assert.deepEqual(f("curl"), []);
+  assert.deepEqual(fixesFor({ name: "ffmpeg", ok: true, detail: "ok" }), []);
+  assert.deepEqual(fixesFor({ name: "Animate workflow", ok: false, neutral: true, detail: "x" }), []);
+  for (const x of fixesFor({ name: "Blender", ok: false })) if (x.type === "get") assert.equal(x.url, GET_IT.blender);
+  assert.equal(fixesFor({ name: "Stable Audio", ok: false })[0].url, "https://pinokio.computer/");
+});
+
+test("a choice saves the setting for its kind", () => {
+  assert.deepEqual(choicePatch("ffmpeg", "D:\\ffmpeg\\bin\\ffmpeg.exe"), { ffmpegPath: "D:\\ffmpeg\\bin\\ffmpeg.exe" });
+  assert.deepEqual(choicePatch("blender", "D:\\B\\blender.exe"), { blenderPath: "D:\\B\\blender.exe" });
+  assert.deepEqual(choicePatch("python", "C:\\Py\\python.exe"), { autocuePython: "C:\\Py\\python.exe" });
+  assert.deepEqual(choicePatch("autocue", "D:\\Apps\\Autocue Studio"), { autocueDir: "D:\\Apps\\Autocue Studio", autocueRecordings: "D:\\Apps\\Autocue Studio\\Recordings" });
+  assert.deepEqual(choicePatch("stemremixer", "D:\\Apps\\Stem Remixer"), { stemRemixerDir: "D:\\Apps\\Stem Remixer" });
+});
+
+test("this computer's line names it and its role", () => {
+  assert.equal(roleLine("LAPTOP-JON", "laptop"), "LAPTOP-JON · Laptop (scripts and audio)");
+  assert.equal(roleLine("DESK", "desktop"), "DESK · Desktop (everything)");
+  assert.equal(roleLine("DESK", undefined), "DESK · Desktop (everything)");
+});
+
+const setupFor = (o = {}) => {
+  const calls = [];
+  return { calls, setup: {
+    computer: () => "LAPTOP-JON", roleNeeded: async () => false, chosenMissing: () => null,
+    save: async (patch) => { calls.push(["save", patch]); }, chooseRoot: async (p) => { calls.push(["root", p]); },
+    install: async (opts) => { calls.push(["install", opts]); }, ...o } };
+};
+
+test("Probe asks the role question first when needed, and only that, until answered", () => withDom(async () => {
+  assert.equal(ROLE_QUESTION, "Is this computer the desktop (everything) or a laptop (scripts and audio)?");
+  const host = new FakeHost();
+  const spawned = [];
+  host.spawnScript((cmd, args, o, p) => { spawned.push(cmd); p.out("ok"); p.exit(0); });
+  host.fs.list = async () => [];
+  let needed = true;
+  const s = { ...settings };
+  const { calls, setup } = setupFor({ roleNeeded: async () => needed, save: async (patch) => { calls.push(["save", patch]); needed = false; Object.assign(s, patch); } });
+  const list = fakeList();
+  const button = {};
+  mountProbe(host, button, list, () => s, null, () => ({}), null, null, () => null, setup);
+  await button.onclick();
+  assert.equal(list.children.length, 1);
+  assert.match(textOf(list.children[0]), /Is this computer the desktop \(everything\) or a laptop \(scripts and audio\)\?/);
+  assert.equal(spawned.length, 0);
+  assert.deepEqual(buttonsIn(list.children[0]).map(textOf), ["Desktop (everything)", "Laptop (scripts and audio)"]);
+  await press(byText(list.children[0], "Laptop (scripts and audio)"));
+  assert.deepEqual(calls[0], ["save", { role: "laptop" }]);
+  // Probe ran again: This computer first, then the checks.
+  const first = list.children[0];
+  assert.match(textOf(first), /This computer/);
+  assert.match(textOf(first), /LAPTOP-JON · Laptop \(scripts and audio\)/);
+  assert.ok(list.children.length > 5);
+}));
+
+test("This computer's Change saves the other role, then Probe runs again", () => withDom(async () => {
+  const host = new FakeHost();
+  allOk(host);
+  const { calls, setup } = setupFor();
+  const list = fakeList();
+  const button = {};
+  let runs = 0;
+  mountProbe(host, button, list, () => { runs++; return { ...settings, role: "desktop" }; }, null, () => ({}), null, null, () => null, setup);
+  await button.onclick();
+  const first = list.children[0];
+  assert.match(textOf(first), /Desktop \(everything\)/);
+  await press(byText(first, "Change"));
+  await press(byText(first, "Laptop (scripts and audio)"));
+  assert.deepEqual(calls.at(-1), ["save", { role: "laptop" }]);
+  assert.equal(runs, 2);
+}));
+
+test("Choose… on the project folder lists the folders found, marks the one in use, and saves a pick", () => withDom(async () => {
+  const host = new FakeHost();
+  allOk(host);
+  const raw = new FakeHost();
+  await raw.fs.mkdir("N:\\Youtube video ideas");
+  await raw.fs.mkdir("S:\\Youtube video ideas");
+  const { calls, setup } = setupFor({ rawHost: () => raw });
+  const list = fakeList();
+  const button = {};
+  mountProbe(host, button, list, () => settings, null, () => ({}), null, null, () => "S:\\Youtube video ideas", setup);
+  await button.onclick();
+  const i = list.children.findIndex((li) => /^PassProject folder/.test(textOf(li)));
+  const row = list.children[i + 1];
+  await press(byText(row, "Choose…"));
+  const picks = buttonsIn(row).map(textOf);
+  assert.ok(picks.includes("N:\\Youtube video ideas"));
+  assert.ok(picks.includes("S:\\Youtube video ideas (in use)"));
+  await press(byText(row, "N:\\Youtube video ideas"));
+  assert.deepEqual(calls.at(-1), ["root", "N:\\Youtube video ideas"]);
+}));
+
+test("saveRoot keeps the choice on this computer and records it for the others", async () => {
+  const host = new FakeHost();
+  host.spawnScript((cmd, args, o, p) => {
+    const a = args.join(" ");
+    if (/APPDATA/.test(a)) { p.out("C:\\Users\\J\\AppData\\Roaming"); p.exit(0); } else p.exit(1);
+  });
+  const N = "N:\\Youtube video ideas";
+  await host.fs.mkdir(N);
+  await host.fs.write(N + "\\.studio-settings.json", JSON.stringify({ blenderPath: "blender" }));
+  await saveRoot(host, "LAPTOP-JON", N, { now: new Date(2026, 10, 28, 9).getTime() });
+  const local = JSON.parse(await host.fs.read("C:\\Users\\J\\AppData\\Roaming\\Six Minutes Studio\\computer.json", "utf8"));
+  assert.equal(local.root, N);
+  const saved = JSON.parse(await host.fs.read(N + "\\.studio-settings.json", "utf8"));
+  assert.equal(saved.blenderPath, "blender");
+  assert.deepEqual(saved.computers, { "LAPTOP-JON": { root: N } });
+});
+
+test("Choose where it is…: candidates as buttons plus a typed path; a failed check shows why and saves nothing", () => withDom(async () => {
+  const host = new FakeHost();
+  host.spawnScript((cmd, args, o, p) => {
+    if (cmd === "where") { p.out("C:\\ff\\ffmpeg.exe\r\n"); p.exit(0); return; }
+    if (cmd === "C:\\ff\\ffmpeg.exe") { p.out("ffmpeg version 7.1"); p.exit(0); return; }
+    p.err("not found"); p.exit(1);
+  });
+  await host.fs.mkdir("C:\\ff");
+  await host.fs.write("C:\\ff\\ffmpeg.exe", "");
+  const saves = [];
+  let reran = 0;
+  const panel = await choosePanel(host, "ffmpeg", async (patch) => { saves.push(patch); }, async () => { reran++; });
+  const typed = all(panel, (x) => x.tag === "input")[0];
+  typed.value = "D:\\nope\\ffmpeg.exe";
+  await press(byText(panel, "Use this"));
+  assert.equal(saves.length, 0);
+  assert.match(textOf(panel), /exit 1: not found/);
+  await press(byText(panel, "C:\\ff\\ffmpeg.exe"));
+  assert.deepEqual(saves, [{ ffmpegPath: "C:\\ff\\ffmpeg.exe" }]);
+  assert.equal(reran, 1);
+}));
+
+test("a failing ffmpeg row in Probe gets Choose where it is… and Get it; Get it opens the page", () => withDom(async () => {
+  const host = new FakeHost();
+  const spawned = [];
+  host.spawnScript((cmd, args, o, p) => { spawned.push([cmd, ...args]); if (cmd === "ffmpeg") { p.err("ENOENT"); p.exit(null); } else { p.out("ok"); p.exit(0); } });
+  host.fs.list = async () => [];
+  const { setup } = setupFor();
+  const list = fakeList();
+  const button = {};
+  mountProbe(host, button, list, () => settings, null, () => ({}), null, null, () => null, setup);
+  await button.onclick();
+  const i = list.children.findIndex((li) => /^Failffmpeg/.test(textOf(li)));
+  assert.ok(i > 0);
+  const fix = list.children[i + 1];
+  assert.deepEqual(buttonsIn(fix).map(textOf), ["Choose where it is…", "Get it"]);
+  await press(byText(fix, "Get it"));
+  assert.deepEqual(spawned.at(-1), ["cmd", "/c", "start", "", GET_IT.ffmpeg]);
+}));
+
+test("Install here… without a working Python says Set up Python first and does nothing else", () => withDom(async () => {
+  const host = new FakeHost();
+  host.spawnScript((cmd, args, o, p) => { if (cmd === "python") { p.err("not found"); p.exit(1); } else { p.out("ok"); p.exit(0); } });
+  host.fs.list = async () => [];
+  const { calls, setup } = setupFor();
+  const list = fakeList();
+  const button = {};
+  mountProbe(host, button, list, () => ({ ...settings, stemRemixerDir: null }), null, () => ({}), null, null, () => null, setup);
+  await button.onclick();
+  const py = named(list.children.map((li) => ({ name: textOf(li.children[1] ?? {}), li })), "Python for installs");
+  assert.ok(py, "a Python for installs row appears when an install may be needed");
+  const i = list.children.findIndex((li) => /^FailStem Remixer/.test(textOf(li)));
+  const fix = list.children[i + 1];
+  await press(byText(fix, "Install here…"));
+  assert.ok(/Set up Python first/.test(textOf(fix)));
+  assert.equal(calls.filter((c) => c[0] === "install").length, 0);
+}));
+
+test("Install here… asks for the parent folder (D:\\Apps when D: exists), shows each step, then Probe runs again", () => withDom(async () => {
+  const host = new FakeHost();
+  allOk(host);
+  await host.fs.mkdir("D:\\");
+  const steps = [];
+  const { calls, setup } = setupFor({ install: async (opts) => { calls.push(["install", { app: opts.app, parent: opts.parent, python: opts.python }]); opts.onStep("Downloading…"); steps.push("x"); } });
+  const list = fakeList();
+  const button = {};
+  let runs = 0;
+  mountProbe(host, button, list, () => { runs++; return { ...settings, stemRemixerDir: null, autocuePython: "python" }; }, null, () => ({}), null, null, () => null, setup);
+  await button.onclick();
+  const i = list.children.findIndex((li) => /^FailStem Remixer/.test(textOf(li)));
+  const fix = list.children[i + 1];
+  await press(byText(fix, "Install here…"));
+  const field = all(fix, (x) => x.tag === "input")[0];
+  assert.equal(field.value, "D:\\Apps");
+  await press(byText(fix, "Install"));
+  assert.deepEqual(calls.at(-1), ["install", { app: "stemremixer", parent: "D:\\Apps", python: "python" }]);
+  assert.equal(runs, 2);
+}));
