@@ -225,8 +225,11 @@ export async function saveRoot(rawHost, computer, path, { now } = {}) {
   const store = localStore(rawHost);
   let local = {};
   try { local = (await store.read()) ?? {}; } catch { /* nothing kept yet */ }
-  await store.write({ ...local, root: path });
-  await saveComputerSettings(rawHost, path, computer, { root: path }, now === undefined ? undefined : { now });
+  // where: which write failed ("local": nothing changed; "shared": kept here, not recorded for the others).
+  try { await store.write({ ...local, root: path }); }
+  catch (e) { throw Object.assign(new Error(String(e?.message ?? e)), { where: "local" }); }
+  try { await saveComputerSettings(rawHost, path, computer, { root: path }, now === undefined ? undefined : { now }); }
+  catch (e) { throw Object.assign(new Error(String(e?.message ?? e)), { where: "shared" }); }
 }
 
 const say = (el, t) => { el.textContent = t; };
@@ -276,10 +279,10 @@ async function rootPanel(rawHost, inUse, chooseRoot, rerun) {
 
 const parentDefault = async (host) => { try { return (await host.fs.exists("D:\\")) ? "D:\\Apps" : "C:\\Apps"; } catch { return "C:\\Apps"; } };
 
-// "Install here…": needs a Python that runs; asks for the parent folder, shows each step, then Probe runs again.
+// "Install here…": Autocue Studio needs a Python that runs (Stem Remixer's installer sees to its own); asks for the parent folder, shows each step, then Probe runs again.
 async function installPanel(host, app, python, install, rerun) {
   const msg = h("span", { class: "detail" });
-  const py = await checkChoice(host, "python", python);
+  const py = app === "autocue" ? await checkChoice(host, "python", python) : { ok: true };
   if (!py.ok) {
     return h("div", { class: "fixpanel" },
       h("div", { class: "fixtype" }, btn("Set up Python first", () => {}, { disabled: true }), btn("Get it", () => openLink(host, GET_IT.python).catch((e) => say(msg, String(e?.message ?? e))), { ghost: true })),
@@ -304,7 +307,11 @@ async function installPanel(host, app, python, install, rerun) {
 
 function fixRow(host, r, ctx) {
   const area = h("div", { class: "fixarea" });
-  const open = async (make) => { area.replaceChildren(h("span", { class: "detail", text: "Looking\u2026" })); area.replaceChildren(await make()); };
+  const open = async (make) => {
+    area.replaceChildren(h("span", { class: "detail", text: "Looking\u2026" }));
+    try { area.replaceChildren(await make()); }
+    catch (e) { area.replaceChildren(h("span", { class: "err", text: `Something went wrong: ${e?.message ?? e}` })); }
+  };
   const buttons = [];
   if (r.onDesktop) {
     buttons.push(btn("Set up here anyway", () => { ctx.here.add(r.name); return ctx.rerun(); }, { ghost: true }));
@@ -319,21 +326,33 @@ function fixRow(host, r, ctx) {
   return h("li", { class: "install fix" }, h("div", { class: "fixbtns" }, buttons), area);
 }
 
+// A role save that fails says so in its row (on success Probe runs again and the row is replaced).
+const savingTo = (msg, save) => async (patch) => {
+  say(msg, "Saving\u2026");
+  try { await save(patch); }
+  catch (e) { say(msg, `Couldn't save: ${e?.message ?? e}`); }
+};
+
 function roleQuestionRow(save) {
+  const msg = h("span", { class: "err" });
+  const go = savingTo(msg, save);
   return h("li", { class: "install role" },
     h("span", { class: "detail", text: ROLE_QUESTION }),
-    h("div", { class: "fixbtns" }, ["desktop", "laptop"].map((k) => btn(ROLE_LABEL[k], () => save({ role: k })))));
+    h("div", { class: "fixbtns" }, ["desktop", "laptop"].map((k) => btn(ROLE_LABEL[k], () => go({ role: k })))),
+    msg);
 }
 
 function roleRow(computer, role, save) {
+  const msg = h("span", { class: "err" });
+  const go = savingTo(msg, save);
   const pick = h("div", { class: "fixbtns", hidden: true }, ["desktop", "laptop"].map((k) =>
-    h("button", { type: "button", class: "btn ghost", "aria-pressed": String(k === role), onclick: () => (k === role ? (pick.hidden = true) : save({ role: k })) }, ROLE_LABEL[k])));
+    h("button", { type: "button", class: "btn ghost", "aria-pressed": String(k === role), onclick: () => (k === role ? (pick.hidden = true) : go({ role: k })) }, ROLE_LABEL[k])));
   const change = btn("Change", () => { pick.hidden = !pick.hidden; }, { ghost: true });
   return h("li", { class: "pass role" },
     h("span", { class: "st", text: "Set" }),
     h("span", { text: "This computer" }),
     h("span", { class: "detail" }, roleLine(computer, role), " ", change),
-    pick);
+    pick, msg);
 }
 
 export function probeRow(r) {
@@ -383,8 +402,8 @@ export function mountProbe(host, button, list, getSettings = () => DEFAULT_SETTI
       if (fix) list.append(fix);
     };
     const results = await runChecks(host, show, settings, root, { here, chosenMissing: setup?.chosenMissing?.() ?? null });
-    // Installing Jon's apps needs a Python that runs: shown when one of them isn't set up.
-    if (setup && results.some((r) => !r.ok && (r.name === "Stem Remixer" || r.name === "Autocue join"))) {
+    // Installing Autocue Studio needs a Python that runs: shown when Autocue join isn't set up.
+    if (setup && results.some((r) => !r.ok && r.name === "Autocue join")) {
       const py = await runOne(host, { name: "Python for installs", run: cmdCheck(ctx.python, ["--version"]) });
       results.push(py);
       show(py);

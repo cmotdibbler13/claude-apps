@@ -593,23 +593,72 @@ test("a failing ffmpeg row in Probe gets Choose where it is… and Get it; Get i
   assert.deepEqual(spawned.at(-1), ["cmd", "/c", "start", "", GET_IT.ffmpeg]);
 }));
 
-test("Install here… without a working Python says Set up Python first and does nothing else", () => withDom(async () => {
+test("Autocue's Install here… without a working Python says Set up Python first and does nothing else", () => withDom(async () => {
   const host = new FakeHost();
   host.spawnScript((cmd, args, o, p) => { if (cmd === "python") { p.err("not found"); p.exit(1); } else { p.out("ok"); p.exit(0); } });
   host.fs.list = async () => [];
   const { calls, setup } = setupFor();
   const list = fakeList();
   const button = {};
-  mountProbe(host, button, list, () => ({ ...settings, stemRemixerDir: null }), null, () => ({}), null, null, () => null, setup);
+  mountProbe(host, button, list, () => ({ ...settings, autocueDir: "D:\\nowhere" }), null, () => ({}), null, null, () => null, setup);
   await button.onclick();
-  const py = named(list.children.map((li) => ({ name: textOf(li.children[1] ?? {}), li })), "Python for installs");
-  assert.ok(py, "a Python for installs row appears when an install may be needed");
-  const i = list.children.findIndex((li) => /^FailStem Remixer/.test(textOf(li)));
+  const py = list.children.find((li) => /^FailPython for installs/.test(textOf(li)));
+  assert.ok(py, "a Python for installs row appears when Autocue join fails");
+  const i = list.children.findIndex((li) => /^FailAutocue join/.test(textOf(li)));
   const fix = list.children[i + 1];
   await press(byText(fix, "Install here…"));
   assert.ok(/Set up Python first/.test(textOf(fix)));
   assert.equal(calls.filter((c) => c[0] === "install").length, 0);
 }));
+
+test("Stem Remixer's Install here… goes ahead with no Python (its installer sees to Python); no Python row for it alone", () => withDom(async () => {
+  const host = await srHost();
+  host.spawnScript((cmd, args, o, p) => { if (cmd === "python") { p.err("not found"); p.exit(1); } else { p.out("ok"); p.exit(0); } });
+  const { calls, setup } = setupFor();
+  const list = fakeList();
+  const button = {};
+  // Autocue join passes here, so only Stem Remixer fails: no Python row.
+  const results = [];
+  mountProbe(host, button, list, () => srSettings({ stemRemixerDir: null }), null, () => ({}), (r) => { results.push(...r); }, null, () => null, setup);
+  await button.onclick();
+  assert.equal(results.find((r) => r.name === "Autocue join").ok, true);
+  assert.ok(!results.some((r) => r.name === "Python for installs"));
+  const i = list.children.findIndex((li) => /^FailStem Remixer/.test(textOf(li)));
+  const fix = list.children[i + 1];
+  await press(byText(fix, "Install here…"));
+  assert.ok(!/Set up Python first/.test(textOf(fix)));
+  await press(byText(fix, "Install"));
+  assert.equal(calls.filter((c) => c[0] === "install").length, 1);
+  assert.equal(calls.find((c) => c[0] === "install")[1].app, "stemremixer");
+}));
+
+test("a role save that fails says so in the row", () => withDom(async () => {
+  const host = new FakeHost();
+  allOk(host);
+  const { setup } = setupFor({ roleNeeded: async () => true, save: async () => { throw new Error("disk full"); } });
+  const list = fakeList();
+  const button = {};
+  mountProbe(host, button, list, () => settings, null, () => ({}), null, null, () => null, setup);
+  await button.onclick();
+  await press(byText(list.children[0], "Laptop (scripts and audio)"));
+  assert.match(textOf(list.children[0]), /Couldn't save: disk full/);
+  const s2 = setupFor({ save: async () => { throw new Error("locked"); } }).setup;
+  mountProbe(host, button, list, () => settings, null, () => ({}), null, null, () => null, s2);
+  await button.onclick();
+  const first = list.children[0];
+  await press(byText(first, "Change"));
+  await press(byText(first, "Laptop (scripts and audio)"));
+  assert.match(textOf(first), /Couldn't save: locked/);
+}));
+
+test("saveRoot says which write failed", async () => {
+  const host = new FakeHost();
+  host.spawnScript((cmd, args, o, p) => { if (/APPDATA/.test(args.join(" "))) { p.out("C:\\A"); p.exit(0); } else p.exit(1); });
+  const N = "N:\\Youtube video ideas";
+  await host.fs.mkdir(N);
+  await host.fs.write(N + "\\.studio-settings.json", "{ not json");
+  await assert.rejects(saveRoot(host, "LAPTOP-JON", N), (e) => e.where === "shared");
+});
 
 test("Install here… asks for the parent folder (D:\\Apps when D: exists), shows each step, then Probe runs again", () => withDom(async () => {
   const host = new FakeHost();

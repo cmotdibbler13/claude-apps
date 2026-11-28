@@ -267,10 +267,11 @@ const probeSetup = {
   async chooseRoot(path) {
     let why = null;
     try { await saveRoot(app.rawHost, await thisComputer(), path); } catch (e) { why = e; }
+    if (why?.where === "local") throw new Error(`Couldn't save the choice on this computer, so nothing changed: ${msg(why)}`);
     await loadRoot();
     await reloadSettings();
     render();
-    if (why) throw new Error(`Studio is using ${path}, but couldn't record it in .studio-settings.json: ${msg(why)}`);
+    if (why) throw new Error(`Studio is using ${path} on this computer, but couldn't record it in .studio-settings.json for the other computers: ${msg(why)}`);
   },
   async install(opts) {
     needRoot();
