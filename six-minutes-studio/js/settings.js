@@ -1,10 +1,11 @@
 // Per-project tool settings from <root>\.studio-settings.json merged over defaults.
 import { join } from "./paths.js";
+import { applyComputer } from "./computer.js";
 
 export const DEFAULT_SETTINGS = {
   autocueRecordings: "C:\\Users\\Jon\\desktop autocue\\Recordings", autocueDir: "C:\\Users\\Jon\\desktop autocue",
   autocuePython: "python", stemRemixerDir: null, endCardS: 12, titleHoldS: 6, mixMusicDb: -26, mixSfxDb: -18,
-  videoModel: "kling3_0", imageModel: "gpt_image_2", blenderPath: "blender",
+  videoModel: "kling3_0", imageModel: "gpt_image_2", blenderPath: "blender", ffmpegPath: "ffmpeg",
   comfy: {
     url: "http://127.0.0.1:8188",
     outputDir: "C:\\Users\\Jon\\AppData\\Local\\Comfy-Desktop\\ComfyUI-Shared\\output",
@@ -59,11 +60,12 @@ function withDefaults(root, v = {}) {
   return out;
 }
 
-export async function loadSettings(host, root) {
+export async function loadSettings(host, root, { computer } = {}) {
+  let v = {};
   try {
-    const raw = await host.fs.read(join(root, ".studio-settings.json"), "utf8");
-    const v = JSON.parse(raw);
-    if (isObj(v)) return withDefaults(root, v);
+    const parsed = JSON.parse(await host.fs.read(join(root, ".studio-settings.json"), "utf8"));
+    if (isObj(parsed)) v = parsed;
   } catch { /* missing or unreadable: defaults */ }
-  return withDefaults(root);
+  const out = withDefaults(root, v);
+  return applyComputer(out, isObj(v.computers) ? v.computers[computer] : null, computer ?? null);
 }
