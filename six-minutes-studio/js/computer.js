@@ -1,7 +1,7 @@
 // This computer: its name, a small local record of which project folder it uses, and the settings
 // that belong to one computer only (everything else in .studio-settings.json is shared).
 import { runProcess } from "./proc.js";
-import { join, PRIMARY_ROOT } from "./paths.js";
+import { join, isHomeRoot } from "./paths.js";
 import { copyAside, writeSafely } from "./libraryio.js";
 
 export const PER_COMPUTER = ["role", "autocueDir", "autocueRecordings", "autocuePython", "blenderPath", "stemRemixerDir", "ffmpegPath", "autostart"];
@@ -80,10 +80,10 @@ export function applyComputer(out, entry, computer) {
 
 export const samePath = (a, b) => String(a ?? "").replace(/\\+$/, "").toLowerCase() === String(b ?? "").replace(/\\+$/, "").toLowerCase();
 
-// Ask the role when this computer's entry has none and it isn't the desktop on S: (which is the desktop by default).
+// Ask the role when this computer's entry has none and it isn't on S: or the network path (which is the desktop by default).
 // A computer whose name can't be read isn't asked: its answer couldn't be saved.
 export function roleNeeded(raw, computer, root) {
-  if (!root || computer === UNNAMED || samePath(root, PRIMARY_ROOT)) return false;
+  if (!root || computer === UNNAMED || isHomeRoot(root)) return false;
   const e = isObj(raw?.computers) ? raw.computers[computer] : null;
   return !(isObj(e) && typeof e.role === "string" && e.role);
 }

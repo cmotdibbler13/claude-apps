@@ -23,7 +23,7 @@ const samePath = (a, b) => trimSlash(a).toLowerCase() === trimSlash(b).toLowerCa
 // This computer's role, and the graphics rows a laptop leaves to the desktop.
 export const ROLE_LABEL = { desktop: "Desktop (everything)", laptop: "Laptop (scripts and audio)" };
 export const ROLE_QUESTION = "Is this computer the desktop (everything) or a laptop (scripts and audio)?";
-export const ROLE_RESTART = "Restart Studio: the job list moves to match the role at the next start.";
+export const ROLE_RESTART = "Restart Studio: it uses this role's job list from the next start.";
 export const ON_DESKTOP = "On the desktop";
 export const GRAPHICS_ROWS = ["Blender", "ComfyUI", "Animate workflow", "Stable Audio"];
 export const roleLine = (computer, role) => `${computer} \u00B7 ${ROLE_LABEL[role === "laptop" ? "laptop" : "desktop"]}`;

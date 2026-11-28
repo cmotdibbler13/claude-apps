@@ -379,6 +379,15 @@ test("a runner returning file and meta gives the job meta", async () => {
   assert.deepEqual(j.meta, meta);
 });
 
+test("jobsFile: a computer on S: or the network path with no role shares .studio-jobs.json; N: is unchanged", () => {
+  const U = "\\\\192.168.1.171\\jon\\Youtube video ideas";
+  assert.equal(jobsFile(U, { computer: "DESK" }), U + "\\.studio-jobs.json");
+  assert.equal(jobsFile(U, { computer: "DESK", roleNeeded: true }), U + "\\.studio-jobs.json");
+  assert.equal(jobsFile(ROOT, { computer: "DESK", roleNeeded: true }), FILE);
+  assert.equal(jobsFile(U, { role: "laptop", computer: "L" }), U + "\\.studio-jobs-L.json");
+  assert.equal(jobsFile("N:\\Youtube video ideas", { computer: "L", roleNeeded: true }), "N:\\Youtube video ideas\\.studio-jobs-L.json");
+});
+
 test("jobsFile: the desktop keeps .studio-jobs.json; a laptop has its own", () => {
   assert.equal(jobsFile(ROOT, { role: "desktop", computer: "DESK" }), FILE);
   assert.equal(jobsFile(ROOT, {}), FILE);

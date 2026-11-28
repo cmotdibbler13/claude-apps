@@ -517,7 +517,7 @@ test("This computer's Change saves the other role, then Probe runs again", () =>
 }));
 
 test("Probe says to restart Studio after the role is set, not before", () => withDom(async () => {
-  assert.equal(ROLE_RESTART, "Restart Studio: the job list moves to match the role at the next start.");
+  assert.equal(ROLE_RESTART, "Restart Studio: it uses this role's job list from the next start.");
   const host = new FakeHost();
   allOk(host);
   let needed = true;

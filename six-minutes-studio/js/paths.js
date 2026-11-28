@@ -21,6 +21,14 @@ export async function resolveRoot(host, { chosen } = {}) {
   return (await present(host, FALLBACK_ROOT)) ? FALLBACK_ROOT : null;
 }
 
+// The desktop's own two spellings of the project folder (S: and the network path): a computer on either
+// is the desktop by default, so it is never asked its role and shares .studio-jobs.json. Case-insensitive,
+// trailing slash ignored.
+export const isHomeRoot = (root) => {
+  const k = (p) => String(p ?? "").replace(/[\\/]+$/, "").toLowerCase();
+  return !!root && (k(root) === k(PRIMARY_ROOT) || k(root) === k(FALLBACK_ROOT));
+};
+
 // Every project folder found: C: to Z: and the network path.
 export async function candidateRoots(host) {
   const out = [];

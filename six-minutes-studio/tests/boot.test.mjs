@@ -103,6 +103,13 @@ test("liveHost follows whatever host is current", async () => {
   assert.equal("fs" in live, true);
 });
 
+test("rootToRecord: the network path to the project folder is never recorded", () => {
+  const U = "\\\\192.168.1.171\\jon\\Youtube video ideas";
+  assert.equal(rootToRecord({}, "DESK", U), false);
+  assert.equal(rootToRecord({}, "DESK", U.toUpperCase() + "\\"), false);
+  assert.equal(rootToRecord({}, "L", N), true);
+});
+
 test("rootToRecord: a computer on another folder records it once; the desktop on S: never writes", () => {
   const U = "\\\\192.168.1.171\\jon\\Youtube video ideas";
   // Desktop on S:, with or without entries.
@@ -113,7 +120,7 @@ test("rootToRecord: a computer on another folder records it once; the desktop on
   assert.equal(rootToRecord({}, "L", N), true);
   assert.equal(rootToRecord({ computers: { L: { role: "laptop" } } }, "L", N), true);
   assert.equal(rootToRecord({ computers: { L: { root: U } } }, "L", N), true);
-  assert.equal(rootToRecord({ computers: { L: { root: S } } }, "L", U), true);
+  assert.equal(rootToRecord({ computers: { L: { root: S } } }, "L", U), false); // the network path is the desktop's, never recorded
   // Already recorded (letter case and a trailing slash don't count).
   assert.equal(rootToRecord({ computers: { L: { root: N } } }, "L", N), false);
   assert.equal(rootToRecord({ computers: { L: { root: "n:\\youtube video ideas\\" } } }, "L", N), false);

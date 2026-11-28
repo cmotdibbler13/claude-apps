@@ -148,6 +148,13 @@ test("saveComputerSettings never overwrites an unreadable file", async () => {
   assert.equal(await host.fs.read(FILE, "utf8"), "{nope");
 });
 
+test("roleNeeded: the network path to the project folder is the desktop too, so it is never asked", () => {
+  const U = "\\\\192.168.1.171\\jon\\Youtube video ideas";
+  assert.equal(roleNeeded({}, "DESK", U), false);
+  assert.equal(roleNeeded({}, "DESK", U.toLowerCase() + "\\"), false);
+  assert.equal(roleNeeded({}, "L", "N:\\Youtube video ideas"), true);
+});
+
 test("roleNeeded: a computer with no role, not on S:, is asked; the desktop on S: never is", () => {
   const N = "N:\\Youtube video ideas";
   // The first second computer: nothing recorded yet.
