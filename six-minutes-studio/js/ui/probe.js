@@ -11,7 +11,7 @@ import { photoPicker } from "./photopick.js";
 import { MSG_SET_STEM_REMIXER } from "../tools/stemfit.js";
 import { readCatalogue } from "../libraryio.js";
 import { nextBrNumber } from "../library.js";
-import { GET_IT, openLink, findCandidates, checkChoice } from "../findtools.js";
+import { GET_IT, openLink, findCandidates, checkChoice, cleanPath } from "../findtools.js";
 import { unfinishedInstall } from "../installapps.js";
 import { candidateRoots } from "../paths.js";
 import { localStore, saveComputerSettings } from "../computer.js";
@@ -241,7 +241,7 @@ export async function choosePanel(host, kind, save, rerun) {
   const msg = h("span", { class: "detail" });
   const typed = h("input", { type: "text", class: "fixpath", placeholder: "Or type the full path", "aria-label": "Full path" });
   const pick = async (path) => {
-    const p = String(path ?? "").trim();
+    const p = cleanPath(path);
     if (!p) { say(msg, "Type the full path first."); return; }
     say(msg, "Checking\u2026");
     const r = await checkChoice(host, kind, p);
@@ -295,12 +295,12 @@ async function installPanel(host, app, python, install, rerun) {
   // An earlier install into this folder that didn't finish is finished rather than refused.
   const note = h("span", { class: "detail" });
   const label = async () => {
-    const left = await unfinishedInstall(host, String(parent.value ?? "").trim(), app).catch(() => null);
+    const left = await unfinishedInstall(host, cleanPath(parent.value), app).catch(() => null);
     go.replaceChildren(document.createTextNode(left ? "Finish the install" : "Install"));
     note.textContent = left ? `An earlier install into ${left} didn't finish.` : "";
   };
   const go = btn("Install", async () => {
-    const where = String(parent.value ?? "").trim();
+    const where = cleanPath(parent.value);
     if (!where) { say(msg, "Type the folder to install into."); return; }
     go.disabled = true;
     say(msg, "Starting\u2026");

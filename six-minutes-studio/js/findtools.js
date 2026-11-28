@@ -17,6 +17,9 @@ export async function openLink(host, url) {
   await runProcess(host, "cmd", ["/c", "start", "", url]);
 }
 
+// A typed or pasted path without surrounding spaces or quotes (Windows' Copy as path adds "…").
+export const cleanPath = (p) => String(p ?? "").trim().replace(/^(["'])(.*)\1$/, "$2").trim();
+
 const exists = async (host, p) => { try { return !!(await host.fs.exists(p)); } catch { return false; } };
 const lines = (s) => String(s).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
 const unique = (list) => { const seen = new Set(), out = []; for (const p of list) { const k = p.toLowerCase(); if (!seen.has(k)) { seen.add(k); out.push(p); } } return out; };
@@ -77,7 +80,18 @@ async function appFolders(host, word) {
 
 export async function findCandidates(host, kind) {
   let found = [];
-  if (kind === "ffmpeg") found = await where(host, "ffmpeg");
+  if (kind === "ffmpeg") {
+    found = await where(host, "ffmpeg");
+    // Unzipped builds (ffmpeg-…-full_build), at the top of a drive or in an Apps folder, possibly one level nested.
+    const parents = ["C:\\", "D:\\", "C:\\Apps", "D:\\Apps", "C:\\Program Files", "D:\\Program Files"];
+    const isFf = (n) => /^ffmpeg/i.test(n);
+    const nested = [];
+    for (const parent of parents) {
+      for (const name of await listDirs(host, parent)) if (isFf(name)) nested.push(join(parent, name));
+    }
+    const builds = [...await versioned(host, parents, isFf, ["bin"], "ffmpeg.exe"), ...await versioned(host, nested, isFf, ["bin"], "ffmpeg.exe")];
+    found.push(...builds.sort(newestFirst));
+  }
   else if (kind === "python") {
     found = await where(host, "python");
     const local = await envVar(host, "LOCALAPPDATA");

@@ -690,6 +690,20 @@ test("saveRoot says which write failed", async () => {
   await assert.rejects(saveRoot(host, "LAPTOP-JON", N), (e) => e.where === "shared");
 });
 
+test("a typed path in quotes (Copy as path) is used without the quotes", () => withDom(async () => {
+  const host = new FakeHost();
+  const checked = [];
+  host.spawnScript((cmd, args, o, p) => { if (cmd === "where") { p.exit(1); return; } checked.push(cmd); p.out("ffmpeg version 7"); p.exit(0); });
+  host.fs.list = async () => [];
+  const saved = [];
+  const panel = await choosePanel(host, "ffmpeg", async (patch) => { saved.push(patch); }, async () => {});
+  const field = all(panel, (x) => x.tag === "input")[0];
+  field.value = '"D:\\ff\\bin\\ffmpeg.exe"';
+  await press(byText(panel, "Use this"));
+  assert.ok(checked.includes("D:\\ff\\bin\\ffmpeg.exe"));
+  assert.deepEqual(saved, [{ ffmpegPath: "D:\\ff\\bin\\ffmpeg.exe" }]);
+}));
+
 test("an unfinished earlier install shows Finish the install instead of Install", () => withDom(async () => {
   const host = new FakeHost();
   allOk(host);
