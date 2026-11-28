@@ -398,3 +398,20 @@ test("jobsFile: the desktop keeps .studio-jobs.json; a laptop has its own", () =
   // A desktop on another folder stays on the shared list.
   assert.equal(jobsFile(N, { role: "desktop", computer: "DESK" }), N + "\\.studio-jobs.json");
 });
+
+test("setRemote persists the state; retry drops it", async () => {
+  let ctx;
+  const d = deferred();
+  const blender = { lane: "gpu", start: (j, c) => { ctx = c; return d.promise; } };
+  const { host, jobs } = await setup({ blender });
+  const id = jobs.add(spec("blender"));
+  await tick();
+  ctx.setRemote("waiting");
+  await jobs.flush();
+  assert.equal(jobs.list()[0].remote, "waiting");
+  assert.equal(JSON.parse(await host.fs.read(FILE, "utf8"))[0].remote, "waiting");
+  d.reject(new Error("x"));
+  await tick(); await tick();
+  const again = jobs.retry(id);
+  assert.equal(jobs.list().find((j) => j.id === again).remote, undefined);
+});

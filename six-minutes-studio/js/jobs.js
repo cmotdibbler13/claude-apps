@@ -59,6 +59,8 @@ export function makeJobs(host, { runners = {}, file } = {}) {
         changed(false);
       },
       setRef(ref) { job.jobRef = ref; changed(); },
+      // Where a job sent to another computer has got to; persisted, so call it only when the state changes.
+      setRemote(state) { job.remote = state; changed(); },
     };
   }
 
@@ -112,7 +114,7 @@ export function makeJobs(host, { runners = {}, file } = {}) {
         lane: spec.lane ?? runners[spec.tool]?.lane ?? "connector",
         status: "queued", progress: null, eta: null,
       };
-      delete job.file; delete job.meta; delete job.error; delete job.startedAt; delete job.endedAt; delete job.resumeNext;
+      delete job.file; delete job.meta; delete job.error; delete job.startedAt; delete job.endedAt; delete job.resumeNext; delete job.remote;
       jobs.push(job);
       changed();
       pump();
