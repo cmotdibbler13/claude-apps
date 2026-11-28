@@ -27,11 +27,13 @@ export function filmRow(film, jobs = []) {
 
 export const chosenMissingMessage = (path) => `Can't reach the project folder you chose (${path}). Choose another in Probe.`;
 
-export function filmsModel({ root, films = [], jobs = [], error = null, tools = null, chosenMissing = null }) {
+export const NEW_COMPUTER = "New computer: open Probe to set it up.";
+
+export function filmsModel({ root, films = [], jobs = [], error = null, tools = null, chosenMissing = null, roleNeeded = false }) {
   if (error) return { failed: true, unreachable: false, message: `Couldn't load your films: ${error}`, rows: [], empty: false };
   if (!root) return { unreachable: true, message: chosenMissing ? chosenMissingMessage(chosenMissing) : UNREACHABLE, rows: [], empty: false };
   const rows = films.map((f) => filmRow(f, jobs));
-  return { unreachable: false, message: null, rows, empty: rows.length === 0, tools: tools || null };
+  return { unreachable: false, message: null, rows, empty: rows.length === 0, tools: tools || null, note: roleNeeded ? NEW_COMPUTER : null };
 }
 
 const MARK = { done: "\u2713 ", now: "\u25CF ", none: "" };
@@ -53,6 +55,7 @@ export function render(el, model, actions) {
     h("div", { class: "head fhead" }, h("h1", { text: "Your films" }), btn("New film", () => actions.newFilm?.())),
     h("p", { class: "lede", text: "Each film shows where it is in your three parts, and anything waiting on you is in brass." }),
     model.tools ? h("p", { class: "hist tools", text: model.tools }) : null,
+    model.note ? h("p", { class: "hist note", text: model.note }) : null,
   ].filter(Boolean);
   if (model.unreachable || model.failed) {
     el.replaceChildren(...head, h("div", { class: "panel warn" },

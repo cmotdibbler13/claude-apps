@@ -1,12 +1,15 @@
 // This computer: its name, a small local record of which project folder it uses, and the settings
 // that belong to one computer only (everything else in .studio-settings.json is shared).
 import { runProcess } from "./proc.js";
-import { join } from "./paths.js";
+import { join, PRIMARY_ROOT } from "./paths.js";
 import { copyAside, writeSafely } from "./libraryio.js";
 
 export const PER_COMPUTER = ["role", "autocueDir", "autocueRecordings", "autocuePython", "blenderPath", "stemRemixerDir", "ffmpegPath", "autostart"];
 export const COMFY_KEYS = ["url", "outputDir", "exe"];
 const STORE_KEY = "sms.computer";
+// The name used when Windows' COMPUTERNAME can't be read: nothing is saved under it.
+export const UNNAMED = "THIS-PC";
+export const MSG_UNNAMED = "Studio couldn't read this computer's name, so it can't save settings for it.";
 
 const isObj = (v) => v && typeof v === "object" && !Array.isArray(v);
 
@@ -18,7 +21,7 @@ async function echo(host, name) {
 }
 
 export async function computerName(host) {
-  try { return (await echo(host, "COMPUTERNAME")).toUpperCase(); } catch { return "THIS-PC"; }
+  try { return (await echo(host, "COMPUTERNAME")).toUpperCase(); } catch { return UNNAMED; }
 }
 
 function browserStore() {
@@ -42,13 +45,17 @@ export function localStore(host) {
       } catch { return {}; }
     },
     async write(obj) {
+      let why;
       try {
         const { dir, path } = await file();
         await host.fs.mkdir(dir);
         await writeSafely(host, path, JSON.stringify(obj, null, 2));
         return;
-      } catch { /* fall back */ }
-      try { browserStore()?.setItem(STORE_KEY, JSON.stringify(obj)); } catch { /* nowhere to keep it */ }
+      } catch (e) { why = e; /* fall back */ }
+      const store = browserStore();
+      if (!store) throw new Error(`Nowhere on this computer to keep it (${why?.message ?? why}).`);
+      try { store.setItem(STORE_KEY, JSON.stringify(obj)); }
+      catch (e) { throw new Error(`Nowhere on this computer to keep it (${e?.message ?? e}).`); }
     },
   };
 }
@@ -71,16 +78,20 @@ export function applyComputer(out, entry, computer) {
   return out;
 }
 
-export function roleNeeded(raw, computer) {
-  const c = raw?.computers;
-  if (!isObj(c)) return false;
-  const names = Object.keys(c);
-  return names.length > 0 && !Object.prototype.hasOwnProperty.call(c, computer);
+export const samePath = (a, b) => String(a ?? "").replace(/\\+$/, "").toLowerCase() === String(b ?? "").replace(/\\+$/, "").toLowerCase();
+
+// Ask the role when this computer's entry has none and it isn't the desktop on S: (which is the desktop by default).
+// A computer whose name can't be read isn't asked: its answer couldn't be saved.
+export function roleNeeded(raw, computer, root) {
+  if (!root || computer === UNNAMED || samePath(root, PRIMARY_ROOT)) return false;
+  const e = isObj(raw?.computers) ? raw.computers[computer] : null;
+  return !(isObj(e) && typeof e.role === "string" && e.role);
 }
 
 const pad = (n) => String(n).padStart(2, "0");
 
 export async function saveComputerSettings(host, root, computer, patch, { now = host.now?.() ?? Date.now() } = {}) {
+  if (!computer || computer === UNNAMED) throw new Error(MSG_UNNAMED);
   for (const k of Object.keys(patch ?? {})) {
     if (k === "root" || k === "comfy" || k === "stableAudio" || PER_COMPUTER.includes(k)) continue;
     throw new Error(`${k} is shared by every computer.`);
@@ -110,5 +121,5 @@ export async function saveComputerSettings(host, root, computer, patch, { now = 
   let copied = false;
   try { copied = (await host.fs.list(root)).some((f) => f.name.toLowerCase().startsWith(prefix) && f.name.toLowerCase().endsWith(".json")); } catch { /* none */ }
   if (!copied) await copyAside(host, path, now);
-  await writeSafely(host, path, JSON.stringify({ ...raw, computers }, null, 2));
+  await writeSafely(host, path, JSON.stringify({ ...raw, computers }, null, 2) + "\n");
 }

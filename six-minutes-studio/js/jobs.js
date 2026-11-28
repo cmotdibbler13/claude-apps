@@ -2,7 +2,16 @@
 // jobRef or structural change; progress-only changes notify listeners but are not written.
 // A failed or interrupted job is never retried automatically; retry(id) adds a fresh job on request.
 // check(id) re-polls any job with a jobRef by its jobRef (spends nothing) on the same job record.
+import { join } from "./paths.js";
+
 const CAPS = { gpu: 1, connector: 3 };
+
+// The job list this computer keeps: the desktop's is <root>\.studio-jobs.json as always; a laptop (or a new
+// computer whose role isn't set yet) keeps its own, so two Studios never restore or overwrite each other's jobs.
+export function jobsFile(root, { role, computer, roleNeeded = false } = {}) {
+  const own = (role === "laptop" || roleNeeded) && computer;
+  return join(root, own ? `.studio-jobs-${computer}.json` : ".studio-jobs.json");
+}
 
 export function makeJobs(host, { runners = {}, file } = {}) {
   let jobs = [];

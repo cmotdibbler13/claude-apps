@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FakeHost } from "./fake-host.mjs";
-import { makeJobs } from "../js/jobs.js";
+import { makeJobs, jobsFile } from "../js/jobs.js";
 
 const ROOT = "S:\\Youtube video ideas";
 const FILE = ROOT + "\\.studio-jobs.json";
@@ -377,4 +377,15 @@ test("a runner returning file and meta gives the job meta", async () => {
   assert.equal(j.status, "done");
   assert.equal(j.file, "S:\\a.wav");
   assert.deepEqual(j.meta, meta);
+});
+
+test("jobsFile: the desktop keeps .studio-jobs.json; a laptop has its own", () => {
+  assert.equal(jobsFile(ROOT, { role: "desktop", computer: "DESK" }), FILE);
+  assert.equal(jobsFile(ROOT, {}), FILE);
+  const N = "N:\\Youtube video ideas";
+  assert.equal(jobsFile(N, { role: "laptop", computer: "LAPTOP-JON" }), N + "\\.studio-jobs-LAPTOP-JON.json");
+  // A new computer whose role isn't set yet never touches the desktop's list.
+  assert.equal(jobsFile(N, { role: "desktop", computer: "LAPTOP-JON", roleNeeded: true }), N + "\\.studio-jobs-LAPTOP-JON.json");
+  // A desktop on another folder stays on the shared list.
+  assert.equal(jobsFile(N, { role: "desktop", computer: "DESK" }), N + "\\.studio-jobs.json");
 });

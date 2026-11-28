@@ -47,10 +47,17 @@ test("localStore falls back to localStorage when the file can't be written", asy
     assert.deepEqual(await s.read(), { root: "N:\\x" });
   } finally { delete globalThis.localStorage; }
 });
-test("localStore with no storage at all reads {}", async () => {
+test("localStore with no storage at all reads {}, and a write says it failed", async () => {
   const host = hostWith({});
   assert.deepEqual(await localStore(host).read(), {});
-  await localStore(host).write({ root: "x" });
+  await assert.rejects(localStore(host).write({ root: "x" }));
+});
+test("localStore write throws when both the file and localStorage fail", async () => {
+  const host = hostWith({ APPDATA: "C:\\A" });
+  host.fs.write = async () => { throw new Error("EACCES"); };
+  globalThis.localStorage = { getItem: () => null, setItem: () => { throw new Error("quota"); } };
+  try { await assert.rejects(localStore(host).write({ root: "N:\\x" })); }
+  finally { delete globalThis.localStorage; }
 });
 
 test("no computers entry: today's result plus role, ffmpegPath, computer", async () => {
@@ -141,10 +148,37 @@ test("saveComputerSettings never overwrites an unreadable file", async () => {
   assert.equal(await host.fs.read(FILE, "utf8"), "{nope");
 });
 
-test("roleNeeded", () => {
-  assert.equal(roleNeeded({}, "L"), false);
-  assert.equal(roleNeeded({ computers: {} }, "L"), false);
-  assert.equal(roleNeeded({ computers: { D: {} } }, "L"), true);
-  assert.equal(roleNeeded({ computers: { L: {} } }, "L"), false);
-  assert.equal(roleNeeded(null, "L"), false);
+test("roleNeeded: a computer with no role, not on S:, is asked; the desktop on S: never is", () => {
+  const N = "N:\\Youtube video ideas";
+  // The first second computer: nothing recorded yet.
+  assert.equal(roleNeeded({}, "L", N), true);
+  assert.equal(roleNeeded(null, "L", N), true);
+  assert.equal(roleNeeded({ computers: { L: { root: N } } }, "L", N), true);
+  assert.equal(roleNeeded({ computers: { L: { role: "laptop" } } }, "L", N), false);
+  assert.equal(roleNeeded({ computers: { L: { role: "desktop" } } }, "L", N), false);
+  // On S: (any spelling of the letter case), whatever other entries exist.
+  assert.equal(roleNeeded({}, "D", ROOT), false);
+  assert.equal(roleNeeded({ computers: { L: { role: "laptop" } } }, "D", ROOT), false);
+  assert.equal(roleNeeded({}, "D", "s:\\youtube video ideas\\"), false);
+  // No folder yet, or a computer whose name can't be read (its role can't be saved).
+  assert.equal(roleNeeded({}, "L", null), false);
+  assert.equal(roleNeeded({}, "THIS-PC", N), false);
+});
+
+test("saveComputerSettings refuses when the computer's name couldn't be read", async () => {
+  const host = new FakeHost();
+  await host.fs.mkdir(ROOT);
+  await assert.rejects(saveComputerSettings(host, ROOT, "THIS-PC", { role: "laptop" }, { now: NOW }),
+    { message: "Studio couldn't read this computer's name, so it can't save settings for it." });
+  assert.equal(host.files.has(FILE), false);
+});
+
+test("saveComputerSettings ends the file with a newline", async () => {
+  const host = new FakeHost();
+  await host.fs.mkdir(ROOT);
+  await host.fs.write(FILE, JSON.stringify({ mixMusicDb: -30 }, null, 2) + "\n");
+  await saveComputerSettings(host, ROOT, "L", { role: "laptop" }, { now: NOW });
+  const text = await host.fs.read(FILE, "utf8");
+  assert.ok(text.endsWith("}\n"));
+  assert.ok(!text.endsWith("\n\n"));
 });

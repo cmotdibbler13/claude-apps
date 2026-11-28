@@ -1,7 +1,7 @@
 // Boot decisions, free of the page: which computer this is, which project folder it uses,
 // and the host that reads paths saved on another computer from this computer's folder.
-import { computerName, localStore } from "./computer.js";
-import { resolveRoot, rootSpellings, join } from "./paths.js";
+import { computerName, localStore, samePath, UNNAMED } from "./computer.js";
+import { resolveRoot, rootSpellings, join, PRIMARY_ROOT } from "./paths.js";
 import { withRebase } from "./rebase.js";
 
 const isObj = (v) => v && typeof v === "object" && !Array.isArray(v);
@@ -35,4 +35,12 @@ export function liveHost(get) {
     get: (_, k) => get()?.[k],
     has: (_, k) => !!get() && k in get(),
   });
+}
+
+// At boot: should this computer's folder be recorded in its computers entry (so the other computers
+// can re-base paths saved here)? Never on S: (the desktop doesn't write at boot), never when already there.
+export function rootToRecord(raw, computer, root) {
+  if (!root || !computer || computer === UNNAMED || samePath(root, PRIMARY_ROOT)) return false;
+  const e = raw?.computers?.[computer];
+  return !(e && typeof e === "object" && typeof e.root === "string" && samePath(e.root, root));
 }

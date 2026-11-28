@@ -4,7 +4,7 @@ import { accessGate } from "./gate.js";
 import { join, filmKey } from "./paths.js";
 import { loadSettings } from "./settings.js";
 import { setToolPaths } from "./toolpaths.js";
-import { findRoot, rebasedHost, liveHost, readRawSettings } from "./boot.js";
+import { findRoot, rebasedHost, liveHost, readRawSettings, rootToRecord } from "./boot.js";
 import { computerName, roleNeeded, saveComputerSettings } from "./computer.js";
 import { installApp } from "./installapps.js";
 import { withRerecord, rerecordsToClear, lineWords, takeSig, addMark, setSize, moveMark, removeMark, placeFromNotes, newTakeIds } from "./pacing.js";
@@ -12,7 +12,7 @@ import { applyPauses, JOINED_WITHOUT } from "./pacingchain.js";
 import { findLineScript, loadLineScript, refreshLineScript, narrationStatus } from "./narration.js";
 import { scanFilms } from "./films.js";
 import { makeFilmSession, readSavedJobs } from "./session.js";
-import { makeJobs } from "./jobs.js";
+import { makeJobs, jobsFile } from "./jobs.js";
 import { notifyRules } from "./notify.js";
 import { buildShotList } from "./shots.js";
 import { scriptCameraIds, seedCameraLines, suggestLines, setCameraLines, suggestLooks, setLook, lastLook, startPortraits, approvePortrait, keepAnyway,
@@ -196,7 +196,7 @@ async function renderNow() {
   if (app.view === "films" && app.nf) {
     paint("films", $("view-films"), newFilmModelNow(), newFilmView, newFilmActions);
   } else if (app.view === "films") {
-    paint("films", $("view-films"), filmsView.filmsModel({ root: app.root, films: app.films, jobs: list, error: app.bootError, chosenMissing: app.chosenMissing,
+    paint("films", $("view-films"), filmsView.filmsModel({ root: app.root, films: app.films, jobs: list, error: app.bootError, chosenMissing: app.chosenMissing, roleNeeded: app.roleNeeded,
       tools: app.comfyStarter ? toolsLine({ comfy: app.comfyStarter, stableAudio: app.starter }) : null }), filmsView, filmsActions);
   } else if (app.view === "jobs") {
     const log = app.store ? await app.store.readLog(50) : null;
@@ -247,6 +247,14 @@ async function reloadSettings() {
   for (const k of Object.keys(app.settings)) if (!(k in fresh)) delete app.settings[k];
   Object.assign(app.settings, fresh);
   setToolPaths(app.settings);
+  await refreshRoleNeeded();
+}
+
+// A new computer (no role, not the desktop on S:): Probe asks first and Films says to open Probe.
+async function refreshRoleNeeded() {
+  try { app.roleNeeded = !!app.root && roleNeeded(await readRawSettings(app.rawHost, app.root), await thisComputer(), app.root); }
+  catch { app.roleNeeded = false; }
+  return app.roleNeeded;
 }
 
 // Probe's This computer row and fix buttons. Every save is this computer's entry in the shared settings file,
@@ -257,7 +265,7 @@ const probeSetup = {
   computer: () => app.computer ?? "THIS-PC",
   rawHost: () => app.rawHost,
   chosenMissing: () => app.chosenMissing,
-  roleNeeded: async () => !!app.root && roleNeeded(await readRawSettings(app.rawHost, app.root), await thisComputer()),
+  roleNeeded: () => refreshRoleNeeded(),
   async save(patch) {
     needRoot();
     await saveComputerSettings(app.rawHost, app.root, await thisComputer(), patch);
@@ -288,14 +296,23 @@ async function loadRoot() {
   app.chosenRoot = found.chosenRoot;
   app.chosenMissing = found.chosenMissing;
   app.root = found.root;
-  if (!app.root) { app.host = app.rawHost; app.films = []; render(); return; }
+  if (!app.root) { app.host = app.rawHost; app.films = []; app.roleNeeded = false; render(); return; }
+  // A computer on another folder (the laptop on N:) records it, so the others can re-base paths saved here.
+  // The desktop on S: never writes at boot. A failed write never stops Studio opening.
+  const raw = await readRawSettings(app.rawHost, app.root);
+  if (rootToRecord(raw, app.computer, app.root)) {
+    try { await saveComputerSettings(app.rawHost, app.root, app.computer, { root: app.root }); }
+    catch (e) { console.error(e); }
+  }
+  await refreshRoleNeeded();
   app.host = await rebasedHost(app.rawHost, app.root);
   const host = live;
   if (!app.jobs) {
     const settings = await loadSettings(app.host, app.root, { computer: app.computer });
     setToolPaths(settings);
     app.settings = settings;
-    const file = join(app.root, ".studio-jobs.json");
+    // The desktop's job list is .studio-jobs.json; a laptop (or a computer not set up yet) keeps its own.
+    const file = jobsFile(app.root, { role: settings.role, computer: app.computer, roleNeeded: app.roleNeeded });
     // One Stable Audio starter for the app: the runner starts it when a take needs it, Review shows its state.
     const starter = makeStableAudioStarter({ settings, sleep: (ms) => new Promise((res) => setTimeout(res, ms)) });
     app.starter = starter;

@@ -8,7 +8,7 @@ import { i2vReady } from "../tools/comfyui.js";
 import { stableAudioState, MSG_MUSIC } from "../tools/stableaudio.js";
 import { join } from "../paths.js";
 import { photoPicker } from "./photopick.js";
-import { MSG_SET_STEM_REMIXER, stemPython } from "../tools/stemfit.js";
+import { MSG_SET_STEM_REMIXER } from "../tools/stemfit.js";
 import { readCatalogue } from "../libraryio.js";
 import { nextBrNumber } from "../library.js";
 import { GET_IT, openLink, findCandidates, checkChoice } from "../findtools.js";
@@ -23,6 +23,7 @@ const samePath = (a, b) => trimSlash(a).toLowerCase() === trimSlash(b).toLowerCa
 // This computer's role, and the graphics rows a laptop leaves to the desktop.
 export const ROLE_LABEL = { desktop: "Desktop (everything)", laptop: "Laptop (scripts and audio)" };
 export const ROLE_QUESTION = "Is this computer the desktop (everything) or a laptop (scripts and audio)?";
+export const ROLE_RESTART = "Restart Studio: the job list moves to match the role at the next start.";
 export const ON_DESKTOP = "On the desktop";
 export const GRAPHICS_ROWS = ["Blender", "ComfyUI", "Animate workflow", "Stable Audio"];
 export const roleLine = (computer, role) => `${computer} \u00B7 ${ROLE_LABEL[role === "laptop" ? "laptop" : "desktop"]}`;
@@ -342,7 +343,7 @@ function roleQuestionRow(save) {
     msg);
 }
 
-function roleRow(computer, role, save) {
+function roleRow(computer, role, save, restart = false) {
   const msg = h("span", { class: "err" });
   const go = savingTo(msg, save);
   const pick = h("div", { class: "fixbtns", hidden: true }, ["desktop", "laptop"].map((k) =>
@@ -352,6 +353,7 @@ function roleRow(computer, role, save) {
     h("span", { class: "st", text: "Set" }),
     h("span", { text: "This computer" }),
     h("span", { class: "detail" }, roleLine(computer, role), " ", change),
+    restart ? h("span", { class: "detail", text: ROLE_RESTART }) : null,
     pick, msg);
 }
 
@@ -377,7 +379,8 @@ export function probeRow(r) {
 //   chooseRoot(path) (switch project folder), install({app, parent, python, onStep}).
 export function mountProbe(host, button, list, getSettings = () => DEFAULT_SETTINGS, reload = null, getStarters = () => ({}), onDone = null, choosePhotos = null, getRoot = () => null, setup = null) {
   const here = new Set(); // graphics rows set up on this laptop anyway, for this session
-  const saveThen = async (patch) => { await setup.save(patch); await run(); };
+  let roleSaved = false; // the role was set this session: the job list follows it at the next start
+  const saveThen = async (patch) => { await setup.save(patch); if ("role" in patch) roleSaved = true; await run(); };
   const run = async () => {
     button.disabled = true;
     list.replaceChildren();
@@ -395,7 +398,7 @@ export function mountProbe(host, button, list, getSettings = () => DEFAULT_SETTI
       install: async (opts) => { await setup.install(opts); },
       python: settings.autocuePython || DEFAULT_SETTINGS.autocuePython,
     } : null;
-    if (setup) list.append(roleRow(setup.computer?.() ?? "THIS-PC", settings.role, saveThen));
+    if (setup) list.append(roleRow(setup.computer?.() ?? "THIS-PC", settings.role, saveThen, roleSaved));
     const show = (r) => {
       list.append(probeRow(r));
       const fix = ctx ? fixRow(host, r, ctx) : null;

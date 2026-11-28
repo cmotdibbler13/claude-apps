@@ -136,3 +136,10 @@ test("a reachable root ignores chosenMissing", () => {
   assert.equal(m.unreachable, false);
   assert.equal(m.empty, true);
 });
+
+test("a new computer: Films says to open Probe, above the list", () => {
+  const m = filmsModel({ root: "N:\\Youtube video ideas", films: [], roleNeeded: true });
+  assert.equal(m.note, "New computer: open Probe to set it up.");
+  assert.equal(filmsModel({ root: "S:\\Youtube video ideas", films: [] }).note, null);
+  assert.equal(filmsModel({ root: "N:\\Youtube video ideas", films: [], roleNeeded: false }).note, null);
+});

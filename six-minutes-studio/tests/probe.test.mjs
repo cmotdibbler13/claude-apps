@@ -348,7 +348,7 @@ test("Pronunciations: passes when the file exists, else a warning (not a failure
 });
 
 // ---- Task 7: this computer, project folder, fix buttons ----
-import { fixesFor, choicePatch, roleLine, saveRoot, choosePanel, mountProbe, probeRow, ROLE_QUESTION, ON_DESKTOP, GRAPHICS_ROWS } from "../js/ui/probe.js";
+import { fixesFor, choicePatch, roleLine, saveRoot, choosePanel, mountProbe, probeRow, ROLE_QUESTION, ON_DESKTOP, GRAPHICS_ROWS, ROLE_RESTART } from "../js/ui/probe.js";
 import { GET_IT } from "../js/findtools.js";
 
 function withDom(fn) {
@@ -513,6 +513,36 @@ test("This computer's Change saves the other role, then Probe runs again", () =>
   await press(byText(first, "Laptop (scripts and audio)"));
   assert.deepEqual(calls.at(-1), ["save", { role: "laptop" }]);
   assert.equal(runs, 2);
+  assert.match(textOf(list.children[0]), new RegExp(ROLE_RESTART));
+}));
+
+test("Probe says to restart Studio after the role is set, not before", () => withDom(async () => {
+  assert.equal(ROLE_RESTART, "Restart Studio: the job list moves to match the role at the next start.");
+  const host = new FakeHost();
+  allOk(host);
+  let needed = true;
+  const { setup } = setupFor({ roleNeeded: async () => needed, save: async () => { needed = false; } });
+  const list = fakeList();
+  const button = {};
+  mountProbe(host, button, list, () => ({ ...settings, role: "laptop" }), null, () => ({}), null, null, () => null, setup);
+  await button.onclick();
+  assert.doesNotMatch(textOf(list.children[0]), /Restart Studio/);
+  await press(byText(list.children[0], "Laptop (scripts and audio)"));
+  assert.match(textOf(list.children[0]), new RegExp(ROLE_RESTART));
+  // A plain Run checks afterwards still says it (Studio hasn't restarted).
+  await button.onclick();
+  assert.match(textOf(list.children[0]), new RegExp(ROLE_RESTART));
+}));
+
+test("This computer row says nothing about restarting until the role changes", () => withDom(async () => {
+  const host = new FakeHost();
+  allOk(host);
+  const { setup } = setupFor();
+  const list = fakeList();
+  const button = {};
+  mountProbe(host, button, list, () => ({ ...settings, role: "desktop" }), null, () => ({}), null, null, () => null, setup);
+  await button.onclick();
+  assert.doesNotMatch(textOf(list.children[0]), /Restart Studio/);
 }));
 
 test("Choose… on the project folder lists the folders found, marks the one in use, and saves a pick", () => withDom(async () => {

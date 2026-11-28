@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FakeHost } from "./fake-host.mjs";
-import { findRoot, readRawSettings, rebasedHost, liveHost } from "../js/boot.js";
+import { findRoot, readRawSettings, rebasedHost, liveHost, rootToRecord } from "../js/boot.js";
 
 const S = "S:\\Youtube video ideas";
 const N = "N:\\Youtube video ideas";
@@ -101,4 +101,23 @@ test("liveHost follows whatever host is current", async () => {
   assert.equal(await live.fs.exists("C:\\x"), true);
   assert.equal(typeof live.now(), "number");
   assert.equal("fs" in live, true);
+});
+
+test("rootToRecord: a computer on another folder records it once; the desktop on S: never writes", () => {
+  const U = "\\\\192.168.1.171\\jon\\Youtube video ideas";
+  // Desktop on S:, with or without entries.
+  assert.equal(rootToRecord({}, "DESK", S), false);
+  assert.equal(rootToRecord({ computers: { L: { root: N } } }, "DESK", S), false);
+  assert.equal(rootToRecord({}, "DESK", "s:\\youtube video ideas"), false);
+  // The laptop on N: with nothing recorded, or a different folder recorded.
+  assert.equal(rootToRecord({}, "L", N), true);
+  assert.equal(rootToRecord({ computers: { L: { role: "laptop" } } }, "L", N), true);
+  assert.equal(rootToRecord({ computers: { L: { root: U } } }, "L", N), true);
+  assert.equal(rootToRecord({ computers: { L: { root: S } } }, "L", U), true);
+  // Already recorded (letter case and a trailing slash don't count).
+  assert.equal(rootToRecord({ computers: { L: { root: N } } }, "L", N), false);
+  assert.equal(rootToRecord({ computers: { L: { root: "n:\\youtube video ideas\\" } } }, "L", N), false);
+  // No folder, or no name to save it under.
+  assert.equal(rootToRecord({}, "L", null), false);
+  assert.equal(rootToRecord({}, "THIS-PC", N), false);
 });
