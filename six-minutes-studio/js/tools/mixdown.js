@@ -1,6 +1,7 @@
 // Mix preview (gpu lane): one ffmpeg run puts the voice over the fitted score and the placed sound effects.
 // The music rides by section, fades in and out, and ducks under the voice; the sound effects duck with it.
 import { moveAside } from "../paths.js";
+import { tool } from "../toolpaths.js";
 import { measure } from "../audio.js";
 import { MSG_INTERRUPTED } from "./voicejoin.js";
 
@@ -192,7 +193,7 @@ function runFfmpeg(host, args, filmS, onProgress) {
         else { tail.push(l.trim()); if (tail.length > 5) tail.shift(); }
       }
     };
-    const p = host.spawn("ffmpeg", args);
+    const p = host.spawn(tool("ffmpeg"), args);
     const timer = setTimeout(() => done(() => {
       try { Promise.resolve(p.kill()).catch(() => {}); } catch { /* gone */ }
       reject(new Error("The mix timed out."));

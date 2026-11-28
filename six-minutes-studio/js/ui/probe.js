@@ -1,5 +1,6 @@
 // Probe view: checks the PC and connectors. Never calls a generate tool.
 import { runProcess } from "../proc.js";
+import { tool } from "../toolpaths.js";
 import { DEFAULT_SETTINGS } from "../settings.js";
 import { autocueJoinState, installAutocueJoin } from "../autocueinstall.js";
 import { i2vReady } from "../tools/comfyui.js";
@@ -136,7 +137,7 @@ export const makeChecks = (settings = DEFAULT_SETTINGS, root = ROOT) => [
   { name: "S: root readable", run: listCheck(ROOT) },
   { name: "UNC root readable", run: listCheck(UNC) },
   { name: "Blender", run: cmdCheck(settings.blenderPath || DEFAULT_SETTINGS.blenderPath, ["--version"]) },
-  { name: "ffmpeg", run: cmdCheck("ffmpeg", ["-version"]) },
+  { name: "ffmpeg", run: (host) => cmdCheck(tool("ffmpeg"), ["-version"])(host) },
   { name: "curl", run: cmdCheck("curl", ["--version"]) },
   { name: "ComfyUI", run: comfyCheck(settings.comfy ?? DEFAULT_SETTINGS.comfy) },
   { name: "Animate workflow", run: animateCheck(settings.comfy ?? DEFAULT_SETTINGS.comfy) },
