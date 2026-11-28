@@ -85,7 +85,9 @@ test("no Python refuses Autocue Studio before downloading", async () => {
 
 test("a failure after the rename keeps the folder and names the step", async () => {
   const { host } = setup({ pip: 1 });
-  await assert.rejects(installApp(host, opts(host)), /unpacked into D:\\Apps\\Autocue Studio.*requirements/is);
+  const steps = [];
+  await assert.rejects(installApp(host, opts(host, { onStep: (t) => steps.push(t) })), /unpacked into D:\\Apps\\Autocue Studio.*requirements/is);
+  assert.ok(!steps.includes("Done"));
   assert.ok(host.files.has("D:\\Apps\\Autocue Studio\\app.py"));
   assert.ok(noTmp(host));
 });
@@ -96,4 +98,26 @@ test("a temporary folder that can't be removed is mentioned, not fatal", async (
   const steps = [];
   await installApp(host, opts(host, { onStep: (t) => steps.push(t) }));
   assert.ok(steps.some((t) => /temporary folder/.test(t)));
+  assert.equal(steps.at(-1), "Done");
+});
+
+test("an existing empty target is replaced by the app", async () => {
+  const { host } = setup();
+  host.dirs.add("D:\\Apps\\Autocue Studio");
+  await installApp(host, opts(host));
+  assert.ok(host.files.has("D:\\Apps\\Autocue Studio\\app.py"));
+});
+
+test("a target that gains a file during the download is left alone", async () => {
+  const { host } = setup();
+  host.dirs.add("D:\\Apps\\Autocue Studio");
+  const inner = host._spawn;
+  host.spawnScript((cmd, args, o, p) => {
+    if (cmd === "tar") host.files.set("D:\\Apps\\Autocue Studio\\mine.txt", "x");
+    inner(cmd, args, o, p);
+  });
+  await assert.rejects(installApp(host, opts(host)), /already has files in it/);
+  assert.ok(host.files.has("D:\\Apps\\Autocue Studio\\mine.txt"));
+  assert.ok(!host.files.has("D:\\Apps\\Autocue Studio\\app.py"));
+  assert.ok(noTmp(host));
 });

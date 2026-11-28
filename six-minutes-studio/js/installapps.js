@@ -42,20 +42,28 @@ export async function installApp(host, { app, parent, python, root, computer, no
   }
 
   const tmp = join(parent, `.sms-install-${now}`);
-  let renamed = false;
+  let ok = false;
   let leftover = false;
+  let madeTmp = false;
   try {
     await host.fs.mkdir(parent);
     await host.fs.mkdir(tmp);
+    madeTmp = true;
     say("Downloading…");
     await step(host, "The download", "curl", ["-L", "-f", "-o", join(tmp, "repo.zip"), ZIP_URL], 10 * MIN);
     say("Unpacking…");
     await step(host, "Unpacking the download", "tar", ["-xf", join(tmp, "repo.zip"), "-C", tmp], 5 * MIN);
     const src = join(tmp, "claude-apps-main", a.folder);
     if (!(await host.fs.exists(src))) throw new Error(`The download didn't contain ${a.folder}.`);
-    if (entries.length === 0 && (await host.fs.exists(target))) await host.fs.trash?.(target);
+    if (await host.fs.exists(target)) {
+      // The folder was empty before the download; check again, since the download can take a while.
+      let now2;
+      try { now2 = await host.fs.list(target); } catch { now2 = [{ name: "?" }]; }
+      if (now2.length) throw new Error(`${target} already has files in it. Choose another folder.`);
+      if (typeof host.fs.trash !== "function") throw new Error(`${target} already exists and Studio can't clear it. Choose another folder.`);
+      await host.fs.trash(target);
+    }
     await host.fs.rename(src, target);
-    renamed = true;
 
     try {
       if (app === "autocue") {
@@ -71,11 +79,14 @@ export async function installApp(host, { app, parent, python, root, computer, no
     } catch (e) {
       throw new Error(`${a.name} was unpacked into ${target}, but ${String(e?.message ?? e).replace(/^./, (c) => c.toLowerCase())}`);
     }
+    ok = true;
     return { dir: target };
   } finally {
-    try { await host.fs.trash(tmp); }
-    catch { leftover = true; }
+    if (madeTmp) {
+      try { await host.fs.trash(tmp); }
+      catch { leftover = true; }
+    }
     if (leftover) say(`Studio couldn't remove its temporary folder ${tmp}. It is safe to delete.`);
-    if (!leftover && renamed) say("Done");
+    if (ok) say("Done");
   }
 }
