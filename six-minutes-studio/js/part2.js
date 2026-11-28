@@ -42,7 +42,8 @@ export function leftText(left) {
   return `${list} still to approve`;
 }
 
-// The Higgsfield job id of a take: stored on the take, else the jobRef of its job in .studio-jobs.json.
+// The Higgsfield job id of a take: stored on the take, else the jobRef of its job in this computer's job list
+// (.studio-jobs.json, or .studio-jobs-<name>.json on a laptop).
 export function hfJobIdFor(take, jobs) {
   if (take?.hfId) return take.hfId;
   const j = (jobs ?? []).find((x) => x?.id === take?.jobId);

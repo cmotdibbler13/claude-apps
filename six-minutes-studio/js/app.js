@@ -1,14 +1,18 @@
 // Boot: host, install gate, project root, jobs, routing and re-rendering of the three screens.
 import { makeHost } from "./host.js";
 import { accessGate } from "./gate.js";
-import { resolveRoot, join, filmKey } from "./paths.js";
+import { join, filmKey } from "./paths.js";
 import { loadSettings } from "./settings.js";
+import { setToolPaths } from "./toolpaths.js";
+import { findRoot, rebasedHost, liveHost, readRawSettings, rootToRecord } from "./boot.js";
+import { computerName, roleNeeded, saveComputerSettings } from "./computer.js";
+import { installApp } from "./installapps.js";
 import { withRerecord, rerecordsToClear, lineWords, takeSig, addMark, setSize, moveMark, removeMark, placeFromNotes, newTakeIds } from "./pacing.js";
 import { applyPauses, JOINED_WITHOUT } from "./pacingchain.js";
 import { findLineScript, loadLineScript, refreshLineScript, narrationStatus } from "./narration.js";
 import { scanFilms } from "./films.js";
 import { makeFilmSession, readSavedJobs } from "./session.js";
-import { makeJobs } from "./jobs.js";
+import { makeJobs, jobsFile } from "./jobs.js";
 import { notifyRules } from "./notify.js";
 import { buildShotList } from "./shots.js";
 import { scriptCameraIds, seedCameraLines, suggestLines, setCameraLines, suggestLooks, setLook, lastLook, startPortraits, approvePortrait, keepAnyway,
@@ -32,7 +36,7 @@ import { makeVoiceJoinRunner } from "./tools/voicejoin.js";
 import { makeStemFitRunner, listExports } from "./tools/stemfit.js";
 import { makeMixdownRunner } from "./tools/mixdown.js";
 import { startFit, startMix, useStemRemixerExport, approveMix, parseCsv, openFitInStemRemixer, stemExportDir, pastedPath, goodFrame } from "./mixplan.js";
-import { mountProbe } from "./ui/probe.js";
+import { mountProbe, saveRoot } from "./ui/probe.js";
 import { approvePart2, part2InFlight, alreadyText } from "./part2run.js";
 import { createFilm, currentDraft, part1Busy, writeScript, redoOne, editClip, editLists, restoreDraft, setPicks, approvePart1 } from "./part1run.js";
 import { filmFolders, takenPrefixes, briefsIn, addBrief } from "./part1setup.js";
@@ -49,9 +53,14 @@ import { prompterBar } from "./ui/prompter.js";
 const $ = (id) => document.getElementById(id);
 const msg = (e) => String(e?.message ?? e);
 const LAYOUT_KEY = "six-minutes-studio.reviewLayout";
+// For everything made before (or kept across) a root change: always the current app.host.
+const live = liveHost(() => app.host);
 
 const app = {
-  host: null, root: null, jobs: null, films: [], view: "films",
+  // rawHost: the host as made (this computer's name, its local record, the root search).
+  // host: once the root is known, the same host re-basing project-folder paths saved on another computer.
+  rawHost: null, host: null, computer: null, chosenRoot: null, chosenMissing: null,
+  root: null, jobs: null, films: [], view: "films",
   film: null, store: null, session: null, playing: null, retried: new Set(), goneJobs: new Map(), movedAside: null, stateError: null, bootError: null, openError: null,
   review: { making: false, listError: null, cardErrors: new Map(), pending: new Set(), estimating: new Set(), noteFor: null, draft: "", oc: {} },
   starter: null, saBusy: false,
@@ -187,7 +196,7 @@ async function renderNow() {
   if (app.view === "films" && app.nf) {
     paint("films", $("view-films"), newFilmModelNow(), newFilmView, newFilmActions);
   } else if (app.view === "films") {
-    paint("films", $("view-films"), filmsView.filmsModel({ root: app.root, films: app.films, jobs: list, error: app.bootError,
+    paint("films", $("view-films"), filmsView.filmsModel({ root: app.root, films: app.films, jobs: list, error: app.bootError, chosenMissing: app.chosenMissing, roleNeeded: app.roleNeeded,
       tools: app.comfyStarter ? toolsLine({ comfy: app.comfyStarter, stableAudio: app.starter }) : null }), filmsView, filmsActions);
   } else if (app.view === "jobs") {
     const log = app.store ? await app.store.readLog(50) : null;
@@ -208,6 +217,7 @@ async function renderNow() {
       lineScript: r.lineScript ?? null, transcript: r.transcript ?? null, transcriptAt: r.transcript ? r.transcriptAt ?? null : undefined,
       onCamera: { estimates: estimatesView(), photosOk: !!r.oc.photosOk, ui: r.oc },
       part2Ui: part2UiNow(),
+      role: app.settings?.role ?? "desktop",
     });
     r.paceSource = model.mix?.pacing?.source ?? null;
     // No voiceover player in the review now (a rejoin is running, or the mix is current): stop the old one, unseen.
@@ -233,20 +243,76 @@ async function choosePresenterPhotos(files) {
 
 async function reloadSettings() {
   if (!app.root || !app.settings) return;
-  const fresh = await loadSettings(app.host, app.root);
+  const fresh = await loadSettings(app.host, app.root, { computer: app.computer });
   for (const k of Object.keys(app.settings)) if (!(k in fresh)) delete app.settings[k];
   Object.assign(app.settings, fresh);
+  setToolPaths(app.settings);
+  await refreshRoleNeeded();
 }
+
+// A new computer (no role, not the desktop on S:): Probe asks first and Films says to open Probe.
+async function refreshRoleNeeded() {
+  try { app.roleNeeded = !!app.root && roleNeeded(await readRawSettings(app.rawHost, app.root), await thisComputer(), app.root); }
+  catch { app.roleNeeded = false; }
+  return app.roleNeeded;
+}
+
+// Probe's This computer row and fix buttons. Every save is this computer's entry in the shared settings file,
+// written through the host without re-basing; then the settings are re-read and Probe runs again.
+const thisComputer = async () => app.computer ?? (app.computer = await computerName(app.rawHost));
+const needRoot = () => { if (!app.root) throw new Error("Studio can't see your films folder yet."); };
+const probeSetup = {
+  computer: () => app.computer ?? "THIS-PC",
+  rawHost: () => app.rawHost,
+  chosenMissing: () => app.chosenMissing,
+  roleNeeded: () => refreshRoleNeeded(),
+  async save(patch) {
+    needRoot();
+    await saveComputerSettings(app.rawHost, app.root, await thisComputer(), patch);
+    await reloadSettings();
+  },
+  // A new project folder: kept on this computer and recorded for the others, then films, settings and paths follow it.
+  async chooseRoot(path) {
+    let why = null;
+    try { await saveRoot(app.rawHost, await thisComputer(), path); } catch (e) { why = e; }
+    if (why?.where === "local") throw new Error(`Couldn't save the choice on this computer, so nothing changed: ${msg(why)}`);
+    await loadRoot();
+    await reloadSettings();
+    render();
+    if (why) throw new Error(`Studio is using ${path} on this computer, but couldn't record it in .studio-settings.json for the other computers: ${msg(why)}`);
+  },
+  async install(opts) {
+    needRoot();
+    await installApp(app.rawHost, { ...opts, root: app.root, computer: await thisComputer() });
+    await reloadSettings();
+  },
+};
 
 // ---- films ----
 async function loadRoot() {
-  const { host } = app;
-  app.root = await resolveRoot(host);
-  if (!app.root) { app.films = []; render(); return; }
+  // This computer, its chosen project folder (if any), then the host that re-bases paths onto it.
+  const found = await findRoot(app.rawHost, { computer: app.computer ?? undefined });
+  app.computer = found.computer;
+  app.chosenRoot = found.chosenRoot;
+  app.chosenMissing = found.chosenMissing;
+  app.root = found.root;
+  if (!app.root) { app.host = app.rawHost; app.films = []; app.roleNeeded = false; render(); return; }
+  // A computer on another folder (the laptop on N:) records it, so the others can re-base paths saved here.
+  // The desktop on S: never writes at boot. A failed write never stops Studio opening.
+  const raw = await readRawSettings(app.rawHost, app.root);
+  if (rootToRecord(raw, app.computer, app.root)) {
+    try { await saveComputerSettings(app.rawHost, app.root, app.computer, { root: app.root }); }
+    catch (e) { console.error(e); }
+  }
+  await refreshRoleNeeded();
+  app.host = await rebasedHost(app.rawHost, app.root);
+  const host = live;
   if (!app.jobs) {
-    const settings = await loadSettings(host, app.root);
+    const settings = await loadSettings(app.host, app.root, { computer: app.computer });
+    setToolPaths(settings);
     app.settings = settings;
-    const file = join(app.root, ".studio-jobs.json");
+    // The desktop's job list is .studio-jobs.json; a laptop (or a computer not set up yet) keeps its own.
+    const file = jobsFile(app.root, { role: settings.role, computer: app.computer, roleNeeded: app.roleNeeded });
     // One Stable Audio starter for the app: the runner starts it when a take needs it, Review shows its state.
     const starter = makeStableAudioStarter({ settings, sleep: (ms) => new Promise((res) => setTimeout(res, ms)) });
     app.starter = starter;
@@ -1325,17 +1391,18 @@ async function boot() {
     }
     return;
   }
+  app.rawHost = host;
   app.host = host;
   // Credits left in Higgsfield and ElevenLabs, in the top bar and the tray: now, every 10 minutes, after paid takes.
-  app.credits = makeCredits(host);
+  app.credits = makeCredits(live);
   app.credits.onChange(() => { paintCredits(); updateTray(); });
   app.credits.refresh();
   setInterval(() => app.credits.refresh(), 10 * 60_000);
   const desktop = await window.claude.use("desktop");
   desktop.app?.dock?.setIcon(drawIcon()).catch(() => {});
   // Probe re-reads .studio-settings.json and updates the one settings object every runner holds.
-  mountProbe(host, $("run-probe"), $("probe-results"), () => app.settings, reloadSettings,
-    () => ({ comfy: app.comfyStarter, stableAudio: app.starter }), () => refreshI2v(), choosePresenterPhotos, () => app.root);
+  mountProbe(live, $("run-probe"), $("probe-results"), () => app.settings, reloadSettings,
+    () => ({ comfy: app.comfyStarter, stableAudio: app.starter }), () => refreshI2v(), choosePresenterPhotos, () => app.root, probeSetup);
   await startWithAccess();
 }
 

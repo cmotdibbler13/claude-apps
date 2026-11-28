@@ -1,5 +1,6 @@
 // Audio measuring and SFX finishing with ffmpeg (argument lists, no shell).
 import { runProcess } from "./proc.js";
+import { tool } from "./toolpaths.js";
 
 const FFMPEG_MS = 5 * 60 * 1000;
 const base = (p) => String(p).split(/[\\/]/).filter(Boolean).pop() ?? "";
@@ -21,7 +22,7 @@ export function isQuiet({ peakDb, meanDb }) {
 }
 
 export async function measure(host, file) {
-  const r = await runProcess(host, "ffmpeg", ["-hide_banner", "-i", file, "-af", "volumedetect", "-f", "null", "-"], { timeout: FFMPEG_MS });
+  const r = await runProcess(host, tool("ffmpeg"), ["-hide_banner", "-i", file, "-af", "volumedetect", "-f", "null", "-"], { timeout: FFMPEG_MS });
   if (r.code !== 0) throw new Error(`Couldn't measure ${base(file)}`);
   const m = parseMeasure(r.stderr);
   return { ...m, quiet: isQuiet(m) };
@@ -35,7 +36,7 @@ export async function finishSfx(host, src, out) {
   const discard = async () => { try { if (await host.fs.exists(part)) await host.fs.trash(part); } catch { /* best effort */ } };
   let r;
   try {
-    r = await runProcess(host, "ffmpeg", ["-y", "-i", src, "-af", FILTER, "-ar", "48000", "-c:a", "pcm_s16le", part], { timeout: FFMPEG_MS });
+    r = await runProcess(host, tool("ffmpeg"), ["-y", "-i", src, "-af", FILTER, "-ar", "48000", "-c:a", "pcm_s16le", part], { timeout: FFMPEG_MS });
   } catch (e) { await discard(); throw e; }
   if (r.code !== 0) {
     await discard();

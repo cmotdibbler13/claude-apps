@@ -1,6 +1,7 @@
 // Preview helpers: 640px ffmpeg proxies for video, blob URLs for the webview, open-in-default-app.
 import { join } from "./paths.js";
 import { runProcess } from "./proc.js";
+import { tool } from "./toolpaths.js";
 
 const VIDEO = new Set(["mp4", "mov", "webm", "mkv"]);
 const IMAGE = new Set(["png", "jpg", "jpeg", "webp", "gif"]);
@@ -36,7 +37,7 @@ async function build(host, file, dir, name) {
   let r;
   try {
     // An argument list, no shell: folder names with & % ! ^ $ ` reach ffmpeg exactly as they are.
-    r = await runProcess(host, "ffmpeg", ["-y", "-i", file, "-vf", "scale=640:-2", "-c:v", "libx264", "-crf", "28", "-an", part], { timeout: TEN_MIN });
+    r = await runProcess(host, tool("ffmpeg"), ["-y", "-i", file, "-vf", "scale=640:-2", "-c:v", "libx264", "-crf", "28", "-an", part], { timeout: TEN_MIN });
   } catch (e) { await discard(); throw e; }
   if (r.code !== 0) {
     await discard();

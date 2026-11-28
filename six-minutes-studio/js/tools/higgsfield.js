@@ -2,6 +2,7 @@
 // A generation costs credits, so generate is called at most once per start() and never retried.
 import { DEFAULT_SETTINGS } from "../settings.js";
 import { runProcess } from "../proc.js";
+import { tool } from "../toolpaths.js";
 import { uploadMedia } from "./hfmedia.js";
 import { clipAudioArgs, clipAudioFile, audioSigOf } from "./clipaudio.js";
 import { portraitParams, clipParams } from "../presenter.js";
@@ -155,7 +156,7 @@ export function makeHiggsfieldRunner({ settings = DEFAULT_SETTINGS, sleep = real
   async function startPresenter(job, ctx) {
     const { host } = ctx;
     const { voiceover, start, end, seconds, hfId, prompt, out } = job.input;
-    const r = await runProcess(host, "ffmpeg", clipAudioArgs({ wav: voiceover, start, end, seconds, out }), { timeout: FFMPEG_MS });
+    const r = await runProcess(host, tool("ffmpeg"), clipAudioArgs({ wav: voiceover, start, end, seconds, out }), { timeout: FFMPEG_MS });
     const audio = clipAudioFile(out);
     if (r.code !== 0 || !(await host.fs.exists(audio))) {
       throw new Error(`ffmpeg couldn't cut this line's audio (code ${r.code}): ${String(r.stderr ?? "").trim().split(/\r?\n/).slice(-3).join(" ")}; not generating.`);

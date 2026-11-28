@@ -1,5 +1,6 @@
 // ffprobe / ffmpeg helpers for the B-roll library (argument lists, no shell).
 import { runProcess } from "../proc.js";
+import { tool } from "../toolpaths.js";
 
 const base = (p) => String(p).split(/[\\/]/).pop();
 const lastLine = (s) => String(s).trim().split(/\r?\n/).pop() || "";
@@ -7,7 +8,7 @@ const lastLine = (s) => String(s).trim().split(/\r?\n/).pop() || "";
 export async function probeClip(host, file) {
   const name = base(file);
   const fail = (why) => new Error(`Couldn't read ${name}: ${why}`);
-  const r = await runProcess(host, "ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,r_frame_rate:format=duration", "-of", "json", file], { timeout: 60000 }).catch((e) => { throw fail(e.message); });
+  const r = await runProcess(host, tool("ffprobe"), ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,r_frame_rate:format=duration", "-of", "json", file], { timeout: 60000 }).catch((e) => { throw fail(e.message); });
   if (r.code !== 0) throw fail(lastLine(r.stderr) || `ffprobe exit code ${r.code}`);
   let j;
   try { j = JSON.parse(r.stdout); } catch { throw fail("ffprobe gave no readable result"); }
@@ -28,7 +29,7 @@ export async function probeClip(host, file) {
 }
 
 async function ffmpeg(host, args) {
-  const r = await runProcess(host, "ffmpeg", args, { timeout: 300000 });
+  const r = await runProcess(host, tool("ffmpeg"), args, { timeout: 300000 });
   if (r.code !== 0) throw new Error(lastLine(r.stderr) || `ffmpeg stopped with exit code ${r.code}`);
 }
 

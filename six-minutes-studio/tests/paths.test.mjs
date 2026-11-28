@@ -33,3 +33,44 @@ test("join uses backslashes and keeps a UNC prefix", () => {
   assert.equal(join("S:/a", "/b/"), "S:\\a\\b");
   assert.equal(join("\\\\srv\\share", "x"), "\\\\srv\\share\\x");
 });
+
+import { candidateRoots, rootSpellings } from "../js/paths.js";
+
+test("resolveRoot finds N: when S: is missing, before the network path", async () => {
+  const h = new FakeHost();
+  await h.fs.mkdir("N:\\Youtube video ideas");
+  await h.fs.mkdir(FALLBACK_ROOT);
+  assert.equal(await resolveRoot(h), "N:\\Youtube video ideas");
+});
+
+test("resolveRoot prefers S: over N:", async () => {
+  const h = new FakeHost();
+  await h.fs.mkdir("N:\\Youtube video ideas");
+  await h.fs.mkdir(PRIMARY_ROOT);
+  assert.equal(await resolveRoot(h), PRIMARY_ROOT);
+});
+
+test("resolveRoot with a chosen folder returns it, or null when missing", async () => {
+  const h = new FakeHost();
+  await h.fs.mkdir(PRIMARY_ROOT);
+  await h.fs.mkdir("E:\\Mine");
+  assert.equal(await resolveRoot(h, { chosen: "E:\\Mine" }), "E:\\Mine");
+  assert.equal(await resolveRoot(h, { chosen: "F:\\Gone" }), null);
+});
+
+test("candidateRoots lists every present drive and the network path", async () => {
+  const h = new FakeHost();
+  await h.fs.mkdir("N:\\Youtube video ideas");
+  await h.fs.mkdir("C:\\Youtube video ideas");
+  await h.fs.mkdir(FALLBACK_ROOT);
+  assert.deepEqual(await candidateRoots(h), ["C:\\Youtube video ideas", "N:\\Youtube video ideas", FALLBACK_ROOT]);
+  assert.deepEqual(await candidateRoots(new FakeHost()), []);
+});
+
+test("rootSpellings lists known spellings once, case-insensitively", () => {
+  assert.deepEqual(rootSpellings({}), [PRIMARY_ROOT, FALLBACK_ROOT]);
+  assert.deepEqual(
+    rootSpellings({ computers: { a: { root: "N:\\Youtube video ideas" }, b: { root: "n:\\youtube video ideas" }, c: {}, d: { root: PRIMARY_ROOT.toLowerCase() } } }),
+    [PRIMARY_ROOT, FALLBACK_ROOT, "N:\\Youtube video ideas"],
+  );
+});

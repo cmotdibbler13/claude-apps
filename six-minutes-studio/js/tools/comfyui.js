@@ -3,6 +3,7 @@
 // file is only ever read.
 import { DEFAULT_SETTINGS } from "../settings.js";
 import { runProcess } from "../proc.js";
+import { tool } from "../toolpaths.js";
 import { join } from "../paths.js";
 
 const POLL_MS = 5000;
@@ -122,7 +123,7 @@ export function makeComfyRunner({ settings = DEFAULT_SETTINGS, sleep = realSleep
     const discard = async () => { try { if (await host.fs.exists(part)) await host.fs.trash(part); } catch { /* best effort */ } };
     let r;
     try {
-      r = await runProcess(host, "ffmpeg", ["-y", "-i", file, "-vf", `crop=min(iw\\,${w}):min(ih\\,${h})`, "-an", "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", part], { timeout: FFMPEG_MS });
+      r = await runProcess(host, tool("ffmpeg"), ["-y", "-i", file, "-vf", `crop=min(iw\\,${w}):min(ih\\,${h})`, "-an", "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", part], { timeout: FFMPEG_MS });
     } catch (e) { await discard(); throw e; }
     if (r.code !== 0) {
       await discard();

@@ -1013,3 +1013,66 @@ test("filmRow: Open script for a film at part 1 with a Part 1 state; part 2 stil
   assert.equal(filmRow({ ...base, parts: p("now", "none", "none", "none"), part1: null }, []).button, null);
   assert.equal(filmRow({ ...base, parts: p("done", "now", "none", "none"), part1: null }, []).button.label, "Open review");
 });
+
+// ---- a laptop leaves graphics jobs to the desktop ----
+import { MAKE_ON_DESKTOP } from "../js/labels.js";
+
+test("laptop: a ComfyUI shot's Make is disabled with Make this on the desktop; Higgsfield is unchanged", () => withDom(() => {
+  assert.equal(MAKE_ON_DESKTOP, "Make this on the desktop");
+  const comfy = asset({ id: "HF-03", kind: "broll", tool: "comfyui" });
+  let c = cardModel(comfy, [comfy], { role: "laptop" });
+  assert.equal(c.canMakeFirst, false);
+  assert.equal(c.onDesktop, MAKE_ON_DESKTOP);
+  let el = card(c, { layout: "script" }, stubActions());
+  const b = byText(el, MAKE_ON_DESKTOP);
+  assert.ok(b);
+  assert.equal(b.disabled, true);
+  assert.equal(byText(el, "Make first take"), undefined);
+  // The same shot on the desktop.
+  c = cardModel(comfy, [comfy], { role: "desktop" });
+  assert.equal(c.canMakeFirst, true);
+  assert.equal(c.onDesktop, null);
+  // Higgsfield on a laptop is unchanged.
+  const hf = asset({ id: "HF-04", kind: "broll", tool: "higgsfield" });
+  c = cardModel(hf, [hf], { role: "laptop" });
+  assert.equal(c.canMakeFirst, true);
+  assert.equal(c.onDesktop, null);
+}));
+
+test("laptop: a Blender shot with a take offers Approve but Redo says Make this on the desktop; Animate and Make 3D are disabled", () => withDom(() => {
+  const la = asset({ id: "HF-01", approved: true, takes: [take(1, "done", { file: "a.png" })], chosen: 1 });
+  const b = asset({ id: "HF-02", kind: "blender", tool: "blender", sourceId: "HF-01", takes: [take(1, "done", { file: "a.mp4" })], chosen: 1 });
+  const c = cardModel(b, [la, b], { role: "laptop" });
+  assert.equal(c.canRedo, false);
+  let el = card(c, { layout: "script" }, stubActions());
+  assert.ok(byText(el, "Approve"));
+  assert.equal(byText(el, "Redo…"), undefined);
+  assert.equal(byText(el, MAKE_ON_DESKTOP).disabled, true);
+  const lc = cardModel(la, [la], { role: "laptop", i2v: READY });
+  assert.equal(lc.canAnimate, false);
+  assert.equal(lc.animateWhy, MAKE_ON_DESKTOP);
+  el = card(lc, { layout: "script" }, stubActions());
+  const an = byText(el, "Animate with ComfyUI");
+  assert.equal(an.disabled, true);
+  assert.equal(an.attrs.title, MAKE_ON_DESKTOP);
+  const m3 = byText(el, "Make 3D in Blender");
+  assert.equal(m3.disabled, true);
+  assert.equal(m3.attrs.title, MAKE_ON_DESKTOP);
+  // The line art itself (Higgsfield) can still be redone on a laptop.
+  assert.equal(lc.canRedo, true);
+}));
+
+test("laptop: a Stable Audio take says Make this on the desktop; ElevenLabs is unchanged; reviewModel passes the role", () => {
+  const m = audioModel({ score: null, sfx: [cue()] }, { sa: sa(), role: "laptop" }).sfx[0];
+  assert.equal(m.generateLabel, MAKE_ON_DESKTOP);
+  assert.equal(m.canGenerate, false);
+  assert.equal(m.canRedo, false);
+  const c = cue({ source: "elevenlabs" });
+  const e = audioModel({ score: null, sfx: [{ ...c, est: { credits: 80, sig: nodeSig("sfx", c) } }] }, { sa: sa(), role: "laptop" }).sfx[0];
+  assert.equal(e.generateLabel, "Generate take · about 80 credits");
+  assert.equal(e.canGenerate, true);
+  const comfy = asset({ id: "HF-03", kind: "broll", tool: "comfyui" });
+  const rm = reviewModel({ film: { dir: DIR, title: "Skara Brae" }, state: { assets: [comfy], audio: { score: null, sfx: [cue()] } }, role: "laptop" });
+  assert.equal(rm.cards[0].onDesktop, MAKE_ON_DESKTOP);
+  assert.equal(rm.audio.sfx[0].generateLabel, MAKE_ON_DESKTOP);
+});
