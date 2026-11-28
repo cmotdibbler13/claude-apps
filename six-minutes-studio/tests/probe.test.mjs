@@ -690,6 +690,24 @@ test("saveRoot says which write failed", async () => {
   await assert.rejects(saveRoot(host, "LAPTOP-JON", N), (e) => e.where === "shared");
 });
 
+test("an unfinished earlier install shows Finish the install instead of Install", () => withDom(async () => {
+  const host = new FakeHost();
+  allOk(host);
+  await host.fs.mkdir("D:\\");
+  host.files.set("D:\\Apps\\Stem Remixer\\.studio-install-unfinished.json", JSON.stringify({ app: "stemremixer" }));
+  const { calls, setup } = setupFor();
+  const list = fakeList();
+  const button = {};
+  mountProbe(host, button, list, () => ({ ...settings, stemRemixerDir: null }), null, () => ({}), null, null, () => null, setup);
+  await button.onclick();
+  const i = list.children.findIndex((li) => /^FailStem Remixer/.test(textOf(li)));
+  const fix = list.children[i + 1];
+  await press(byText(fix, "Install here…"));
+  assert.match(textOf(fix), /An earlier install into D:\\Apps\\Stem Remixer didn't finish\./);
+  await press(byText(fix, "Finish the install"));
+  assert.equal(calls.filter((c) => c[0] === "install").length, 1);
+}));
+
 test("Install here… asks for the parent folder (D:\\Apps when D: exists), shows each step, then Probe runs again", () => withDom(async () => {
   const host = new FakeHost();
   allOk(host);

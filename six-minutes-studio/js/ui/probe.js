@@ -12,6 +12,7 @@ import { MSG_SET_STEM_REMIXER } from "../tools/stemfit.js";
 import { readCatalogue } from "../libraryio.js";
 import { nextBrNumber } from "../library.js";
 import { GET_IT, openLink, findCandidates, checkChoice } from "../findtools.js";
+import { unfinishedInstall } from "../installapps.js";
 import { candidateRoots } from "../paths.js";
 import { localStore, saveComputerSettings } from "../computer.js";
 import { h, btn } from "./dom.js";
@@ -291,6 +292,13 @@ async function installPanel(host, app, python, install, rerun) {
   }
   const parent = h("input", { type: "text", class: "fixpath", "aria-label": "Folder to install into" });
   parent.value = await parentDefault(host);
+  // An earlier install into this folder that didn't finish is finished rather than refused.
+  const note = h("span", { class: "detail" });
+  const label = async () => {
+    const left = await unfinishedInstall(host, String(parent.value ?? "").trim(), app).catch(() => null);
+    go.replaceChildren(document.createTextNode(left ? "Finish the install" : "Install"));
+    note.textContent = left ? `An earlier install into ${left} didn't finish.` : "";
+  };
   const go = btn("Install", async () => {
     const where = String(parent.value ?? "").trim();
     if (!where) { say(msg, "Type the folder to install into."); return; }
@@ -300,9 +308,12 @@ async function installPanel(host, app, python, install, rerun) {
     catch (e) { say(msg, `Couldn't install: ${e?.message ?? e}`); go.disabled = false; return; }
     await rerun();
   });
+  parent.onchange = () => { label(); };
+  await label();
   return h("div", { class: "fixpanel" },
     h("span", { class: "detail", text: "Studio puts the app in its own folder inside this one:" }),
     h("div", { class: "fixtype" }, parent, go),
+    note,
     msg);
 }
 

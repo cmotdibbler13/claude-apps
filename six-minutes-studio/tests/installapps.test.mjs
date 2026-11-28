@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FakeHost } from "./fake-host.mjs";
-import { APPS, installApp } from "../js/installapps.js";
+import { APPS, installApp, unfinishedInstall, UNFINISHED } from "../js/installapps.js";
 
 const ROOT = "S:\\Youtube video ideas";
 const PARENT = "D:\\Apps";
@@ -161,4 +161,41 @@ test("a target that gains a file during the download is left alone", async () =>
   assert.ok(host.files.has("D:\\Apps\\Autocue Studio\\mine.txt"));
   assert.ok(!host.files.has("D:\\Apps\\Autocue Studio\\app.py"));
   assert.ok(noTmp(host));
+});
+
+test("a failed install is marked unfinished; Install again finishes it without downloading", async () => {
+  const bad = setup({ pip: 1 });
+  await assert.rejects(installApp(bad.host, opts(bad.host)), /Press Install again to finish it/);
+  const target = "D:\\Apps\\Autocue Studio";
+  assert.ok(bad.host.files.has(`${target}\\${UNFINISHED}`));
+  assert.equal(await unfinishedInstall(bad.host, PARENT, "autocue"), target);
+  assert.equal(await unfinishedInstall(bad.host, PARENT, "stemremixer"), null);
+  // Second press, pip now works: no download, the remaining steps run, the mark goes.
+  const seen = [];
+  bad.host.spawnScript((cmd, args, o, p) => {
+    seen.push([cmd, ...args]);
+    if (args[0] === "-c") { p.out("3 13 64 AMD64\r\n"); p.exit(0); } else p.exit(0);
+  });
+  const steps = [];
+  const r = await installApp(bad.host, opts(bad.host, { onStep: (t) => steps.push(t) }));
+  assert.equal(r.dir, target);
+  assert.ok(!seen.some((c) => c[0] === "curl" || c[0] === "tar"));
+  assert.ok(seen.some((c) => c.includes("pip")));
+  assert.ok(!bad.host.files.has(`${target}\\${UNFINISHED}`));
+  assert.equal(await unfinishedInstall(bad.host, PARENT, "autocue"), null);
+  assert.equal(steps.at(-1), "Done");
+  assert.ok(steps.includes("Finishing the earlier install…"));
+  assert.equal(JSON.parse(bad.host.files.get(`${ROOT}\\.studio-settings.json`)).computers.LAPTOP.autocueDir, target);
+});
+
+test("a successful install leaves no unfinished mark", async () => {
+  const { host } = setup();
+  await installApp(host, opts(host));
+  assert.ok(!host.files.has(`D:\\Apps\\Autocue Studio\\${UNFINISHED}`));
+});
+
+test("a folder marked unfinished for the other app is still refused", async () => {
+  const { host } = setup();
+  host.files.set(`D:\\Apps\\Autocue Studio\\${UNFINISHED}`, JSON.stringify({ app: "stemremixer" }));
+  await assert.rejects(installApp(host, opts(host)), /already has files in it/);
 });
