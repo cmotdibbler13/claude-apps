@@ -325,6 +325,7 @@ const probeSetup = {
   chosenMissing: () => app.chosenMissing,
   roleNeeded: () => refreshRoleNeeded(),
   desktop: () => desktopState(app.peers),
+  hasLaptop: () => app.peers.some((p) => p.role === "laptop"),
   laptopJobs: () => app.settings?.laptopJobs,
   toggleLaptopJobs: () => toggleLaptopJobs(),
   async save(patch) {

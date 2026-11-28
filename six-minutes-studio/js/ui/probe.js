@@ -416,7 +416,7 @@ export function mountProbe(host, button, list, getSettings = () => DEFAULT_SETTI
       install: async (opts) => { await setup.install(opts); },
       python: settings.autocuePython || DEFAULT_SETTINGS.autocuePython,
     } : null;
-    const laptopJobs = setup?.toggleLaptopJobs && settings.role !== "laptop"
+    const laptopJobs = setup?.toggleLaptopJobs && settings.role !== "laptop" && setup.hasLaptop?.()
       ? { state: setup.laptopJobs?.() === "paused" ? "paused" : "on", toggle: async () => { await setup.toggleLaptopJobs(); await run(); } } : null;
     if (setup) list.append(roleRow(setup.computer?.() ?? "THIS-PC", settings.role, saveThen, roleSaved, laptopJobs));
     const show = (r) => {

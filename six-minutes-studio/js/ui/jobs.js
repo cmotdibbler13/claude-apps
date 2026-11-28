@@ -30,7 +30,8 @@ export function jobRow(job, index, jobs, retried, gone, { role } = {}) {
     || (!isAudio(job) && jobs.some((k) => k !== job && active(k) && sameFilm(k, job) && k.assetId !== undefined && k.assetId === job.assetId));
   const hf = job.tool === "higgsfield", comfy = job.tool === "comfyui", eleven = job.tool === "elevenlabs";
   const graphics = DESKTOP_TOOLS.has(job.tool);
-  const sent = role === "laptop" && graphics;
+  // Sent to the desktop: its runner set `remote`.
+  const sent = role === "laptop" && graphics && !!job.remote;
   const unsure = ended && (job.ambiguous || (job.status === "interrupted" && !job.jobRef));
   return {
     id: job.id,
@@ -48,11 +49,11 @@ export function jobRow(job, index, jobs, retried, gone, { role } = {}) {
     from: job.from ? `from ${job.from}` : null,
     canWithdraw: sent && job.remote === "waiting" && job.status === "running",
     canRetry: !job.from && ended && !eleven && !retried.has(job.id) && !superseded && !gone,
-    retryNote: job.from ? `Retry it from ${job.from}` : ended && gone ? gone : ended && eleven ? "Make a new take from its card" : null,
+    retryNote: ended && job.from ? `Retry it from ${job.from}` : ended && gone ? gone : ended && eleven ? "Make a new take from its card" : null,
     // Checking by job id (or ComfyUI prompt id, or ElevenLabs flow run) is free; running Higgsfield again is a new paid generation.
-    canCheck: !job.from && ended && !!job.jobRef && (hf || comfy || eleven || (sent && !!job.ambiguous)) && !superseded && !gone,
+    canCheck: !job.from && ended && !!job.jobRef && ((hf || (comfy && !sent) || eleven) || (sent && !!job.ambiguous)) && !superseded && !gone,
     retryLabel: hf ? "Run again (new generation, uses credits)" : "Run again",
-    warning: !unsure ? null
+    warning: !unsure || sent ? null
       : hf ? "Check Higgsfield first: this job may still be running."
       : comfy ? "Check ComfyUI first: this render may still be running."
       : eleven ? "Check ElevenLabs first: this take may still be running." : null,

@@ -760,7 +760,7 @@ test("the desktop's This computer row shows Laptop jobs and the same toggle as t
   const host = new FakeHost();
   allOk(host);
   let state = "paused";
-  const { setup } = setupFor({ laptopJobs: () => state, toggleLaptopJobs: async () => { state = state === "paused" ? "on" : "paused"; } });
+  const { setup } = setupFor({ hasLaptop: () => true, laptopJobs: () => state, toggleLaptopJobs: async () => { state = state === "paused" ? "on" : "paused"; } });
   const list = fakeList();
   const button = {};
   mountProbe(host, button, list, () => ({ ...settings, role: "desktop" }), null, () => ({}), null, null, () => null, setup);
@@ -769,6 +769,11 @@ test("the desktop's This computer row shows Laptop jobs and the same toggle as t
   await press(byText(list.children[0], "Resume laptop jobs"));
   assert.match(textOf(list.children[0]), /Laptop jobs: on/);
   assert.ok(byText(list.children[0], "Pause laptop jobs"));
+  // A desktop with no laptop peer has no such line.
+  setup.hasLaptop = () => false;
+  await button.onclick();
+  assert.doesNotMatch(textOf(list.children[0]), /Laptop jobs/);
+  setup.hasLaptop = () => true;
   // A laptop has no such line.
   mountProbe(host, button, list, () => ({ ...settings, role: "laptop" }), null, () => ({}), null, null, () => null, setup);
   await button.onclick();

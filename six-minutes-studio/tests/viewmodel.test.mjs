@@ -1111,6 +1111,22 @@ test("jobRow: a laptop graphics job waiting on the desktop can be withdrawn; Che
   assert.equal(jobsModel({ jobs: [{ ...f, tool: "blender", ambiguous: false }], retried: new Set(), role: "laptop" }).rows[0].canCheck, false);
 });
 
+test("jobRow: a sent laptop ComfyUI job is checked only after an ambiguous failure, with no local warning", () => {
+  const f = job({ id: "c", tool: "comfyui", status: "failed", error: "x", remote: "running", jobRef: "L-c" });
+  for (const o of [{}, { status: "interrupted" }]) {
+    const r = jobsModel({ jobs: [{ ...f, ...o }], retried: new Set(), role: "laptop" }).rows[0];
+    assert.equal(r.canCheck, false);
+    assert.equal(r.warning, null);
+  }
+  const a = jobsModel({ jobs: [{ ...f, ambiguous: true }], retried: new Set(), role: "laptop" }).rows[0];
+  assert.equal(a.canCheck, true);
+  assert.equal(a.warning, null);
+  // Run on this laptop (no remote): as today.
+  assert.equal(jobsModel({ jobs: [{ ...f, remote: undefined }], retried: new Set(), role: "laptop" }).rows[0].canCheck, true);
+  // A from-job's retry note shows only once it has ended.
+  assert.equal(jobsModel({ jobs: [job({ tool: "comfyui", status: "running", from: "L" })], retried: new Set(), role: "desktop" }).rows[0].retryNote, null);
+});
+
 test("jobs view: the from tag and a Withdraw button", () => withDom(() => {
   const rows = (o) => jobsModel({ jobs: [job(o)], retried: new Set(), role: "laptop" });
   const acts = { check() {}, retry() {}, withdraw(id) { acts.got = id; } };
@@ -1122,5 +1138,5 @@ test("jobs view: the from tag and a Withdraw button", () => withDom(() => {
   assert.equal(acts.got, "w");
   const d = document.createElement("div");
   jobsRender(d, jobsModel({ jobs: [job({ tool: "comfyui", status: "failed", from: "LAPTOP-JON" })], retried: new Set(), role: "desktop" }), acts);
-  assert.ok(byText(d, "from LAPTOP-JON") || JSON.stringify(d).includes("from LAPTOP-JON"));
+  assert.ok(all(d, (x) => textOf(x) === "from LAPTOP-JON").length > 0);
 }));
