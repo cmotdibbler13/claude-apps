@@ -742,3 +742,35 @@ test("Install here… asks for the parent folder (D:\\Apps when D: exists), show
   assert.deepEqual(calls.at(-1), ["install", { app: "stemremixer", parent: "D:\\Apps", python: "python" }]);
   assert.equal(runs, 2);
 }));
+
+// ---- the desktop's state in Probe ----
+test("a laptop's graphics rows say On the desktop with its state", async () => {
+  const host = new FakeHost();
+  host.spawnScript((cmd, args, o, p) => { p.out("ok"); p.exit(0); });
+  host.fs.list = async () => [];
+  const s = { ...settings, role: "laptop" };
+  const detail = async (desktop) => named(await runChecks(host, () => {}, s, undefined, { desktop }), "ComfyUI").detail;
+  assert.equal(await detail({ text: "", ready: true }), "On the desktop · ready");
+  assert.equal(await detail({ text: " (not seen since 14:05)", ready: false }), "On the desktop (not seen since 14:05)");
+  assert.equal(await detail({ text: " (laptop jobs paused)", ready: false }), "On the desktop (laptop jobs paused)");
+  assert.equal(await detail(undefined), "On the desktop");
+});
+
+test("the desktop's This computer row shows Laptop jobs and the same toggle as the header", () => withDom(async () => {
+  const host = new FakeHost();
+  allOk(host);
+  let state = "paused";
+  const { setup } = setupFor({ laptopJobs: () => state, toggleLaptopJobs: async () => { state = state === "paused" ? "on" : "paused"; } });
+  const list = fakeList();
+  const button = {};
+  mountProbe(host, button, list, () => ({ ...settings, role: "desktop" }), null, () => ({}), null, null, () => null, setup);
+  await button.onclick();
+  assert.match(textOf(list.children[0]), /Laptop jobs: paused/);
+  await press(byText(list.children[0], "Resume laptop jobs"));
+  assert.match(textOf(list.children[0]), /Laptop jobs: on/);
+  assert.ok(byText(list.children[0], "Pause laptop jobs"));
+  // A laptop has no such line.
+  mountProbe(host, button, list, () => ({ ...settings, role: "laptop" }), null, () => ({}), null, null, () => null, setup);
+  await button.onclick();
+  assert.doesNotMatch(textOf(list.children[0]), /Laptop jobs/);
+}));

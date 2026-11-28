@@ -1,6 +1,7 @@
 // Live jobs view: every job newest first, with progress and why it exists; activity log beside.
 import { h, btn, basename, toolLabel } from "./dom.js";
 import { filmKey } from "../paths.js";
+import { DESKTOP_TOOLS } from "../labels.js";
 
 const active = (j) => j.status === "queued" || j.status === "running";
 const sameFilm = (a, b) => filmKey(a.film) === filmKey(b.film);
@@ -18,7 +19,7 @@ export const keepOpenText = (inTray) => inTray
 const STATUS_TEXT = { done: "Done", failed: "Failed", interrupted: "Interrupted", queued: "queued" };
 
 // gone: why a job can't run or be checked again (its shot was removed from the review), or undefined.
-export function jobRow(job, index, jobs, retried, gone) {
+export function jobRow(job, index, jobs, retried, gone, { role } = {}) {
   const pct = typeof job.progress === "number" ? Math.round(Math.min(1, Math.max(0, job.progress)) * 100) : null;
   let eta;
   if (job.status === "running") eta = typeof job.eta === "string" && job.eta ? job.eta : pct !== null ? `${pct}%` : "Running";
@@ -28,6 +29,8 @@ export function jobRow(job, index, jobs, retried, gone) {
   const superseded = jobs.slice(index + 1).some((k) => same(k, job))
     || (!isAudio(job) && jobs.some((k) => k !== job && active(k) && sameFilm(k, job) && k.assetId !== undefined && k.assetId === job.assetId));
   const hf = job.tool === "higgsfield", comfy = job.tool === "comfyui", eleven = job.tool === "elevenlabs";
+  const graphics = DESKTOP_TOOLS.has(job.tool);
+  const sent = role === "laptop" && graphics;
   const unsure = ended && (job.ambiguous || (job.status === "interrupted" && !job.jobRef));
   return {
     id: job.id,
@@ -42,10 +45,12 @@ export function jobRow(job, index, jobs, retried, gone) {
     eta,
     error: ended ? job.error ?? (job.status === "interrupted" ? "Interrupted when the app closed" : "Failed") : null,
     // An ElevenLabs re-run is paid, and its cost is shown only on the card's Generate button.
-    canRetry: ended && !eleven && !retried.has(job.id) && !superseded && !gone,
-    retryNote: ended && gone ? gone : ended && eleven ? "Make a new take from its card" : null,
+    from: job.from ? `from ${job.from}` : null,
+    canWithdraw: sent && job.remote === "waiting" && job.status === "running",
+    canRetry: !job.from && ended && !eleven && !retried.has(job.id) && !superseded && !gone,
+    retryNote: job.from ? `Retry it from ${job.from}` : ended && gone ? gone : ended && eleven ? "Make a new take from its card" : null,
     // Checking by job id (or ComfyUI prompt id, or ElevenLabs flow run) is free; running Higgsfield again is a new paid generation.
-    canCheck: ended && !!job.jobRef && (hf || comfy || eleven) && !superseded && !gone,
+    canCheck: !job.from && ended && !!job.jobRef && (hf || comfy || eleven || (sent && !!job.ambiguous)) && !superseded && !gone,
     retryLabel: hf ? "Run again (new generation, uses credits)" : "Run again",
     warning: !unsure ? null
       : hf ? "Check Higgsfield first: this job may still be running."
@@ -63,8 +68,8 @@ export const movedAsideBanner = (name) => name
 
 export const stateErrorBanner = (film, message) => `Couldn't save ${basename(film)}'s state: ${message}`;
 
-export function jobsModel({ jobs = [], log = null, retried = new Set(), persistError = null, gone = new Map() }) {
-  const rows = jobs.map((j, i) => jobRow(j, i, jobs, retried, gone.get(j.id))).reverse();
+export function jobsModel({ jobs = [], log = null, retried = new Set(), persistError = null, gone = new Map(), role }) {
+  const rows = jobs.map((j, i) => jobRow(j, i, jobs, retried, gone.get(j.id), { role })).reverse();
   return {
     rows,
     log: log ? log.map((e) => ({ time: clock(e.t), text: String(e.text ?? "") })) : null,
@@ -84,11 +89,13 @@ function jobCard(r, actions) {
       r.live ? h("span", { class: "dot live" }) : null,
       h("span", { class: "what", text: r.what }),
       h("span", { class: "tool", text: r.tool }),
+      r.from ? h("span", { class: "tool from", text: r.from }) : null,
       h("span", { class: "eta", text: r.eta })),
     bar,
     h("div", { class: "sub" }, [r.filmTitle, r.why].filter(Boolean).join(" · ")),
     r.error ? h("div", { class: "err", text: r.error }) : null,
     r.warning ? h("div", { class: "warn", text: r.warning }) : null,
+    r.canWithdraw ? h("div", { class: "row" }, btn("Withdraw", (e) => { e.currentTarget.disabled = true; actions.withdraw(r.id); }, { ghost: true })) : null,
     r.error ? h("div", { class: "row" },
       r.canCheck ? btn("Check again", (e) => { e.currentTarget.disabled = true; actions.check(r.id); }) : null,
       r.retryNote ? h("span", { class: "hist", text: r.retryNote })

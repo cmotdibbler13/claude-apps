@@ -7,9 +7,9 @@ import { setToolPaths } from "./toolpaths.js";
 import { findRoot, rebasedHost, liveHost, readRawSettings, rootToRecord } from "./boot.js";
 import { computerName, roleNeeded, saveComputerSettings, sendsToDesktop, UNNAMED } from "./computer.js";
 import { DESKTOP_TOOLS } from "./labels.js";
-import { makePresence, linkLine, BEAT_MS } from "./presence.js";
+import { makePresence, linkLine, desktopState, BEAT_MS } from "./presence.js";
 import { presenceState } from "./linkstate.js";
-import { makeDesktopRunner, tidyRequests } from "./tools/desktop.js";
+import { makeDesktopRunner, tidyRequests, withdraw } from "./tools/desktop.js";
 import { makeDesktopWorker } from "./desktopworker.js";
 import { installApp } from "./installapps.js";
 import { withRerecord, rerecordsToClear, lineWords, takeSig, addMark, setSize, moveMark, removeMark, placeFromNotes, newTakeIds } from "./pacing.js";
@@ -258,7 +258,7 @@ async function renderNow() {
       tools: app.comfyStarter ? toolsLine({ comfy: app.comfyStarter, stableAudio: app.starter }) : null }), filmsView, filmsActions);
   } else if (app.view === "jobs") {
     const log = app.store ? await app.store.readLog(50) : null;
-    const model = jobsView.jobsModel({ jobs: list, log, retried: app.retried, persistError: null, gone: goneJobs(list) });
+    const model = jobsView.jobsModel({ jobs: list, log, retried: app.retried, persistError: null, gone: goneJobs(list), role: app.settings?.role });
     paint("jobs", $("view-jobs"), model, jobsView, jobsActions);
   } else if (app.view === "review") {
     const r = app.review;
@@ -275,7 +275,7 @@ async function renderNow() {
       lineScript: r.lineScript ?? null, transcript: r.transcript ?? null, transcriptAt: r.transcript ? r.transcriptAt ?? null : undefined,
       onCamera: { estimates: estimatesView(), photosOk: !!r.oc.photosOk, ui: r.oc },
       part2Ui: part2UiNow(),
-      role: app.settings?.role ?? "desktop",
+      role: app.settings?.role ?? "desktop", localTools: app.settings?.localTools ?? [],
     });
     r.paceSource = model.mix?.pacing?.source ?? null;
     // No voiceover player in the review now (a rejoin is running, or the mix is current): stop the old one, unseen.
@@ -324,6 +324,9 @@ const probeSetup = {
   rawHost: () => app.rawHost,
   chosenMissing: () => app.chosenMissing,
   roleNeeded: () => refreshRoleNeeded(),
+  desktop: () => desktopState(app.peers),
+  laptopJobs: () => app.settings?.laptopJobs,
+  toggleLaptopJobs: () => toggleLaptopJobs(),
   async save(patch) {
     needRoot();
     await saveComputerSettings(app.rawHost, app.root, await thisComputer(), patch);
@@ -512,6 +515,13 @@ const jobsActions = {
     if (await refusedAsGone(id)) return;
     userStarted();
     try { app.jobs.check(id); } catch (e) { console.error(e); }
+    render();
+  },
+  // A laptop job still waiting for the desktop: write the withdrawal; the runner then fails it as Withdrawn.
+  async withdraw(id) {
+    const job = app.jobs?.list().find((j) => j.id === id);
+    if (!job) return;
+    try { await withdraw(app.host, app.root, job); } catch (e) { console.error(e); }
     render();
   },
 };

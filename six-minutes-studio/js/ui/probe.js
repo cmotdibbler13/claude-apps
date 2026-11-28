@@ -28,7 +28,11 @@ export const ROLE_RESTART = "Restart Studio: it uses this role's job list from t
 export const ON_DESKTOP = "On the desktop";
 export const GRAPHICS_ROWS = ["Blender", "ComfyUI", "Animate workflow", "Stable Audio"];
 export const roleLine = (computer, role) => `${computer} \u00B7 ${ROLE_LABEL[role === "laptop" ? "laptop" : "desktop"]}`;
-const onDesktopCheck = async () => { throw Object.assign(new Error(ON_DESKTOP), { neutral: true, onDesktop: true }); };
+// desktop: desktopState(peers), when known: what the laptop's graphics rows add to "On the desktop".
+const onDesktopCheck = (desktop) => async () => {
+  const more = !desktop ? "" : desktop.ready ? " \u00B7 ready" : desktop.text;
+  throw Object.assign(new Error(ON_DESKTOP + more), { neutral: true, onDesktop: true });
+};
 
 // Project folder: the folder in use, readable. A chosen folder that can't be reached says so.
 const projectCheck = (root, chosenMissing) => async (host) => {
@@ -127,9 +131,9 @@ const toolsCheck = (server, want) => async (host) => {
 // root: the films folder (the app's resolved root), where the B-roll library lives.
 // here: graphics rows Jon chose to set up on this laptop anyway (this session only).
 // chosenMissing: the chosen project folder, when it can't be reached.
-export const makeChecks = (settings = DEFAULT_SETTINGS, root = ROOT, { here = new Set(), chosenMissing = null } = {}) => {
+export const makeChecks = (settings = DEFAULT_SETTINGS, root = ROOT, { here = new Set(), chosenMissing = null, desktop = null } = {}) => {
   const laptop = settings?.role === "laptop";
-  const g = (c) => (laptop && GRAPHICS_ROWS.includes(c.name) && !here.has(c.name) ? { name: c.name, run: onDesktopCheck } : c);
+  const g = (c) => (laptop && GRAPHICS_ROWS.includes(c.name) && !here.has(c.name) ? { name: c.name, run: onDesktopCheck(desktop) } : c);
   return allChecks(settings, root, chosenMissing).map(g);
 };
 
@@ -354,7 +358,8 @@ function roleQuestionRow(save) {
     msg);
 }
 
-function roleRow(computer, role, save, restart = false) {
+// laptopJobs: { state: "on" | "paused", toggle() } on a desktop, else null.
+function roleRow(computer, role, save, restart = false, laptopJobs = null) {
   const msg = h("span", { class: "err" });
   const go = savingTo(msg, save);
   const pick = h("div", { class: "fixbtns", hidden: true }, ["desktop", "laptop"].map((k) =>
@@ -365,6 +370,8 @@ function roleRow(computer, role, save, restart = false) {
     h("span", { text: "This computer" }),
     h("span", { class: "detail" }, roleLine(computer, role), " ", change),
     restart ? h("span", { class: "detail", text: ROLE_RESTART }) : null,
+    laptopJobs ? h("span", { class: "detail" }, `Laptop jobs: ${laptopJobs.state}`, " ",
+      btn(laptopJobs.state === "paused" ? "Resume laptop jobs" : "Pause laptop jobs", () => savingTo(msg, laptopJobs.toggle)(), { ghost: true })) : null,
     pick, msg);
 }
 
@@ -409,13 +416,15 @@ export function mountProbe(host, button, list, getSettings = () => DEFAULT_SETTI
       install: async (opts) => { await setup.install(opts); },
       python: settings.autocuePython || DEFAULT_SETTINGS.autocuePython,
     } : null;
-    if (setup) list.append(roleRow(setup.computer?.() ?? "THIS-PC", settings.role, saveThen, roleSaved));
+    const laptopJobs = setup?.toggleLaptopJobs && settings.role !== "laptop"
+      ? { state: setup.laptopJobs?.() === "paused" ? "paused" : "on", toggle: async () => { await setup.toggleLaptopJobs(); await run(); } } : null;
+    if (setup) list.append(roleRow(setup.computer?.() ?? "THIS-PC", settings.role, saveThen, roleSaved, laptopJobs));
     const show = (r) => {
       list.append(probeRow(r));
       const fix = ctx ? fixRow(host, r, ctx) : null;
       if (fix) list.append(fix);
     };
-    const results = await runChecks(host, show, settings, root, { here, chosenMissing: setup?.chosenMissing?.() ?? null });
+    const results = await runChecks(host, show, settings, root, { here, chosenMissing: setup?.chosenMissing?.() ?? null, desktop: setup?.desktop?.() ?? null });
     // Installing Autocue Studio needs a Python that runs: shown when Autocue join isn't set up.
     if (setup && results.some((r) => !r.ok && r.name === "Autocue join")) {
       const py = await runOne(host, { name: "Python for installs", run: cmdCheck(ctx.python, ["--version"]) });
