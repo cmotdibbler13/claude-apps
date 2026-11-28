@@ -52,7 +52,8 @@ export async function installApp(host, { app, parent, python, root, computer, no
     say("Downloading…");
     await step(host, "The download", "curl", ["-L", "-f", "-o", join(tmp, "repo.zip"), ZIP_URL], 10 * MIN);
     say("Unpacking…");
-    await step(host, "Unpacking the download", "tar", ["-xf", join(tmp, "repo.zip"), "-C", tmp], 5 * MIN);
+    // Only this app's folder, and -m: Windows tar stops with "Can't restore time" on some files in the zip.
+    await step(host, "Unpacking the download", "tar", ["-x", "-m", "-f", join(tmp, "repo.zip"), "-C", tmp, `claude-apps-main/${a.folder}`], 5 * MIN);
     const src = join(tmp, "claude-apps-main", a.folder);
     if (!(await host.fs.exists(src))) throw new Error(`The download didn't contain ${a.folder}.`);
     if (await host.fs.exists(target)) {

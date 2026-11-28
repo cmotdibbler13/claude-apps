@@ -14,7 +14,7 @@ const setup = ({ curl = 0, pip = 0, ps = 0, py = 0, noFolder = false } = {}) => 
     if (cmd === "curl") { if (curl) p.err("curl: (22) The requested URL returned error: 404"); p.exit(curl); }
     else if (cmd === "tar") {
       if (!noFolder) {
-        const tmp = args[args.length - 1];
+        const tmp = args[args.indexOf("-C") + 1];
         for (const f of ["autocue-studio", "stem-remixer"]) { host.dirs.add(`${tmp}\\claude-apps-main\\${f}`); host.files.set(`${tmp}\\claude-apps-main\\${f}\\app.py`, "x"); }
       }
       p.exit(0);
@@ -46,6 +46,17 @@ test("installs Autocue Studio and saves the settings", async () => {
   assert.deepEqual(s, { autocueDir: r.dir, autocueRecordings: `${r.dir}\\Recordings`, autocuePython: "python" });
   assert.ok(noTmp(host));
   assert.deepEqual(steps, ["Downloading…", "Unpacking…", "Installing…", "Done"]);
+});
+
+test("unpacks only the app's folder and doesn't restore file times (Windows tar refuses some)", async () => {
+  const { host, seen } = setup();
+  await installApp(host, opts(host));
+  const tar = seen.find((c) => c[0] === "tar");
+  assert.ok(tar.includes("-m"), "no -m");
+  assert.equal(tar[tar.length - 1], "claude-apps-main/autocue-studio");
+  const { host: h2, seen: s2 } = setup();
+  await installApp(h2, opts(h2, { app: "stemremixer" }));
+  assert.equal(s2.find((c) => c[0] === "tar").at(-1), "claude-apps-main/stem-remixer");
 });
 
 test("installs Stem Remixer through its PowerShell script", async () => {
