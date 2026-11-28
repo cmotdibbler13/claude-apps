@@ -245,3 +245,42 @@ Known limits: after you switch the project folder in Probe, restart Studio befor
 
 **C. Desktop afterwards**
 15. Go back to the desktop and open Studio. It is not asked its role (it is on `S:`), Films has no "New computer" line, and Probe, Films, Review and Audio work as in section A. The desktop has none of the laptop's paths, the graphics tools are not marked "On the desktop", and its job list is still `.studio-jobs.json` (the laptop's jobs are not in it). A take saved on the laptop with an `N:` path plays here, because the laptop's folder is recorded in its `computers` entry.
+
+## Desktop jobs (version 36)
+The laptop can now send ComfyUI, Stable Audio and Blender jobs to the desktop, which makes them and hands the result back. Nothing here spends credits. Both computers need Studio open for this to work, and both need the project folder on the server (`S:` on the desktop, `N:` on the laptop). Nothing is ever deleted: finished request files are moved, not removed.
+
+Before you start: update Studio on both computers, then close and reopen Studio on each. Do this again after you change either computer's role in Probe. The connection and the job sending start when Studio opens, so a computer that was already open will not take part.
+
+**A. The line at the top**
+1. Open Studio on the desktop first, then on the laptop. Give each about a minute. The line at the top only appears once a computer has seen the other one, so it may be missing for the first half minute or so.
+2. On the laptop the line reads **Desktop: ready**. On the desktop it reads **Laptop: seen just now**.
+3. On the desktop, press **Pause laptop jobs**. This button, and Probe's **Laptop jobs: on** line, only appear once the desktop has seen a laptop. Within about 30 seconds the laptop's line changes to **Desktop: laptop jobs paused**. Press **Resume laptop jobs** and within about 30 seconds the laptop says **Desktop: ready** again. Probe on the desktop shows **Laptop jobs: paused** and then **Laptop jobs: on** to match.
+4. Close Studio on the desktop only. After a minute and a half the laptop's line says **Desktop: not seen since** and the time. Open Studio on the desktop again and it goes back to **Desktop: ready**.
+5. Unplug the server (or disconnect the network cable on the laptop). The laptop says **Can't reach the server** with the folder in brackets. Plug it back in and the line recovers by itself.
+
+**B. A ComfyUI shot**
+6. On the laptop, open a film's Review with a ComfyUI shot. The button now reads **Make on the desktop** (it used to say "Make this on the desktop") and it can be pressed. Press it.
+7. The job shows **Waiting for the desktop**. When the desktop picks it up, it changes to **On the desktop:** followed by the time left or a percentage. The desktop's own job list (Live jobs) shows the same job tagged **from** and the laptop's name.
+8. When it finishes, the take appears in the film on the laptop and the usual "ready" notice shows on the laptop. The desktop does not record the take and does not show a "ready" notice for it.
+9. On the desktop, try to retry that job from the Live jobs list. It will not: it says **Retry it from** and the laptop's name.
+
+**C. Sound and 3D**
+10. Repeat steps 6 to 8 with a Stable Audio sound effect or music item on Audio, and then with a Blender 3D shot. Each goes through waiting, running, then a take recorded on the laptop with the notice on the laptop only. Blender asks Claude for its script from the desktop's Studio, as it does when you make one there.
+
+**D. Pause holds a new job**
+11. On the desktop, press **Pause laptop jobs**. On the laptop, wait about 30 seconds for **Desktop: laptop jobs paused**, then press **Make on the desktop** on a shot. The job says **Waiting for the desktop (laptop jobs paused)** and does not start.
+12. On the desktop, press **Resume laptop jobs**. Within about 10 seconds the job starts and goes through running to done as in step 7. A job that was already running when you paused finishes as normal.
+
+**E. Withdraw**
+13. Close Studio on the desktop. On the laptop, press **Make on the desktop** on a shot. The job waits and shows **Withdraw** next to it.
+14. Press **Withdraw**. The job fails with **Withdrawn** and nothing is made. (Withdraw only appears while the job is still waiting for the desktop. Once the desktop has started it, the button is gone.)
+15. Open Studio on the desktop again. It does not start the withdrawn job.
+
+**F. Closing a Studio mid-job**
+16. Send a ComfyUI shot from the laptop and wait until it says **On the desktop:** with progress. Close Studio on the laptop, wait a minute, and open it again. The job picks up where it was and the take is recorded when it finishes. There is only one take, not two.
+17. Send a Blender shot. While it is running, close Studio on the desktop. On the laptop the job fails with **Interrupted on the desktop; press Retry**. Open Studio on the desktop again, then press **Retry** on the laptop: a fresh job is sent. Nothing is ever retried by itself.
+18. If a ComfyUI job fails with a message that a render may still be running on the desktop, the job shows **Check**. Press it: it asks the desktop to look (it spends nothing) and the job moves on to done if the render finished. **Check** only appears in that case.
+
+**G. Nothing deleted**
+19. On the server, open the project folder's `.studio-queue` folder. Requests that are finished (done, withdrawn, or failed for good) have been moved into `.studio-queue\finished\`. Open it and check the files for your jobs are there (`.request.json`, `.answer.json` and, for the withdrawn one, `.withdrawn.json`). Nothing was deleted anywhere. The `.studio-presence` folder has one small file for each computer.
+20. **The desktop on its own.** Close Studio on the laptop and leave it closed for two minutes. On the desktop the line at the top may say **Laptop: last seen** with a time, but Films, Review, Audio and the job list work exactly as before.
