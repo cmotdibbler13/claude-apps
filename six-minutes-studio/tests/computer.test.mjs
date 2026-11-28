@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FakeHost } from "./fake-host.mjs";
-import { computerName, localStore, saveComputerSettings, roleNeeded, PER_COMPUTER } from "../js/computer.js";
+import { computerName, localStore, saveComputerSettings, roleNeeded, PER_COMPUTER, localTools, sendsToDesktop } from "../js/computer.js";
 import { loadSettings } from "../js/settings.js";
 
 const ROOT = "S:\\Youtube video ideas";
@@ -188,4 +188,41 @@ test("saveComputerSettings ends the file with a newline", async () => {
   const text = await host.fs.read(FILE, "utf8");
   assert.ok(text.endsWith("}\n"));
   assert.ok(!text.endsWith("\n\n"));
+});
+
+test("laptopJobs defaults to on and reads paused from the entry", async () => {
+  const host = new FakeHost();
+  await host.fs.mkdir(ROOT);
+  assert.equal((await loadSettings(host, ROOT, { computer: "PC" })).laptopJobs, "on");
+  await host.fs.write(FILE, JSON.stringify({ computers: { PC: { laptopJobs: "paused" }, OTHER: { laptopJobs: "nonsense" } } }));
+  assert.equal((await loadSettings(host, ROOT, { computer: "PC" })).laptopJobs, "paused");
+  assert.equal((await loadSettings(host, ROOT, { computer: "OTHER" })).laptopJobs, "on");
+  assert.ok(PER_COMPUTER.includes("laptopJobs"));
+});
+
+test("localTools lists what this computer runs itself", () => {
+  assert.deepEqual(localTools(null), []);
+  assert.deepEqual(localTools({ blenderPath: "C:\\b.exe" }), ["blender"]);
+  assert.deepEqual(localTools({ comfy: { url: "http://x" } }), ["comfyui"]);
+  assert.deepEqual(localTools({ comfy: { outputDir: "D:\\o" } }), ["comfyui"]);
+  assert.deepEqual(localTools({ comfy: { exe: "c.exe" } }), ["comfyui"]);
+  assert.deepEqual(localTools({ comfy: { workflow: "w" } }), []);
+  assert.deepEqual(localTools({ stableAudio: { steps: 3 } }), ["stableaudio"]);
+  assert.deepEqual(localTools({ blenderPath: "b", comfy: { url: "u" }, stableAudio: { cfg: 1 } }), ["blender", "comfyui", "stableaudio"]);
+});
+
+test("loadSettings gives settings.localTools from this computer's entry only", async () => {
+  const host = new FakeHost();
+  await host.fs.mkdir(ROOT);
+  await host.fs.write(FILE, JSON.stringify({ comfy: { url: "http://shared" }, computers: { L: { role: "laptop", blenderPath: "b" } } }));
+  assert.deepEqual((await loadSettings(host, ROOT, { computer: "L" })).localTools, ["blender"]);
+  assert.deepEqual((await loadSettings(host, ROOT, { computer: "D" })).localTools, []);
+});
+
+test("sendsToDesktop: laptops only, graphics tools only, unless this laptop runs the tool itself", () => {
+  assert.equal(sendsToDesktop({ role: "desktop", localTools: [] }, "blender"), false);
+  assert.equal(sendsToDesktop({ role: "laptop", localTools: [] }, "blender"), true);
+  assert.equal(sendsToDesktop({ role: "laptop", localTools: ["blender"] }, "blender"), false);
+  assert.equal(sendsToDesktop({ role: "laptop", localTools: ["blender"] }, "comfyui"), true);
+  assert.equal(sendsToDesktop({ role: "laptop", localTools: [] }, "higgsfield"), false);
 });

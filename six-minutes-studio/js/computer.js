@@ -3,8 +3,9 @@
 import { runProcess } from "./proc.js";
 import { join, isHomeRoot } from "./paths.js";
 import { copyAside, writeSafely } from "./libraryio.js";
+import { DESKTOP_TOOLS } from "./labels.js";
 
-export const PER_COMPUTER = ["role", "autocueDir", "autocueRecordings", "autocuePython", "blenderPath", "stemRemixerDir", "ffmpegPath", "autostart"];
+export const PER_COMPUTER = ["role", "autocueDir", "autocueRecordings", "autocuePython", "blenderPath", "stemRemixerDir", "ffmpegPath", "autostart", "laptopJobs"];
 export const COMFY_KEYS = ["url", "outputDir", "exe"];
 const STORE_KEY = "sms.computer";
 // The name used when Windows' COMPUTERNAME can't be read: nothing is saved under it.
@@ -60,14 +61,29 @@ export function localStore(host) {
   };
 }
 
+// The graphics tools this computer's own entry sets up: it runs those itself instead of sending them to the desktop.
+export function localTools(entry) {
+  const e = isObj(entry) ? entry : {};
+  const out = [];
+  if (e.blenderPath) out.push("blender");
+  if (isObj(e.comfy) && COMFY_KEYS.some((k) => e.comfy[k] !== undefined)) out.push("comfyui");
+  if (isObj(e.stableAudio) && Object.keys(e.stableAudio).length) out.push("stableaudio");
+  return out;
+}
+
+export const sendsToDesktop = (settings, tool) =>
+  settings?.role === "laptop" && DESKTOP_TOOLS.has(tool) && !(settings.localTools ?? []).includes(tool);
+
 // Merge one computer's entry over loaded settings (per-computer keys only).
 export function applyComputer(out, entry, computer) {
   const e = isObj(entry) ? entry : {};
   const role = e.role === "laptop" ? "laptop" : "desktop";
   out.role = role;
   out.computer = computer ?? null;
+  out.laptopJobs = e.laptopJobs === "paused" ? "paused" : "on";
+  out.localTools = localTools(e);
   for (const k of PER_COMPUTER) {
-    if (k === "role" || k === "autostart" || e[k] === undefined) continue;
+    if (k === "role" || k === "autostart" || k === "laptopJobs" || e[k] === undefined) continue;
     out[k] = e[k];
   }
   if (isObj(e.comfy)) for (const k of COMFY_KEYS) if (e.comfy[k] !== undefined) out.comfy[k] = e.comfy[k];

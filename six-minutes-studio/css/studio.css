@@ -295,6 +295,10 @@ textarea{width:100%;background:var(--s0);color:var(--ink);border:1px solid var(-
 /* Fold a Review section */
 .fold{margin-left:auto;min-width:30px;height:28px;padding:0 8px;background:none;border:1px solid var(--rule);color:var(--mut);cursor:pointer;font-size:14px;line-height:1}
 .fold:hover{border-color:var(--brass);color:var(--brass)}
+.top .link{font-size:12px;letter-spacing:.04em;color:var(--mut)}
+.top .link:not([hidden]){margin-left:auto}
+.top .link:not([hidden])~.credits{margin-left:12px}
+.top #pause-laptop{margin-left:12px;font-size:12px;padding:4px 10px}
 .top .credits{margin-left:auto;font-size:12px;letter-spacing:.04em;color:var(--mut);font-variant-numeric:tabular-nums}
 /* On camera: chosen lines, the look, portraits and the clip cards */
 .oncam h3{margin:18px 0 8px;font-size:15px;font-weight:500;letter-spacing:.02em}
