@@ -5,6 +5,7 @@ import { foldable } from "./fold.js";
 import { nodeSig } from "../tools/elevenlabs.js";
 import { formatStart } from "../audioplan.js";
 import { MAKE_ON_DESKTOP } from "../labels.js";
+import { sendsToDesktop } from "../computer.js";
 
 const SA_LABEL = { off: "Off", starting: "Starting…", ready: "Ready", music: "Music model loaded", failed: "Didn't start" };
 const SOURCES = ["stableaudio", "elevenlabs"];
@@ -30,7 +31,7 @@ function takeStatus(t) {
   return null;
 }
 
-export function itemModel(item, { pending = false, estimating = false, error = null, noteOpen = false, playing = null, role = "desktop" } = {}) {
+export function itemModel(item, { pending = false, estimating = false, error = null, noteOpen = false, playing = null, role = "desktop", localTools = [] } = {}) {
   const score = isScore(item.id);
   const kind = score ? "score" : "sfx";
   const source = score ? "elevenlabs" : item.source ?? "stableaudio";
@@ -46,10 +47,10 @@ export function itemModel(item, { pending = false, estimating = false, error = n
   const current = source === "elevenlabs" && !!item.est && sig !== null && item.est.sig === sig;
   let generateLabel, canGenerate, canGetCost = false;
   // On a laptop, Stable Audio takes are made on the desktop.
-  const onDesktop = source === "stableaudio" && role === "laptop";
+  const onDesktop = source === "stableaudio" && sendsToDesktop({ role, localTools }, "stableaudio");
   if (onDesktop) {
     generateLabel = MAKE_ON_DESKTOP;
-    canGenerate = false;
+    canGenerate = free && ready;
   } else if (source === "stableaudio") {
     generateLabel = `${what} · Free`;
     canGenerate = free && ready;
@@ -104,7 +105,7 @@ export function itemModel(item, { pending = false, estimating = false, error = n
     canPick: free && takes.length > 1,
     canApprove: free && !item.approved && chosenTake?.status === "done",
     canUndo: free && !!item.approved,
-    canRedo: free && takes.length > 0 && !onDesktop,
+    canRedo: free && takes.length > 0,
     onDesktop,
     nextNote: filled(item.pendingNote) ? `Next take: from your note “${item.pendingNote}”` : null,
     error,
@@ -114,12 +115,12 @@ export function itemModel(item, { pending = false, estimating = false, error = n
 
 // sa: {state, message} from the Stable Audio starter.
 export function audioModel(audio, { pending = new Set(), estimating = new Set(), cardErrors = new Map(), noteFor = null, playing = null, sa = null,
-  planning = false, planError = null, adding = false, addError = null, role = "desktop" } = {}) {
+  planning = false, planError = null, adding = false, addError = null, role = "desktop", localTools = [] } = {}) {
   const st = sa?.state ?? "off";
   const saModel = { state: st, label: SA_LABEL[st] ?? st, canStart: st !== "starting" && st !== "ready", message: sa?.message ?? null };
   const sfx = audio?.sfx ?? [];
   const needsPlan = !audio || (!audio.score && sfx.length === 0);
-  const opts = (id) => ({ pending: pending.has(id), estimating: estimating.has(id), error: cardErrors.get(id) ?? null, noteOpen: noteFor === id, playing, role });
+  const opts = (id) => ({ pending: pending.has(id), estimating: estimating.has(id), error: cardErrors.get(id) ?? null, noteOpen: noteFor === id, playing, role, localTools });
   return {
     needsPlan,
     planning,
@@ -236,7 +237,7 @@ function audioCard(c, actions) {
     const row = [picker, gen];
     if (c.approved) row.push(h("span", { class: "ok-tag", text: "✓ Approved" }), btn("Undo", () => actions.unapproveAudio(c.id), { ghost: true, disabled: !c.canUndo }));
     else if (c.takes.length) row.push(btn("Approve", () => actions.approveAudio(c.id), { disabled: !c.canApprove }));
-    if (c.takes.length && !c.onDesktop) row.push(btn("Redo…", () => actions.openNote(c.id), { ghost: true, disabled: !c.canRedo }));
+    if (c.takes.length) row.push(btn("Redo…", () => actions.openNote(c.id), { ghost: true, disabled: !c.canRedo }));
     controls = [h("div", { class: "row" }, row)];
   }
 

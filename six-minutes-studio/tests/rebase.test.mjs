@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FakeHost } from "./fake-host.mjs";
 import { PRIMARY_ROOT, FALLBACK_ROOT, rootSpellings } from "../js/paths.js";
-import { rebasePath, withRebase } from "../js/rebase.js";
+import { rebasePath, rebaseDeep, withRebase } from "../js/rebase.js";
 
 const N = "N:\\Youtube video ideas";
 const sp = rootSpellings({});
@@ -62,4 +62,13 @@ test("withRebase rebases exec, spawn args and open; passes others through", asyn
   assert.equal(w.now(), h.now());
   await w.notify("x");
   assert.deepEqual(h.notified, ["x"]);
+});
+
+test("rebaseDeep rewrites every string at any depth and leaves the rest", () => {
+  const root = "S:\\Youtube video ideas";
+  const spl = ["N:\\Youtube video ideas"];
+  const input = { out: "N:\\Youtube video ideas\\a\\x.mp4", list: ["N:\\Youtube video ideas\\b", { deep: "N:\\Youtube video ideas\\c" }], n: 3, flag: true, nothing: null, other: "C:\\Users\\x" };
+  const got = rebaseDeep(input, spl, root);
+  assert.deepEqual(got, { out: "S:\\Youtube video ideas\\a\\x.mp4", list: ["S:\\Youtube video ideas\\b", { deep: "S:\\Youtube video ideas\\c" }], n: 3, flag: true, nothing: null, other: "C:\\Users\\x" });
+  assert.equal(input.out, "N:\\Youtube video ideas\\a\\x.mp4");
 });

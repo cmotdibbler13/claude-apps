@@ -1,11 +1,16 @@
 // Boot: host, install gate, project root, jobs, routing and re-rendering of the three screens.
 import { makeHost } from "./host.js";
 import { accessGate } from "./gate.js";
-import { join, filmKey } from "./paths.js";
+import { join, filmKey, rootSpellings } from "./paths.js";
 import { loadSettings } from "./settings.js";
 import { setToolPaths } from "./toolpaths.js";
 import { findRoot, rebasedHost, liveHost, readRawSettings, rootToRecord } from "./boot.js";
-import { computerName, roleNeeded, saveComputerSettings } from "./computer.js";
+import { computerName, roleNeeded, saveComputerSettings, sendsToDesktop, UNNAMED } from "./computer.js";
+import { DESKTOP_TOOLS } from "./labels.js";
+import { makePresence, linkLine, desktopState, BEAT_MS } from "./presence.js";
+import { presenceState } from "./linkstate.js";
+import { makeDesktopRunner, tidyRequests, withdraw } from "./tools/desktop.js";
+import { makeDesktopWorker } from "./desktopworker.js";
 import { installApp } from "./installapps.js";
 import { withRerecord, rerecordsToClear, lineWords, takeSig, addMark, setSize, moveMark, removeMark, placeFromNotes, newTakeIds } from "./pacing.js";
 import { applyPauses, JOINED_WITHOUT } from "./pacingchain.js";
@@ -63,7 +68,7 @@ const app = {
   root: null, jobs: null, films: [], view: "films",
   film: null, store: null, session: null, playing: null, retried: new Set(), goneJobs: new Map(), movedAside: null, stateError: null, bootError: null, openError: null,
   review: { making: false, listError: null, cardErrors: new Map(), pending: new Set(), estimating: new Set(), noteFor: null, draft: "", oc: {} },
-  starter: null, saBusy: false,
+  starter: null, saBusy: false, peers: [], link: null,
   previews: new Map(),
   layout: (() => { try { return localStorage.getItem(LAYOUT_KEY) || "script"; } catch { return "script"; } })(),
 };
@@ -134,6 +139,58 @@ function paintCredits() {
   const line = app.credits.line();
   el.hidden = !line; el.textContent = line ?? ""; el.title = app.credits.title();
 }
+// The header's link line and Pause button: the line shows when linkLine has text, the button on a desktop with a laptop peer.
+function paintLink() {
+  const line = $("link"), btn = $("pause-laptop");
+  if (!line || !btn) return;
+  line.hidden = !app.link; line.textContent = app.link ?? "";
+  btn.hidden = !(app.settings?.role === "desktop" && app.peers.some((p) => p.role === "laptop"));
+  btn.textContent = app.settings?.laptopJobs === "paused" ? "Resume laptop jobs" : "Pause laptop jobs";
+}
+async function toggleLaptopJobs() {
+  const btn = $("pause-laptop");
+  const laptopJobs = app.settings.laptopJobs === "paused" ? "on" : "paused";
+  try {
+    await saveComputerSettings(app.rawHost, app.root, app.computer, { laptopJobs });
+    app.settings.laptopJobs = laptopJobs; btn.title = "";
+  } catch (e) { btn.title = msg(e); }
+  render();
+}
+// Runs fn now and then every ms, never two at once; a failure is logged, never thrown out of the timer.
+function every(ms, fn) {
+  let busy = false;
+  const run = async () => {
+    if (busy) return;
+    busy = true;
+    try { await fn(); } catch (e) { console.error(e); } finally { busy = false; }
+  };
+  run();
+  setInterval(run, ms);
+}
+// Presence (both roles) and, on a named desktop, the worker that takes laptop jobs. Not started while this computer's role is unknown.
+async function startLink(host, raw) {
+  const { root, computer, settings } = app;
+  if (app.roleNeeded || computer === UNNAMED) return;
+  const role = settings.role;
+  let worker = null;
+  if (role === "desktop") {
+    worker = makeDesktopWorker({ host, root, computer, jobs: app.jobs, spellings: rootSpellings(raw), paused: () => app.settings.laptopJobs === "paused" });
+    await worker.reconcile().catch((e) => console.error(e));
+  } else {
+    await tidyRequests(host, root, computer, app.jobs.list()).catch((e) => console.error(e));
+  }
+  const presence = makePresence(host, { root, computer, role, state: () => presenceState({
+    role, jobs: app.jobs.list(), settings: app.settings, counts: worker?.counts(),
+    tools: { comfyui: app.comfyStarter?.state() ?? null, stableaudio: app.starter?.state() ?? null } }) });
+  $("pause-laptop").onclick = toggleLaptopJobs;
+  every(BEAT_MS, async () => {
+    await presence.beat();
+    app.peers = await presence.read();
+    app.link = linkLine({ role, peers: app.peers, serverError: presence.serverError, root });
+    render();
+  });
+  if (worker) every(10_000, () => worker.tick());
+}
 function onJobsChanged(list) {
   if (!armed) { prevJobs = list; return; }
   const msgs = notifyRules(prevJobs, list);
@@ -175,6 +232,7 @@ function paint(name, el, model, view, actions) {
 }
 
 async function renderNow() {
+  paintLink();
   const list = app.jobs ? app.jobs.list() : [];
   const count = jobsView.activeCount(list);
   const badge = $("jobcount");
@@ -200,7 +258,7 @@ async function renderNow() {
       tools: app.comfyStarter ? toolsLine({ comfy: app.comfyStarter, stableAudio: app.starter }) : null }), filmsView, filmsActions);
   } else if (app.view === "jobs") {
     const log = app.store ? await app.store.readLog(50) : null;
-    const model = jobsView.jobsModel({ jobs: list, log, retried: app.retried, persistError: null, gone: goneJobs(list) });
+    const model = jobsView.jobsModel({ jobs: list, log, retried: app.retried, persistError: null, gone: goneJobs(list), role: app.settings?.role });
     paint("jobs", $("view-jobs"), model, jobsView, jobsActions);
   } else if (app.view === "review") {
     const r = app.review;
@@ -217,7 +275,7 @@ async function renderNow() {
       lineScript: r.lineScript ?? null, transcript: r.transcript ?? null, transcriptAt: r.transcript ? r.transcriptAt ?? null : undefined,
       onCamera: { estimates: estimatesView(), photosOk: !!r.oc.photosOk, ui: r.oc },
       part2Ui: part2UiNow(),
-      role: app.settings?.role ?? "desktop",
+      role: app.settings?.role ?? "desktop", localTools: app.settings?.localTools ?? [],
     });
     r.paceSource = model.mix?.pacing?.source ?? null;
     // No voiceover player in the review now (a rejoin is running, or the mix is current): stop the old one, unseen.
@@ -266,6 +324,10 @@ const probeSetup = {
   rawHost: () => app.rawHost,
   chosenMissing: () => app.chosenMissing,
   roleNeeded: () => refreshRoleNeeded(),
+  desktop: () => desktopState(app.peers),
+  hasLaptop: () => app.peers.some((p) => p.role === "laptop"),
+  laptopJobs: () => app.settings?.laptopJobs,
+  toggleLaptopJobs: () => toggleLaptopJobs(),
   async save(patch) {
     needRoot();
     await saveComputerSettings(app.rawHost, app.root, await thisComputer(), patch);
@@ -307,6 +369,7 @@ async function loadRoot() {
   await refreshRoleNeeded();
   app.host = await rebasedHost(app.rawHost, app.root);
   const host = live;
+  const linkNow = !app.jobs;
   if (!app.jobs) {
     const settings = await loadSettings(app.host, app.root, { computer: app.computer });
     setToolPaths(settings);
@@ -324,6 +387,9 @@ async function loadRoot() {
     autostart(host, settings, { comfy: app.comfyStarter, stableAudio: starter }).catch(() => {});
     // A free check every 30 s keeps the line true when Jon opens or closes either tool himself.
     setInterval(() => { for (const s of [app.comfyStarter, app.starter]) Promise.resolve(s?.refresh(host)).catch(() => {}); }, 30_000);
+    // A laptop sends the graphics tools it doesn't run itself to the desktop through one shared runner.
+    const toDesktop = settings.role === "laptop" ? makeDesktopRunner({ root: app.root, computer: app.computer, spellings: rootSpellings(raw), peers: () => app.peers }) : null;
+    const desktopRunners = Object.fromEntries([...DESKTOP_TOOLS].filter((t) => sendsToDesktop(settings, t)).map((t) => [t, toDesktop]));
     app.jobs = makeJobs(host, {
       runners: {
         higgsfield: makeHiggsfieldRunner({ settings }),
@@ -334,6 +400,7 @@ async function loadRoot() {
         voicejoin: makeVoiceJoinRunner({ settings }),
         stemfit: makeStemFitRunner({ settings }),
         mixdown: makeMixdownRunner(),
+        ...desktopRunners,
       },
       file,
     });
@@ -346,8 +413,16 @@ async function loadRoot() {
     app.jobs.onPersistError(() => render());
     app.jobs.restore(saved);
   }
-  app.films = await scanFilms(host, app.root);
-  render();
+  try {
+    app.films = await scanFilms(host, app.root);
+    render();
+  } finally {
+    // The link to the other computer starts once Films is scanned and never holds Studio opening up on the server
+    // (it still runs after restore, so reconcile and tidy see the restored jobs). Nothing it does escapes loadRoot.
+    if (linkNow) {
+      try { startLink(host, raw).catch((e) => console.error(e)); } catch (e) { console.error(e); }
+    }
+  }
 }
 
 // Boot (and Try again): a failure shows on the Films screen with its message, not only in the console.
@@ -449,6 +524,13 @@ const jobsActions = {
     if (await refusedAsGone(id)) return;
     userStarted();
     try { app.jobs.check(id); } catch (e) { console.error(e); }
+    render();
+  },
+  // A laptop job still waiting for the desktop: write the withdrawal; the runner then fails it as Withdrawn.
+  async withdraw(id) {
+    const job = app.jobs?.list().find((j) => j.id === id);
+    if (!job) return;
+    try { await withdraw(app.host, app.root, job); } catch (e) { console.error(e); }
     render();
   },
 };

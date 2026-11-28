@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { filmRow, filmsModel } from "../js/ui/films.js";
-import { activeCount, jobsModel } from "../js/ui/jobs.js";
+import { activeCount, jobsModel, render as jobsRender } from "../js/ui/jobs.js";
 import { summarize, cardModel, reviewModel, scriptCandidates, card, MSG_I2V_SETUP } from "../js/ui/review.js";
 
 const DIR = "S:\\Youtube video ideas\\Skara Brae";
@@ -1014,59 +1014,69 @@ test("filmRow: Open script for a film at part 1 with a Part 1 state; part 2 stil
   assert.equal(filmRow({ ...base, parts: p("done", "now", "none", "none"), part1: null }, []).button.label, "Open review");
 });
 
-// ---- a laptop leaves graphics jobs to the desktop ----
+// ---- a laptop sends graphics jobs to the desktop ----
 import { MAKE_ON_DESKTOP } from "../js/labels.js";
 
-test("laptop: a ComfyUI shot's Make is disabled with Make this on the desktop; Higgsfield is unchanged", () => withDom(() => {
-  assert.equal(MAKE_ON_DESKTOP, "Make this on the desktop");
+test("laptop: a ComfyUI shot's first take reads Make on the desktop and is enabled; Higgsfield is unchanged", () => withDom(() => {
+  assert.equal(MAKE_ON_DESKTOP, "Make on the desktop");
   const comfy = asset({ id: "HF-03", kind: "broll", tool: "comfyui" });
   let c = cardModel(comfy, [comfy], { role: "laptop" });
-  assert.equal(c.canMakeFirst, false);
+  assert.equal(c.canMakeFirst, true);
   assert.equal(c.onDesktop, MAKE_ON_DESKTOP);
   let el = card(c, { layout: "script" }, stubActions());
   const b = byText(el, MAKE_ON_DESKTOP);
   assert.ok(b);
-  assert.equal(b.disabled, true);
+  assert.ok(!b.disabled);
   assert.equal(byText(el, "Make first take"), undefined);
-  // The same shot on the desktop.
+  // Set up on this laptop: the desktop behaviour.
+  c = cardModel(comfy, [comfy], { role: "laptop", localTools: ["comfyui"] });
+  assert.equal(c.canMakeFirst, true);
+  assert.equal(c.onDesktop, null);
+  assert.ok(byText(card(c, { layout: "script" }, stubActions()), "Make first take"));
   c = cardModel(comfy, [comfy], { role: "desktop" });
   assert.equal(c.canMakeFirst, true);
   assert.equal(c.onDesktop, null);
-  // Higgsfield on a laptop is unchanged.
   const hf = asset({ id: "HF-04", kind: "broll", tool: "higgsfield" });
   c = cardModel(hf, [hf], { role: "laptop" });
   assert.equal(c.canMakeFirst, true);
   assert.equal(c.onDesktop, null);
 }));
 
-test("laptop: a Blender shot with a take offers Approve but Redo says Make this on the desktop; Animate and Make 3D are disabled", () => withDom(() => {
+test("laptop: Redo, Make 3D and Animate are enabled for the desktop; Animate skips the i2v check", () => withDom(() => {
   const la = asset({ id: "HF-01", approved: true, takes: [take(1, "done", { file: "a.png" })], chosen: 1 });
   const b = asset({ id: "HF-02", kind: "blender", tool: "blender", sourceId: "HF-01", takes: [take(1, "done", { file: "a.mp4" })], chosen: 1 });
   const c = cardModel(b, [la, b], { role: "laptop" });
-  assert.equal(c.canRedo, false);
+  assert.equal(c.canRedo, true);
   let el = card(c, { layout: "script" }, stubActions());
   assert.ok(byText(el, "Approve"));
-  assert.equal(byText(el, "Redo…"), undefined);
-  assert.equal(byText(el, MAKE_ON_DESKTOP).disabled, true);
-  const lc = cardModel(la, [la], { role: "laptop", i2v: READY });
-  assert.equal(lc.canAnimate, false);
-  assert.equal(lc.animateWhy, MAKE_ON_DESKTOP);
+  assert.ok(byText(el, "Redo…"));
+  const lc = cardModel(la, [la], { role: "laptop", i2v: { ok: false } });
+  assert.equal(lc.can3d, true);
+  assert.equal(lc.canAnimate, true);
+  assert.equal(lc.animateWhy, "Made on the desktop");
+  assert.equal(lc.why3d, "Made on the desktop");
   el = card(lc, { layout: "script" }, stubActions());
   const an = byText(el, "Animate with ComfyUI");
-  assert.equal(an.disabled, true);
-  assert.equal(an.attrs.title, MAKE_ON_DESKTOP);
+  assert.ok(!an.disabled);
+  assert.equal(an.attrs.title, "Made on the desktop");
   const m3 = byText(el, "Make 3D in Blender");
-  assert.equal(m3.disabled, true);
-  assert.equal(m3.attrs.title, MAKE_ON_DESKTOP);
-  // The line art itself (Higgsfield) can still be redone on a laptop.
-  assert.equal(lc.canRedo, true);
+  assert.ok(!m3.disabled);
+  assert.equal(m3.attrs.title, "Made on the desktop");
+  // Set up here: Animate needs the local i2v check again.
+  const loc = cardModel(la, [la], { role: "laptop", localTools: ["comfyui", "blender"], i2v: { ok: false } });
+  assert.equal(loc.canAnimate, false);
+  assert.equal(loc.animateWhy, MSG_I2V_SETUP);
+  assert.equal(loc.can3d, true);
+  assert.equal(loc.why3d, null);
 }));
 
-test("laptop: a Stable Audio take says Make this on the desktop; ElevenLabs is unchanged; reviewModel passes the role", () => {
+test("laptop: a Stable Audio item reads Make on the desktop and is enabled when ready; ElevenLabs is unchanged; reviewModel passes the role", () => {
   const m = audioModel({ score: null, sfx: [cue()] }, { sa: sa(), role: "laptop" }).sfx[0];
   assert.equal(m.generateLabel, MAKE_ON_DESKTOP);
-  assert.equal(m.canGenerate, false);
-  assert.equal(m.canRedo, false);
+  assert.equal(m.canGenerate, true);
+  assert.equal(audioModel({ score: null, sfx: [cue({ prompt: "" })] }, { sa: sa(), role: "laptop" }).sfx[0].canGenerate, false);
+  const l = audioModel({ score: null, sfx: [cue()] }, { sa: sa(), role: "laptop", localTools: ["stableaudio"] }).sfx[0];
+  assert.equal(l.generateLabel, "Generate take · Free");
   const c = cue({ source: "elevenlabs" });
   const e = audioModel({ score: null, sfx: [{ ...c, est: { credits: 80, sig: nodeSig("sfx", c) } }] }, { sa: sa(), role: "laptop" }).sfx[0];
   assert.equal(e.generateLabel, "Generate take · about 80 credits");
@@ -1075,4 +1085,58 @@ test("laptop: a Stable Audio take says Make this on the desktop; ElevenLabs is u
   const rm = reviewModel({ film: { dir: DIR, title: "Skara Brae" }, state: { assets: [comfy], audio: { score: null, sfx: [cue()] } }, role: "laptop" });
   assert.equal(rm.cards[0].onDesktop, MAKE_ON_DESKTOP);
   assert.equal(rm.audio.sfx[0].generateLabel, MAKE_ON_DESKTOP);
+  const rl = reviewModel({ film: { dir: DIR, title: "Skara Brae" }, state: { assets: [comfy], audio: { score: null, sfx: [cue()] } }, role: "laptop", localTools: ["comfyui", "stableaudio"] });
+  assert.equal(rl.cards[0].onDesktop, null);
+  assert.equal(rl.audio.sfx[0].generateLabel, "Generate take · Free");
 });
+
+test("jobRow: a desktop job made for a laptop names it and can't be retried or checked here", () => {
+  const j = job({ id: "r1", tool: "comfyui", status: "failed", error: "boom", jobRef: "p1", from: "LAPTOP-JON", request: "LAPTOP-JON-j1" });
+  const r = jobsModel({ jobs: [j], retried: new Set(), role: "desktop" }).rows[0];
+  assert.equal(r.from, "from LAPTOP-JON");
+  assert.equal(r.canRetry, false);
+  assert.equal(r.retryNote, "Retry it from LAPTOP-JON");
+  assert.equal(r.canCheck, false);
+  assert.equal(jobsModel({ jobs: [job({ tool: "comfyui" })], retried: new Set() }).rows[0].from, null);
+});
+
+test("jobRow: a laptop graphics job waiting on the desktop can be withdrawn; Check only after an ambiguous failure", () => {
+  const w = job({ id: "w", tool: "comfyui", status: "running", remote: "waiting", jobRef: "L-w" });
+  assert.equal(jobsModel({ jobs: [w], retried: new Set(), role: "laptop" }).rows[0].canWithdraw, true);
+  assert.equal(jobsModel({ jobs: [{ ...w, remote: "running" }], retried: new Set(), role: "laptop" }).rows[0].canWithdraw, false);
+  assert.equal(jobsModel({ jobs: [{ ...w, status: "queued" }], retried: new Set(), role: "laptop" }).rows[0].canWithdraw, false);
+  assert.equal(jobsModel({ jobs: [w], retried: new Set(), role: "desktop" }).rows[0].canWithdraw, false);
+  const f = { ...w, status: "failed", error: "x", ambiguous: true };
+  assert.equal(jobsModel({ jobs: [{ ...f, tool: "blender" }], retried: new Set(), role: "laptop" }).rows[0].canCheck, true);
+  assert.equal(jobsModel({ jobs: [{ ...f, tool: "blender", ambiguous: false }], retried: new Set(), role: "laptop" }).rows[0].canCheck, false);
+});
+
+test("jobRow: a sent laptop ComfyUI job is checked only after an ambiguous failure, with no local warning", () => {
+  const f = job({ id: "c", tool: "comfyui", status: "failed", error: "x", remote: "running", jobRef: "L-c" });
+  for (const o of [{}, { status: "interrupted" }]) {
+    const r = jobsModel({ jobs: [{ ...f, ...o }], retried: new Set(), role: "laptop" }).rows[0];
+    assert.equal(r.canCheck, false);
+    assert.equal(r.warning, null);
+  }
+  const a = jobsModel({ jobs: [{ ...f, ambiguous: true }], retried: new Set(), role: "laptop" }).rows[0];
+  assert.equal(a.canCheck, true);
+  assert.equal(a.warning, null);
+  // Run on this laptop (no remote): as today.
+  assert.equal(jobsModel({ jobs: [{ ...f, remote: undefined }], retried: new Set(), role: "laptop" }).rows[0].canCheck, true);
+  // A from-job's retry note shows only once it has ended.
+  assert.equal(jobsModel({ jobs: [job({ tool: "comfyui", status: "running", from: "L" })], retried: new Set(), role: "desktop" }).rows[0].retryNote, null);
+});
+
+test("jobs view: the from tag and a Withdraw button", () => withDom(() => {
+  const rows = (o) => jobsModel({ jobs: [job(o)], retried: new Set(), role: "laptop" });
+  const acts = { check() {}, retry() {}, withdraw(id) { acts.got = id; } };
+  const el = document.createElement("div");
+  jobsRender(el, rows({ id: "w", tool: "comfyui", status: "running", remote: "waiting", jobRef: "L-w" }), acts);
+  const b = byText(el, "Withdraw");
+  assert.ok(b);
+  for (const f of b.listeners.click) f({ currentTarget: b });
+  assert.equal(acts.got, "w");
+  const d = document.createElement("div");
+  jobsRender(d, jobsModel({ jobs: [job({ tool: "comfyui", status: "failed", from: "LAPTOP-JON" })], retried: new Set(), role: "desktop" }), acts);
+  assert.ok(all(d, (x) => textOf(x) === "from LAPTOP-JON").length > 0);
+}));

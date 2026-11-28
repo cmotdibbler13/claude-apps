@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FakeHost } from "./fake-host.mjs";
-import { APPS, installApp } from "../js/installapps.js";
+import { APPS, installApp, unfinishedInstall, UNFINISHED } from "../js/installapps.js";
 
 const ROOT = "S:\\Youtube video ideas";
 const PARENT = "D:\\Apps";
-const setup = ({ curl = 0, pip = 0, ps = 0, py = 0, noFolder = false } = {}) => {
+// pyInfo: what each Python reports (major minor bits machine); "python" is the one Studio was given.
+const setup = ({ curl = 0, pip = 0, ps = 0, py = 0, noFolder = false, pyInfo = { python: "3 13 64 AMD64" }, where = "" } = {}) => {
   const host = new FakeHost();
   host.dirs.add(ROOT); host.dirs.add("D:");
   const seen = [];
@@ -14,11 +15,14 @@ const setup = ({ curl = 0, pip = 0, ps = 0, py = 0, noFolder = false } = {}) => 
     if (cmd === "curl") { if (curl) p.err("curl: (22) The requested URL returned error: 404"); p.exit(curl); }
     else if (cmd === "tar") {
       if (!noFolder) {
-        const tmp = args[args.length - 1];
+        const tmp = args[args.indexOf("-C") + 1];
         for (const f of ["autocue-studio", "stem-remixer"]) { host.dirs.add(`${tmp}\\claude-apps-main\\${f}`); host.files.set(`${tmp}\\claude-apps-main\\${f}\\app.py`, "x"); }
       }
       p.exit(0);
-    } else if (args.includes("--version")) p.exit(py);
+    } else if (args[0] === "-c") { if (py || !pyInfo[cmd]) p.exit(py || 9009); else { p.out(pyInfo[cmd] + "\r\n"); p.exit(0); } }
+    else if (cmd === "where") { if (where) { p.out(where); p.exit(0); } else p.exit(1); }
+    else if (cmd === "cmd") p.exit(1);
+    else if (args.includes("--version")) p.exit(py);
     else if (args.includes("pip")) p.exit(pip);
     else if (cmd === "powershell") p.exit(ps);
     else p.exit(0);
@@ -48,6 +52,17 @@ test("installs Autocue Studio and saves the settings", async () => {
   assert.deepEqual(steps, ["Downloading…", "Unpacking…", "Installing…", "Done"]);
 });
 
+test("unpacks only the app's folder and doesn't restore file times (Windows tar refuses some)", async () => {
+  const { host, seen } = setup();
+  await installApp(host, opts(host));
+  const tar = seen.find((c) => c[0] === "tar");
+  assert.ok(tar.includes("-m"), "no -m");
+  assert.equal(tar[tar.length - 1], "claude-apps-main/autocue-studio");
+  const { host: h2, seen: s2 } = setup();
+  await installApp(h2, opts(h2, { app: "stemremixer" }));
+  assert.equal(s2.find((c) => c[0] === "tar").at(-1), "claude-apps-main/stem-remixer");
+});
+
 test("installs Stem Remixer through its PowerShell script", async () => {
   const { host, seen } = setup();
   const r = await installApp(host, opts(host, { app: "stemremixer", python: undefined }));
@@ -75,6 +90,32 @@ test("a non-empty target is refused before any download", async () => {
   host.dirs.add("D:\\Apps\\Autocue Studio"); host.files.set("D:\\Apps\\Autocue Studio\\mine.txt", "x");
   await assert.rejects(installApp(host, opts(host)), /already has files in it\. Choose another folder\./);
   assert.equal(seen.length, 0);
+});
+
+test("Python 3.15 is refused with the reason before downloading", async () => {
+  const { host, seen } = setup({ pyInfo: { python: "3 15 64 AMD64" } });
+  await assert.rejects(installApp(host, opts(host)), (e) => /64-bit Python 3\.9 to 3\.14/.test(e.message) && /Python 3\.15/.test(e.message));
+  assert.ok(!seen.some((c) => c[0] === "curl"));
+});
+
+test("32-bit or ARM Python is refused", async () => {
+  for (const info of ["3 13 32 AMD64", "3 13 64 ARM64"]) {
+    const { host } = setup({ pyInfo: { python: info } });
+    await assert.rejects(installApp(host, opts(host)), /64-bit Python 3\.9 to 3\.14/);
+  }
+});
+
+test("an unsuitable Python is swapped for a suitable one already installed", async () => {
+  const py313 = "C:\\Users\\Jon\\AppData\\Local\\Programs\\Python\\Python313\\python.exe";
+  const { host, seen } = setup({ pyInfo: { python: "3 15 64 AMD64", [py313]: "3 13 64 AMD64" }, where: py313 + "\r\n" });
+  host.files.set(py313, "x");
+  const steps = [];
+  const r = await installApp(host, opts(host, { onStep: (t) => steps.push(t) }));
+  assert.ok(seen.some((c) => c[0] === py313 && c.includes("pip")));
+  assert.ok(steps.some((t) => t.includes(py313) && t.includes("3.13")));
+  const s = JSON.parse(host.files.get(`${ROOT}\\.studio-settings.json`)).computers.LAPTOP;
+  assert.equal(s.autocuePython, py313);
+  assert.equal(r.dir, "D:\\Apps\\Autocue Studio");
 });
 
 test("no Python refuses Autocue Studio before downloading", async () => {
@@ -120,4 +161,41 @@ test("a target that gains a file during the download is left alone", async () =>
   assert.ok(host.files.has("D:\\Apps\\Autocue Studio\\mine.txt"));
   assert.ok(!host.files.has("D:\\Apps\\Autocue Studio\\app.py"));
   assert.ok(noTmp(host));
+});
+
+test("a failed install is marked unfinished; Install again finishes it without downloading", async () => {
+  const bad = setup({ pip: 1 });
+  await assert.rejects(installApp(bad.host, opts(bad.host)), /Press Install again to finish it/);
+  const target = "D:\\Apps\\Autocue Studio";
+  assert.ok(bad.host.files.has(`${target}\\${UNFINISHED}`));
+  assert.equal(await unfinishedInstall(bad.host, PARENT, "autocue"), target);
+  assert.equal(await unfinishedInstall(bad.host, PARENT, "stemremixer"), null);
+  // Second press, pip now works: no download, the remaining steps run, the mark goes.
+  const seen = [];
+  bad.host.spawnScript((cmd, args, o, p) => {
+    seen.push([cmd, ...args]);
+    if (args[0] === "-c") { p.out("3 13 64 AMD64\r\n"); p.exit(0); } else p.exit(0);
+  });
+  const steps = [];
+  const r = await installApp(bad.host, opts(bad.host, { onStep: (t) => steps.push(t) }));
+  assert.equal(r.dir, target);
+  assert.ok(!seen.some((c) => c[0] === "curl" || c[0] === "tar"));
+  assert.ok(seen.some((c) => c.includes("pip")));
+  assert.ok(!bad.host.files.has(`${target}\\${UNFINISHED}`));
+  assert.equal(await unfinishedInstall(bad.host, PARENT, "autocue"), null);
+  assert.equal(steps.at(-1), "Done");
+  assert.ok(steps.includes("Finishing the earlier install…"));
+  assert.equal(JSON.parse(bad.host.files.get(`${ROOT}\\.studio-settings.json`)).computers.LAPTOP.autocueDir, target);
+});
+
+test("a successful install leaves no unfinished mark", async () => {
+  const { host } = setup();
+  await installApp(host, opts(host));
+  assert.ok(!host.files.has(`D:\\Apps\\Autocue Studio\\${UNFINISHED}`));
+});
+
+test("a folder marked unfinished for the other app is still refused", async () => {
+  const { host } = setup();
+  host.files.set(`D:\\Apps\\Autocue Studio\\${UNFINISHED}`, JSON.stringify({ app: "stemremixer" }));
+  await assert.rejects(installApp(host, opts(host)), /already has files in it/);
 });

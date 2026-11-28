@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FakeHost } from "./fake-host.mjs";
-import { GET_IT, openLink, findCandidates, checkChoice } from "../js/findtools.js";
+import { GET_IT, openLink, findCandidates, checkChoice, cleanPath } from "../js/findtools.js";
 
 const put = (host, p) => { const i = p.lastIndexOf("\\"); host.dirs.add(p.slice(0, i)); host.files.set(p, "x"); };
 // Scripts `where <exe>`, `cmd /c echo %VAR%` and --version answers.
@@ -57,8 +57,9 @@ test("ffmpeg: where output is parsed, unique and existing only; nothing found is
   put(host, "D:\\tools\\ffmpeg.exe");
   script(host, { where: { ffmpeg: "C:\\ffmpeg\\bin\\ffmpeg.exe\r\nD:\\tools\\ffmpeg.exe\r\nC:\\ffmpeg\\bin\\ffmpeg.exe\r\nE:\\gone\\ffmpeg.exe\r\n" } });
   assert.deepEqual(await findCandidates(host, "ffmpeg"), ["C:\\ffmpeg\\bin\\ffmpeg.exe", "D:\\tools\\ffmpeg.exe"]);
-  script(host);
-  assert.deepEqual(await findCandidates(host, "ffmpeg"), []);
+  const empty = new FakeHost();
+  script(empty);
+  assert.deepEqual(await findCandidates(empty, "ffmpeg"), []);
 });
 
 test("Python: where python plus the per-user installs, newest first", async () => {
@@ -120,4 +121,24 @@ test("checkChoice for folders: app.py for Autocue, the full check for Stem Remix
   put(host, "D:\\Stem\\VERSION");
   host.files.set("D:\\Stem\\VERSION", "1.9.2\n");
   assert.deepEqual(await checkChoice(host, "stemremixer", "D:\\Stem"), { ok: true, detail: "Stem Remixer 1.9.2" });
+});
+
+test("cleanPath strips the quotes Windows' Copy as path adds, and spaces", () => {
+  assert.equal(cleanPath('  "D:\\ffmpeg\\bin\\ffmpeg.exe" '), "D:\\ffmpeg\\bin\\ffmpeg.exe");
+  assert.equal(cleanPath("'C:\\Apps'"), "C:\\Apps");
+  assert.equal(cleanPath("D:\\Apps"), "D:\\Apps");
+  assert.equal(cleanPath(null), "");
+});
+
+test("ffmpeg: unzipped builds on C: and D: are found, nested or not, newest first", async () => {
+  const host = new FakeHost();
+  script(host);
+  const nested = "D:\\ffmpeg-2026-11-26-git-17de9f8597-full_build\\ffmpeg-2026-11-26-git-17de9f8597-full_build\\bin\\ffmpeg.exe";
+  const flat = "C:\\ffmpeg-2025-01-01-full_build\\bin\\ffmpeg.exe";
+  const apps = "D:\\Apps\\ffmpeg\\bin\\ffmpeg.exe";
+  for (const p of [nested, flat, apps]) put(host, p);
+  host.dirs.add("D:\\Other"); host.dirs.add("C:\\Windows");
+  const found = await findCandidates(host, "ffmpeg");
+  assert.ok(found.includes(nested) && found.includes(flat) && found.includes(apps));
+  assert.ok(found.indexOf(nested) < found.indexOf(flat));
 });

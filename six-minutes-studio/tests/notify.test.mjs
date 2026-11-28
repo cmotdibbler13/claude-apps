@@ -69,3 +69,14 @@ test("the score is named Score in messages", () => {
   const next = [job({ id: "a", assetId: "SCORE", take: 2, status: "done" })];
   assert.equal(notifyRules(prev, next)[0], "Score take 2 is ready to review");
 });
+
+test("jobs from another computer give no message, per take or for the film", () => {
+  const prev = [job({ id: "a", from: "LAPTOP" })];
+  const next = [job({ id: "a", from: "LAPTOP", status: "done" })];
+  assert.deepEqual(notifyRules(prev, next), []);
+  const own = job({ id: "b", assetId: "HF-02" });
+  assert.deepEqual(notifyRules([...prev, own], [...next, { ...own, status: "done" }]), [
+    "HF-02 take 3 is ready to review",
+    "Nothing left running for Deep Sea: 1 ready",
+  ]);
+});

@@ -9,6 +9,9 @@ const nameOf = (id) => (id === "SCORE" ? "Score" : id);
 const folder = (p) => String(p ?? "").split(/[\\/]/).filter(Boolean).pop() ?? "";
 
 export function notifyRules(prev = [], next = []) {
+  // Jobs taken from another computer are that computer's business, not this one's.
+  prev = prev.filter((j) => !j.from);
+  next = next.filter((j) => !j.from);
   const before = new Map(prev.map((j) => [j.id, j]));
   const out = [];
   for (const j of next) {

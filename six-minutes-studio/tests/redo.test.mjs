@@ -597,3 +597,18 @@ test("removeVersion lets a b-roll on a camera line go, but not one off camera or
   assert.equal(store.state.removed[0].takes[0].file, "x.mp4");
   await assert.rejects(() => removeVersion(ctx, "TC-01"), /not a 3D or animated version/);
 });
+
+test("a job from another computer is never recorded on this computer's takes", async () => {
+  const runners = { higgsfield: { start: async () => ({ file: "S:\\own.png" }) } };
+  const { host, store, jobs } = await setup([hf({ takes: [{ n: 1, prompt: "p", status: "queued", at: 1 }], chosen: 1 })], runners);
+  host.t += 1;
+  jobs.add({ film: DIR, assetId: "HF-01", take: 1, tool: "higgsfield", input: {} });
+  jobs.add({ film: DIR, assetId: "HF-01", take: 1, tool: "higgsfield", input: {}, from: "LAPTOP", request: "LAPTOP-j1" });
+  const ownId = jobs.list()[0].id;
+  watchJobs({ host, store, jobs, onError() {} });
+  await tick(); await tick();
+  const t = store.state.assets[0].takes[0];
+  assert.equal(t.jobId, ownId);
+  assert.equal(t.status, "done");
+  assert.equal(t.file, "S:\\own.png");
+});

@@ -256,7 +256,7 @@ function applyJobs(d, dir, list, lines, pending) {
   // Latest job per (asset, take): a retry replaces the earlier failed one.
   const film = filmKey(dir);
   const latest = new Map();
-  for (const j of list) if (filmKey(j.film) === film) latest.set(`${j.assetId}\u0000${j.take}`, j);
+  for (const j of list) if (!j.from && filmKey(j.film) === film) latest.set(`${j.assetId}\u0000${j.take}`, j);
   let changed = false;
   const all = holders(d);
   for (const j of latest.values()) {
