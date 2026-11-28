@@ -2,7 +2,7 @@
 // Nothing is ever put into an existing non-empty folder; Studio's own temporary folder is the only thing removed.
 import { runProcess } from "./proc.js";
 import { join } from "./paths.js";
-import { GET_IT } from "./findtools.js";
+import { GET_IT, findCandidates } from "./findtools.js";
 import { installAutocueJoin } from "./autocueinstall.js";
 import { saveComputerSettings } from "./computer.js";
 
@@ -24,7 +24,24 @@ async function step(host, what, cmd, args, timeout) {
   }
 }
 
-export async function installApp(host, { app, parent, python, root, computer, now = host.now?.() ?? Date.now(), onStep = () => {} } = {}) {
+// Autocue Studio's speech checker (faster-whisper) needs onnxruntime, which only exists for 64-bit
+// x86 Python 3.9 to 3.14 on Windows (not 3.15 yet, not 32-bit, not ARM).
+const PY_INFO = ["-c", "import sys,struct,platform;print(sys.version_info[0],sys.version_info[1],struct.calcsize('P')*8,platform.machine())"];
+
+// {major, minor, bits, machine}, or null when it doesn't run.
+export async function pythonInfo(host, python) {
+  if (!python) return null;
+  let r;
+  try { r = await runProcess(host, python, PY_INFO, { timeout: MIN }); } catch { return null; }
+  if (r.code !== 0) return null;
+  const m = /(\d+)\s+(\d+)\s+(\d+)\s+(\S+)/.exec(String(r.stdout ?? ""));
+  return m ? { major: +m[1], minor: +m[2], bits: +m[3], machine: m[4] } : null;
+}
+
+const pyOk = (i) => !!i && i.major === 3 && i.minor >= 9 && i.minor <= 14 && i.bits === 64 && /^(amd64|x86_64)$/i.test(i.machine);
+const pyName = (i) => `Python ${i.major}.${i.minor} (${i.bits}-bit${/^(amd64|x86_64)$/i.test(i.machine) ? "" : `, ${i.machine}`})`;
+
+export async function installApp(host, { app, parent, python: givenPython, root, computer, now = host.now?.() ?? Date.now(), onStep = () => {} } = {}) {
   const a = APPS[app];
   if (!a) throw new Error(`Unknown app: ${app}.`);
   const say = (t) => { try { onStep(t); } catch { /* reporting must not stop the install */ } };
@@ -35,10 +52,22 @@ export async function installApp(host, { app, parent, python, root, computer, no
     try { entries = await host.fs.list(target); } catch { entries = [{ name: "?" }]; }
     if (entries.length) throw new Error(`${target} already has files in it. Choose another folder.`);
   }
+  let python = givenPython;
   if (app === "autocue") {
-    let ok = false;
-    try { ok = !!python && (await runProcess(host, python, ["--version"], { timeout: MIN })).code === 0; } catch { /* no Python */ }
-    if (!ok) throw new Error("Set up Python first.");
+    const info = await pythonInfo(host, python);
+    if (!info) throw new Error("Set up Python first.");
+    if (!pyOk(info)) {
+      // Another Python on this computer may do: use the first suitable one.
+      let other = null;
+      for (const c of await findCandidates(host, "python").catch(() => [])) {
+        if (String(c).toLowerCase() === String(python).toLowerCase()) continue;
+        const i = await pythonInfo(host, c);
+        if (pyOk(i)) { other = { path: c, info: i }; break; }
+      }
+      if (!other) throw new Error(`Autocue Studio needs 64-bit Python 3.9 to 3.14 for its speech checker; ${python} is ${pyName(info)}. Install Python 3.13 (Windows installer, 64-bit) from Get it, then press Install again.`);
+      python = other.path;
+      say(`Using ${python} (Python ${other.info.major}.${other.info.minor}) for Autocue Studio: ${givenPython} is ${pyName(info)}.`);
+    }
   }
 
   const tmp = join(parent, `.sms-install-${now}`);

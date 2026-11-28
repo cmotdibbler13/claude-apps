@@ -5,7 +5,8 @@ import { APPS, installApp } from "../js/installapps.js";
 
 const ROOT = "S:\\Youtube video ideas";
 const PARENT = "D:\\Apps";
-const setup = ({ curl = 0, pip = 0, ps = 0, py = 0, noFolder = false } = {}) => {
+// pyInfo: what each Python reports (major minor bits machine); "python" is the one Studio was given.
+const setup = ({ curl = 0, pip = 0, ps = 0, py = 0, noFolder = false, pyInfo = { python: "3 13 64 AMD64" }, where = "" } = {}) => {
   const host = new FakeHost();
   host.dirs.add(ROOT); host.dirs.add("D:");
   const seen = [];
@@ -18,7 +19,10 @@ const setup = ({ curl = 0, pip = 0, ps = 0, py = 0, noFolder = false } = {}) => 
         for (const f of ["autocue-studio", "stem-remixer"]) { host.dirs.add(`${tmp}\\claude-apps-main\\${f}`); host.files.set(`${tmp}\\claude-apps-main\\${f}\\app.py`, "x"); }
       }
       p.exit(0);
-    } else if (args.includes("--version")) p.exit(py);
+    } else if (args[0] === "-c") { if (py || !pyInfo[cmd]) p.exit(py || 9009); else { p.out(pyInfo[cmd] + "\r\n"); p.exit(0); } }
+    else if (cmd === "where") { if (where) { p.out(where); p.exit(0); } else p.exit(1); }
+    else if (cmd === "cmd") p.exit(1);
+    else if (args.includes("--version")) p.exit(py);
     else if (args.includes("pip")) p.exit(pip);
     else if (cmd === "powershell") p.exit(ps);
     else p.exit(0);
@@ -86,6 +90,32 @@ test("a non-empty target is refused before any download", async () => {
   host.dirs.add("D:\\Apps\\Autocue Studio"); host.files.set("D:\\Apps\\Autocue Studio\\mine.txt", "x");
   await assert.rejects(installApp(host, opts(host)), /already has files in it\. Choose another folder\./);
   assert.equal(seen.length, 0);
+});
+
+test("Python 3.15 is refused with the reason before downloading", async () => {
+  const { host, seen } = setup({ pyInfo: { python: "3 15 64 AMD64" } });
+  await assert.rejects(installApp(host, opts(host)), (e) => /64-bit Python 3\.9 to 3\.14/.test(e.message) && /Python 3\.15/.test(e.message));
+  assert.ok(!seen.some((c) => c[0] === "curl"));
+});
+
+test("32-bit or ARM Python is refused", async () => {
+  for (const info of ["3 13 32 AMD64", "3 13 64 ARM64"]) {
+    const { host } = setup({ pyInfo: { python: info } });
+    await assert.rejects(installApp(host, opts(host)), /64-bit Python 3\.9 to 3\.14/);
+  }
+});
+
+test("an unsuitable Python is swapped for a suitable one already installed", async () => {
+  const py313 = "C:\\Users\\Jon\\AppData\\Local\\Programs\\Python\\Python313\\python.exe";
+  const { host, seen } = setup({ pyInfo: { python: "3 15 64 AMD64", [py313]: "3 13 64 AMD64" }, where: py313 + "\r\n" });
+  host.files.set(py313, "x");
+  const steps = [];
+  const r = await installApp(host, opts(host, { onStep: (t) => steps.push(t) }));
+  assert.ok(seen.some((c) => c[0] === py313 && c.includes("pip")));
+  assert.ok(steps.some((t) => t.includes(py313) && t.includes("3.13")));
+  const s = JSON.parse(host.files.get(`${ROOT}\\.studio-settings.json`)).computers.LAPTOP;
+  assert.equal(s.autocuePython, py313);
+  assert.equal(r.dir, "D:\\Apps\\Autocue Studio");
 });
 
 test("no Python refuses Autocue Studio before downloading", async () => {
