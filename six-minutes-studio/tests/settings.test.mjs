@@ -106,3 +106,28 @@ test("presenter.photos defaults to [] and merges; non-array becomes []", async (
   await host.fs.write(ROOT + "\\.studio-settings.json", JSON.stringify({ presenter: { photos: "x" } }));
   assert.deepEqual((await loadSettings(host, ROOT)).presenter.photos, []);
 });
+
+test("part 1 defaults: reference scripts and pronunciations file", async () => {
+  const s = await loadSettings(new FakeHost(), ROOT);
+  assert.deepEqual(s.referenceScripts, [
+    "S:\\Youtube video ideas\\Shipping Forecast\\shipping_forecast_script.md",
+    "S:\\Youtube video ideas\\London Sewers\\london_sewers_script.md",
+  ]);
+  assert.equal(s.pronunciationsFile, ROOT + "\\pronunciations.md");
+});
+
+test("referenceScripts: one path becomes a list, anything else not a list gives the default", async () => {
+  const host = new FakeHost();
+  await host.fs.mkdir(ROOT);
+  const file = ROOT + "\\.studio-settings.json";
+  await host.fs.write(file, JSON.stringify({ referenceScripts: "S:\\a.md" }));
+  assert.deepEqual((await loadSettings(host, ROOT)).referenceScripts, ["S:\\a.md"]);
+  const defaults = (await loadSettings(new FakeHost(), ROOT)).referenceScripts;
+  assert.ok(Array.isArray(defaults) && defaults.length > 0);
+  for (const v of [5, { a: 1 }, null, true]) {
+    await host.fs.write(file, JSON.stringify({ referenceScripts: v }));
+    assert.deepEqual((await loadSettings(host, ROOT)).referenceScripts, defaults);
+  }
+  await host.fs.write(file, JSON.stringify({ referenceScripts: ["S:\\b.md"] }));
+  assert.deepEqual((await loadSettings(host, ROOT)).referenceScripts, ["S:\\b.md"]);
+});

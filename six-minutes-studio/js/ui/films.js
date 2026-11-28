@@ -13,6 +13,7 @@ export function filmRow(film, jobs = []) {
   if (film.waiting) wait = { you: true, live: false, label: "Waiting on you:", text: film.waiting };
   else if (running) wait = { you: false, live: true, label: "Running:", text: `${running} job${running === 1 ? "" : "s"}` };
   const reviewable = film.parts?.[2] === "now";
+  const scriptable = film.parts?.[1] === "now" && film.part1 != null;
   return {
     dir: film.dir,
     title: film.title,
@@ -20,7 +21,7 @@ export function filmRow(film, jobs = []) {
     dot: film.series?.colour ?? null, // series is not in the data yet: no dot
     parts: STEPS.map(([k, label]) => ({ label, state: film.parts?.[k] ?? "none" })),
     wait,
-    button: reviewable ? { label: "Open review", primary: !!wait?.you } : null,
+    button: scriptable ? { label: "Open script", primary: true } : reviewable ? { label: "Open review", primary: !!wait?.you } : null,
   };
 }
 
@@ -39,7 +40,7 @@ function row(r, actions) {
       r.meta || r.dot ? h("div", { class: "m" }, r.dot ? h("span", { class: "dot", style: { background: r.dot } }) : null, r.meta) : null,
       h("div", { class: "t", text: r.title })),
     h("div", { class: "parts" }, r.parts.map((p) => h("div", { class: `part ${p.state}` }, MARK[p.state] ?? "", p.label))),
-    h("div", {}, r.button ? btn(r.button.label, () => actions.openReview(r.dir), { ghost: !r.button.primary }) : null),
+    h("div", {}, r.button ? btn(r.button.label, () => (r.button.label === "Open script" ? actions.openScript?.(r.dir) : actions.openReview(r.dir)), { ghost: !r.button.primary }) : null),
     r.wait ? h("div", { class: `wait${r.wait.you ? " you" : ""}` },
       h("span", {}, r.wait.live ? h("span", { class: "dot live" }) : null, r.wait.label, " ", r.wait.text)) : null,
   );
@@ -47,7 +48,7 @@ function row(r, actions) {
 
 export function render(el, model, actions) {
   const head = [
-    h("h1", { text: "Your films" }),
+    h("div", { class: "head fhead" }, h("h1", { text: "Your films" }), btn("New film", () => actions.newFilm?.())),
     h("p", { class: "lede", text: "Each film shows where it is in your three parts, and anything waiting on you is in brass." }),
     model.tools ? h("p", { class: "hist tools", text: model.tools }) : null,
   ].filter(Boolean);

@@ -90,3 +90,28 @@ test("one folder that throws does not hide the others", async () => {
   const films = await scanFilms(h, ROOT);
   assert.deepEqual(films.map((f) => f.title), ["Good"]);
 });
+
+test("part 1 state sets part1 and the waiting text", async () => {
+  const h = new FakeHost();
+  const st = (p1) => JSON.stringify({ waiting: "old", part1: p1 });
+  await film(h, "Drafted", { "studio\\state.json": st({ setup: {}, drafts: [{ n: 1 }] }) });
+  await film(h, "Fresh", { "studio\\state.json": st({ setup: {}, drafts: [] }) });
+  await film(h, "Plain", { "studio\\state.json": JSON.stringify({ waiting: "old" }) });
+  await film(h, "Broken", { "studio\\state.json": "{nope" });
+  const by = Object.fromEntries((await scanFilms(h, ROOT)).map((f) => [f.title, f]));
+  assert.equal(by.Drafted.part1, "draft");
+  assert.equal(by.Drafted.waiting, "Script: waiting on you");
+  assert.equal(by.Fresh.part1, "none");
+  assert.equal(by.Fresh.waiting, "Script: not written yet");
+  assert.equal(by.Plain.part1, null);
+  assert.equal(by.Plain.waiting, "old");
+  assert.equal(by.Broken.part1, null);
+});
+
+test("part 1 done: state.waiting is kept", async () => {
+  const h = new FakeHost();
+  await film(h, "Done", { "handover\\part1_handover.md": "x", "studio\\state.json": JSON.stringify({ waiting: "Shot list ready", part1: { setup: {}, drafts: [{ n: 1 }] } }) });
+  const [f] = await scanFilms(h, ROOT);
+  assert.equal(f.parts[1], "done");
+  assert.equal(f.waiting, "Shot list ready");
+});

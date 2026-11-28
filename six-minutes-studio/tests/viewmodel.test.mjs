@@ -1004,3 +1004,12 @@ test("live jobs: a job whose shot was removed offers neither Run again nor Check
   assert.equal(by.c.canRetry, true);
   assert.equal(by.c.retryNote, null);
 });
+
+test("filmRow: Open script for a film at part 1 with a Part 1 state; part 2 still Open review", () => {
+  const base = { dir: "S:\\x\\A", title: "A", number: null, waiting: null };
+  const p = (a, b, c, d) => ({ 1: a, 2: b, 3: c, shorts: d });
+  const row = filmRow({ ...base, parts: p("now", "none", "none", "none"), part1: "draft" }, []);
+  assert.deepEqual(row.button, { label: "Open script", primary: true });
+  assert.equal(filmRow({ ...base, parts: p("now", "none", "none", "none"), part1: null }, []).button, null);
+  assert.equal(filmRow({ ...base, parts: p("done", "now", "none", "none"), part1: null }, []).button.label, "Open review");
+});

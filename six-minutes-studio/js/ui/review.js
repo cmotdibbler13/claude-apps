@@ -10,6 +10,7 @@ import { mixModel, mixSection } from "./mix.js";
 import { onCameraModel, onCameraSection, costLabel, STALE_PORTRAIT, ON_CAMERA } from "./oncamera.js";
 import { clipLock, lineLengthS, clipSeconds, onCameraConflict, VOICEOVER_CHANGED } from "../presenter.js";
 import { part2Model, part2Bar } from "./part2.js";
+import { part1Section } from "./part1.js";
 
 const busyTake = (t) => t.status === "queued" || t.status === "running";
 const isBusy = (a) => a.takes.some(busyTake);
@@ -166,9 +167,12 @@ function narrationSection(n, actions) {
 
 // lineScript/transcript: the film's parsed line script and last good join's transcript (On camera, clip locks).
 // onCamera: { estimates, photosOk, ui } for the On camera step (oncamera.onCameraModel).
-export function reviewModel({ film, state, layout = "script", making = false, listError = null, cardErrors = new Map(), pending = new Set(), noteFor = null, openError = null, prefError = null, i2v = null, removeFor = null, narration = null, playing = null, paused = false, audio, sa = null, audioUi = {}, mixUi = {}, lineScript = null, transcript = null, transcriptAt, onCamera = {}, part2Ui = {} }) {
+// part1: the Part 1 step (part1.part1Model), passed while the film has no Part 1 handover. Until it is approved the
+// review shows only the film heading and that step; once approved the step stays above the Part 2 sections.
+export function reviewModel({ part1 = null, film, state, layout = "script", making = false, listError = null, cardErrors = new Map(), pending = new Set(), noteFor = null, openError = null, prefError = null, i2v = null, removeFor = null, narration = null, playing = null, paused = false, audio, sa = null, audioUi = {}, mixUi = {}, lineScript = null, transcript = null, transcriptAt, onCamera = {}, part2Ui = {} }) {
   if (openError) return { openFailed: true, dir: openError.dir, title: openError.title, message: `Couldn't open ${openError.title}: ${openError.message}` };
   if (!film) return { noFilm: true };
+  if (part1 && !part1.approved) return { noFilm: false, part1Only: true, title: film.title, eyebrow: `${film.title} / Part 1 script / review`, part1 };
   const assets = state?.assets ?? [];
   const ordered = orderByScript(assets);
   const shots = ordered.filter((a) => a.kind !== "presenter");
@@ -200,6 +204,7 @@ export function reviewModel({ film, state, layout = "script", making = false, li
     noteFor,
     onCamera: onCam,
     cards: shots.map(cardFor),
+    part1,
   };
 }
 
@@ -319,6 +324,10 @@ export function render(el, model, actions) {
     el.replaceChildren(h("h1", { text: "Review" }), h("p", { class: "lede", text: "Open a film's review from Films." }));
     return;
   }
+  if (model.part1Only) {
+    el.replaceChildren(h("span", { class: "eyebrow", text: model.eyebrow }), h("h1", { class: "rtitle", text: model.title }), part1Section(model.part1, actions.part1 ?? {}));
+    return;
+  }
   const pref = h("input", { type: "checkbox", id: "prefer-comfy", disabled: model.preferDisabled });
   pref.checked = model.preferComfy;
   // If the change was refused or failed, put the box back to what the film says.
@@ -333,6 +342,7 @@ export function render(el, model, actions) {
     model.prefError ? h("p", { class: "err", text: model.prefError }) : null,
     // The prompter bar sticks at the top while Jon scrolls (shown once a voiceover is joined).
     model.mix?.pacing && actions.prompter ? actions.prompter(model.mix.pacing) : null,
+    model.part1 ? part1Section(model.part1, actions.part1 ?? {}) : null,
   ].filter(Boolean);
   if (model.needsShotList) {
     el.replaceChildren(...head, ...(model.narration ? [narrationSection(model.narration, actions)] : []), ...audioSections(model.audio, actions), mixSection(model.mix, actions),

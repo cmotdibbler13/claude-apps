@@ -307,3 +307,42 @@ test("Presenter photos row", async () => {
   r = await run(["a", "b", "c"]);
   assert.equal(r.ok, false);
 });
+
+test("Reference script: passes with the first referenceScripts file that exists, fails naming the setting", async () => {
+  const host = new FakeHost();
+  host.spawnScript((cmd, args, o, p) => { p.out("ok"); p.exit(0); });
+  await host.fs.mkdir("S:\\ref");
+  await host.fs.write("S:\\ref\\b.md", "x");
+  const s = { ...settings, referenceScripts: ["S:\\ref\\a.md", "S:\\ref\\b.md"], pronunciationsFile: "S:\\ref\\p.md" };
+  const ok = named(await runChecks(host, () => {}, s), "Reference script");
+  assert.equal(ok.ok, true);
+  assert.equal(ok.detail, "S:\\ref\\b.md");
+  const none = named(await runChecks(host, () => {}, { ...s, referenceScripts: ["S:\\ref\\a.md"] }), "Reference script");
+  assert.equal(none.ok, false);
+  assert.match(none.detail, /referenceScripts/);
+  assert.equal(none.detail, "None of the referenceScripts in .studio-settings.json is there. Set referenceScripts to one or more finished scripts.");
+});
+
+test("Pronunciations: passes when the file exists, else a warning (not a failure)", async () => {
+  const { probeRow } = await import("../js/ui/probe.js");
+  const host = new FakeHost();
+  host.spawnScript((cmd, args, o, p) => { p.out("ok"); p.exit(0); });
+  await host.fs.mkdir("S:\\ref");
+  const s = { ...settings, referenceScripts: [], pronunciationsFile: "S:\\ref\\pronunciations.md" };
+  const miss = named(await runChecks(host, () => {}, s), "Pronunciations");
+  assert.equal(miss.ok, false);
+  assert.equal(miss.warn, true);
+  assert.equal(miss.detail, "No pronunciations file yet: Studio starts one when you approve a Part 1.");
+  const el = () => ({ append(...k) { this.kids = k; }, className: "", textContent: "" });
+  const saved = globalThis.document;
+  globalThis.document = { createElement: el };
+  try {
+    const li = probeRow(miss);
+    assert.equal(li.className, "warn");
+    assert.equal(li.kids[0].textContent, "Warning");
+  } finally { globalThis.document = saved; }
+  await host.fs.write("S:\\ref\\pronunciations.md", "## Storms\n");
+  const ok = named(await runChecks(host, () => {}, s), "Pronunciations");
+  assert.equal(ok.ok, true);
+  assert.equal(ok.detail, "S:\\ref\\pronunciations.md");
+});
