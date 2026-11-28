@@ -19,11 +19,10 @@ async function put(host, root, name, body) {
   await writeSafely(host, join(dir, name), JSON.stringify(body, null, 2));
 }
 
+const fileNames = (entries) => entries.filter((e) => e.isFile !== false && e.isDirectory !== true).map((e) => e.name);
+
 async function names(host, dir) {
-  try {
-    const entries = await host.fs.list(dir);
-    return entries.filter((e) => e.isFile !== false && e.isDirectory !== true).map((e) => e.name);
-  } catch { return []; }
+  try { return fileNames(await host.fs.list(dir)); } catch { return []; }
 }
 
 async function readJson(host, path) {
@@ -78,12 +77,48 @@ export async function listChecks(host, root, id) {
 export const listRequests = (host, root) => readAll(host, root, REQUEST);
 export const listAnswers = (host, root) => readAll(host, root, ANSWER);
 
+// Requests with no answer yet. The folder is listed once and both sets come from that one listing,
+// so a listing that fails (a mapped drive waking up) shows nothing pending rather than every request.
 export async function pendingRequests(host, root) {
-  const answered = new Set((await names(host, dirOf(root))).filter((n) => lower(n).endsWith(ANSWER)).map(lower));
-  const all = await listRequests(host, root);
-  return all
-    .filter((r) => typeof r.id === "string" && !answered.has(lower(`${r.id}${ANSWER}`)))
-    .sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
+  const dir = dirOf(root);
+  let all;
+  try { all = fileNames(await host.fs.list(dir)); } catch { return []; }
+  const answered = new Set(all.filter((n) => lower(n).endsWith(ANSWER)).map(lower));
+  const out = [];
+  for (const n of all.filter((n) => lower(n).endsWith(REQUEST)).sort()) {
+    const r = await readJson(host, join(dir, n));
+    if (r && typeof r.id === "string" && !answered.has(lower(`${r.id}${ANSWER}`))) out.push(r);
+  }
+  return out.sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
+}
+
+// Is the answer file in the queue folder? Throws when it can't tell (so a failed look is never "absent").
+export const answerInQueue = async (host, root, id) => !!(await host.fs.exists(join(dirOf(root), `${id}${ANSWER}`)));
+
+// Is this request anywhere, in the queue folder or in finished\? Throws when it can't tell.
+export async function requestAnywhere(host, root, id) {
+  const name = `${id}${REQUEST}`;
+  if (await host.fs.exists(join(dirOf(root), name))) return true;
+  const fin = join(dirOf(root), FINISHED);
+  if (!(await host.fs.exists(fin))) return false;
+  return fileNames(await host.fs.list(fin)).some((n) => filedAs(n, id, REQUEST));
+}
+
+// A file name in finished\ for this id and kind: the plain name, or the plain name with `_<ms>` added.
+const filedAs = (n, id, suffix) => {
+  const stem = lower(`${id}${suffix.replace(/\.json$/, "")}`);
+  return lower(n) === `${stem}.json` || (lower(n).startsWith(`${stem}_`) && lower(n).endsWith(".json"));
+};
+
+// The desktop's answer once it has been filed in finished\ (the latest one if there are several), or null.
+export async function readFinishedAnswer(host, root, id) {
+  const fin = join(dirOf(root), FINISHED);
+  const found = (await names(host, fin)).filter((n) => filedAs(n, id, ANSWER)).sort();
+  for (const n of found.reverse()) {
+    const v = await readJson(host, join(fin, n));
+    if (v) return v;
+  }
+  return null;
 }
 
 // A name not already taken in finished\: `_<ms>` before .json, then more digits if still taken.
@@ -115,6 +150,6 @@ export async function requestFinished(host, root, id) {
   try {
     if (await host.fs.exists(join(dirOf(root), name))) return false;
     const inFinished = await names(host, join(dirOf(root), FINISHED));
-    return inFinished.some((n) => lower(n) === lower(name) || (lower(n).startsWith(lower(`${id}.request_`)) && lower(n).endsWith(".json")));
+    return inFinished.some((n) => filedAs(n, id, REQUEST));
   } catch { return false; }
 }

@@ -415,3 +415,18 @@ test("setRemote persists the state; retry drops it", async () => {
   const again = jobs.retry(id);
   assert.equal(jobs.list().find((j) => j.id === again).remote, undefined);
 });
+
+test("ctx.checking is true only for a resume Jon asked for with Check, not for restore", async () => {
+  const seen = [];
+  const comfyui = { lane: "gpu", start: async (j, c) => { c.setRef("R"); throw Object.assign(new Error("x"), { ambiguous: true }); }, resume: async (j, c) => { seen.push(c.checking); throw Object.assign(new Error("x"), { ambiguous: true }); } };
+  const { jobs } = await setup({ comfyui });
+  const id = jobs.add(spec("comfyui"));
+  await tick(); await tick(); await tick();
+  jobs.check(id);
+  await tick(); await tick(); await tick();
+  assert.deepEqual(seen, [true]);
+  assert.equal(jobs.list()[0].checkNext, undefined);
+  jobs.restore(jobs.list().map((j) => ({ ...j, status: "running" })));
+  await tick(); await tick(); await tick();
+  assert.deepEqual(seen, [true, false]);
+});

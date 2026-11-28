@@ -127,3 +127,25 @@ test("desktopState", () => {
   assert.deepEqual(ds([peer({ seen: false })]), { text: " (not seen since 09:05)", ready: false });
   assert.deepEqual(ds([]), { text: " (not seen yet)", ready: false });
 });
+
+test("a good read does not clear a failed beat in the same cycle", async () => {
+  const host = new FakeHost();
+  await put(host, "DESK", { computer: "DESK", role: "desktop", at: host.now(), paused: false, running: 0, waiting: 0, tools: {} });
+  const real = host.fs.write;
+  host.fs.write = async () => { throw new Error("share read-only"); };
+  const p = makePresence(host, { root: ROOT, computer: "LAPTOP", role: "laptop", state: () => st });
+  await p.beat();
+  await p.read();
+  assert.match(p.serverError, /read-only/);
+  host.fs.write = real;
+  await p.beat();
+  await p.read();
+  assert.equal(p.serverError, null);
+  // and a failed read is reported even after a good beat
+  const list = host.fs.list;
+  host.fs.list = async () => { throw new Error("gone"); };
+  await p.beat();
+  await p.read();
+  assert.match(p.serverError, /gone/);
+  host.fs.list = list;
+});

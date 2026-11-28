@@ -123,7 +123,7 @@ test("restore resumes without a second request, and finishes when the answer arr
   assert.equal(jobs2.list()[0].file, "N:\\Youtube video ideas\\a.mp4");
 });
 
-test("resume of an ambiguous failure writes a check; failed without it counts as running", async () => {
+test("Check on an ambiguous failure writes a check and waits for the desktop to answer it", async () => {
   const { host, jobs } = await setup();
   const id = jobs.add(spec());
   await settle();
@@ -137,7 +137,7 @@ test("resume of an ambiguous failure writes a check; failed without it counts as
   let j = jobs.list()[0];
   assert.equal(j.status, "running");
   assert.equal(j.remote, "running");
-  assert.equal(j.eta, "On the desktop: 30%");
+  assert.equal(j.eta, "Waiting for the desktop");
   assert.equal((await listRequests(host, ROOT)).length, 1);
   await writeAnswer(host, ROOT, answer({ id: rid, status: "failed", error: "Still gone", ambiguous: true, checks }));
   await settle();
@@ -183,4 +183,134 @@ test("tidyRequests moves an orphan and leaves a matched one", async () => {
   await tidyRequests(host, ROOT, "LAP", [{ id: "j1" }]);
   assert.deepEqual((await listRequests(host, ROOT)).map((r) => r.id).sort(), ["LAP-j1", "OTHER-j3"]);
   void readAnswer;
+});
+
+// A fresh laptop Studio on the same shared folder, restoring `saved`.
+function reopen(host, saved, peers = [peer()]) {
+  const mine = gen;
+  const runner = makeDesktopRunner({ root: ROOT, computer: "LAP", spellings: ["S:\\Youtube video ideas"], peers: () => peers, poll: 5000, sleep: async () => { if (mine !== gen) throw new Error("stop"); host.t += 5000; await tick(); } });
+  const jobs = makeJobs(host, { runners: { comfyui: runner } });
+  jobs.restore(saved);
+  return jobs;
+}
+
+test("start sets the job's reference before it writes the request", async () => {
+  const { host, jobs } = await setup();
+  const refs = [];
+  const wr = host.fs.write;
+  host.fs.write = async (p, d) => { if (/\.request\.json/.test(p)) refs.push(jobs.list()[0].jobRef); return wr(p, d); };
+  const id = jobs.add(spec());
+  await settle();
+  assert.deepEqual(refs, [`LAP-${id}`]);
+});
+
+test("resume after closing before the request was written sends it then, once", async () => {
+  const host = new FakeHost();
+  await host.fs.mkdir(ROOT);
+  const saved = [{ id: "j1", ...spec(), lane: "gpu", status: "running", progress: null, eta: null, jobRef: "LAP-j1" }];
+  const jobs = reopen(host, saved);
+  await settle();
+  const reqs = await listRequests(host, ROOT);
+  assert.equal(reqs.length, 1);
+  assert.equal(reqs[0].id, "LAP-j1");
+  assert.deepEqual(reqs[0].job, { film: "F", assetId: "a1", take: 2, tool: "comfyui", what: "w", why: "y", input: { p: 1 } });
+  assert.equal(jobs.list()[0].eta, "Waiting for the desktop");
+  await writeAnswer(host, ROOT, answer({ id: "LAP-j1", status: "done", file: "S:\\Youtube video ideas\\a.mp4" }));
+  await settle();
+  assert.equal(jobs.list()[0].status, "done");
+  assert.equal((await listRequests(host, ROOT)).length, 0);
+});
+
+test("resume never writes a second request when one is filed, or when a withdrawal is there", async () => {
+  const host = new FakeHost();
+  await host.fs.mkdir(ROOT);
+  await writeRequest(host, ROOT, { id: "LAP-j1", from: "LAP", root: ROOT, job: {} });
+  const { moveMine, writeWithdrawn } = await import("../js/queue.js");
+  await moveMine(host, ROOT, "LAP-j1", "laptop");
+  await writeWithdrawn(host, ROOT, "LAP-j2");
+  const job = (id) => ({ id, ...spec(), lane: "gpu", status: "running", progress: null, eta: null, jobRef: `LAP-${id}` });
+  const jobs = reopen(host, [job("j1"), job("j2")]);
+  await settle(60);
+  assert.equal((await listRequests(host, ROOT)).length, 0);
+  assert.deepEqual(jobs.list().map((j) => [j.status, j.error]), [["failed", "Withdrawn"], ["failed", "Withdrawn"]]);
+});
+
+test("closing after filing the request but before saving done: reopening reads the filed answer", async () => {
+  const host = new FakeHost();
+  await host.fs.mkdir(ROOT);
+  const { moveMine } = await import("../js/queue.js");
+  const file = async (id, a) => {
+    await writeRequest(host, ROOT, { id, from: "LAP", root: ROOT, job: {} });
+    if (a) await writeAnswer(host, ROOT, answer({ id, ...a }));
+    await moveMine(host, ROOT, id, "laptop");
+    if (a) await moveMine(host, ROOT, id, "desktop");
+  };
+  await file("LAP-j1", { status: "done", file: "S:\\Youtube video ideas\\a.mp4" });
+  await file("LAP-j2", { status: "withdrawn" });
+  await file("LAP-j3", { status: "failed", error: "Out of memory" });
+  await file("LAP-j4", null);
+  const job = (id) => ({ id, ...spec(), lane: "gpu", status: "running", progress: null, eta: null, jobRef: `LAP-${id}` });
+  const jobs = reopen(host, ["j1", "j2", "j3", "j4"].map(job));
+  await settle(80);
+  const got = jobs.list().map((j) => [j.status, j.file ?? j.error]);
+  assert.deepEqual(got, [
+    ["done", "N:\\Youtube video ideas\\a.mp4"],
+    ["failed", "Withdrawn"],
+    ["failed", "On the desktop: Out of memory"],
+    ["failed", "Withdrawn"],
+  ]);
+});
+
+test("a running answer with no progress says starting", async () => {
+  const { host, jobs } = await setup();
+  const id = jobs.add(spec());
+  await settle();
+  await writeAnswer(host, ROOT, answer({ id: `LAP-${id}` }));
+  await settle();
+  assert.equal(jobs.list()[0].eta, "On the desktop: starting");
+});
+
+test("a desktop failure that already says on the desktop is not prefixed twice", async () => {
+  const { host, jobs } = await setup();
+  const id = jobs.add(spec());
+  await settle();
+  await writeAnswer(host, ROOT, answer({ id: `LAP-${id}`, status: "failed", error: "Interrupted on the desktop; press Retry" }));
+  await settle();
+  assert.equal(jobs.list()[0].error, "Interrupted on the desktop; press Retry");
+});
+
+test("restore of a job whose answer is failed and ambiguous writes no check; it fails for Jon to Check", async () => {
+  const { host, jobs } = await setup();
+  const id = jobs.add(spec());
+  await settle();
+  await jobs.flush();
+  const saved = jobs.list();
+  gen++; // close the first Studio
+  await writeAnswer(host, ROOT, answer({ id: `LAP-${id}`, status: "failed", error: "Lost it", ambiguous: true }));
+  const jobs2 = reopen(host, saved);
+  await settle();
+  assert.equal((await listChecks(host, ROOT, `LAP-${id}`)).length, 0);
+  assert.equal(jobs2.list()[0].status, "failed");
+  assert.equal(jobs2.list()[0].ambiguous, true);
+});
+
+test("withdraw race: a running answer that lands while the laptop files its request wins", async () => {
+  const { host, jobs, state } = await setup({ peers: [] });
+  const id = jobs.add(spec());
+  await settle();
+  const rid = `LAP-${id}`;
+  const rn = host.fs.rename;
+  let once = true;
+  host.fs.rename = async (a, b) => {
+    if (once && /finished/i.test(b) && /request/.test(a)) { once = false; await writeAnswer(host, ROOT, answer({ id: rid, progress: 0.1 })); }
+    return rn(a, b);
+  };
+  await withdraw(host, ROOT, jobs.list()[0]);
+  await settle();
+  assert.equal(jobs.list()[0].status, "running");
+  assert.equal(jobs.list()[0].eta, "On the desktop: 10%");
+  state.peers = [peer()];
+  await writeAnswer(host, ROOT, answer({ id: rid, status: "done", file: "S:\\Youtube video ideas\\a.mp4" }));
+  await settle();
+  assert.equal(jobs.list()[0].status, "done");
 });

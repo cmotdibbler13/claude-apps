@@ -369,6 +369,7 @@ async function loadRoot() {
   await refreshRoleNeeded();
   app.host = await rebasedHost(app.rawHost, app.root);
   const host = live;
+  const linkNow = !app.jobs;
   if (!app.jobs) {
     const settings = await loadSettings(app.host, app.root, { computer: app.computer });
     setToolPaths(settings);
@@ -411,10 +412,17 @@ async function loadRoot() {
     app.jobs.onChange((list) => { onJobsChanged(list); render(); });
     app.jobs.onPersistError(() => render());
     app.jobs.restore(saved);
-    await startLink(host, raw);
   }
-  app.films = await scanFilms(host, app.root);
-  render();
+  try {
+    app.films = await scanFilms(host, app.root);
+    render();
+  } finally {
+    // The link to the other computer starts once Films is scanned and never holds Studio opening up on the server
+    // (it still runs after restore, so reconcile and tidy see the restored jobs). Nothing it does escapes loadRoot.
+    if (linkNow) {
+      try { startLink(host, raw).catch((e) => console.error(e)); } catch (e) { console.error(e); }
+    }
+  }
 }
 
 // Boot (and Try again): a failure shows on the Films screen with its message, not only in the console.

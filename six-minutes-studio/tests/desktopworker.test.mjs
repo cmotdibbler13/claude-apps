@@ -288,3 +288,94 @@ test("after a restart an interrupted laptop job is answered, and a filed one is 
   await w.tick();
   assert.deepEqual(calls, []);
 });
+
+test("one failed folder listing never re-claims a done request (the job is made once)", async () => {
+  let starts = 0;
+  const blender = { lane: "gpu", start: async () => { starts++; return { file: "x.mp4" }; } };
+  const { host, jobs, w } = await setup({ runners: { blender } });
+  await send(host, ID);
+  await w.tick(); await settle(); await w.tick();
+  assert.equal((await readAnswer(host, ROOT, ID)).status, "done");
+  const orig = host.fs.list.bind(host.fs);
+  let fail = 1;
+  host.fs.list = async (d) => { if (fail-- > 0) throw new Error("EIO"); return orig(d); };
+  await w.tick(); await settle();
+  host.fs.list = orig;
+  await w.tick(); await settle();
+  assert.equal(starts, 1);
+  assert.equal(jobs.list().length, 1);
+  assert.equal((await readAnswer(host, ROOT, ID)).status, "done");
+});
+
+test("a request that is already a job's request is never claimed again, even with no answer", async () => {
+  const { host, jobs, w } = await setup();
+  jobs.add({ film: "S:\\f", assetId: "A", take: 1, tool: "blender", input: {}, from: "LAPTOP", request: ID });
+  await settle();
+  // its answer went missing; the lane frees up
+  jobs.restore(jobs.list().map((j) => ({ ...j, status: "done" })));
+  await send(host, ID);
+  await w.tick(); await settle();
+  assert.equal(jobs.list().length, 1);
+});
+
+test("Check: the answer never shows failed with the new check name; it goes straight to running", async () => {
+  const { host, jobs, w, ds } = await setup();
+  await send(host, ID);
+  await w.tick(); await settle();
+  jobs.restore(jobs.list().map((j) => ({ ...j, jobRef: "r" })));
+  await settle();
+  ds[1].reject(Object.assign(new Error("lost"), { ambiguous: true }));
+  await settle();
+  assert.equal((await readAnswer(host, ROOT, ID)).status, "failed");
+  const name = await writeCheck(host, ROOT, ID);
+  const written = [];
+  const wr = host.fs.write;
+  host.fs.write = async (p, d) => { if (/answer/.test(p)) written.push(JSON.parse(d)); return wr(p, d); };
+  await w.tick(); await settle();
+  assert.ok(written.length >= 1);
+  for (const a of written) if ((a.checks ?? []).includes(name)) assert.equal(a.status, "running");
+  assert.equal((await readAnswer(host, ROOT, ID)).status, "running");
+});
+
+test("a restarted worker meeting a job whose answer is filed settles it; a failed read does not", async () => {
+  const first = await setup();
+  const { host } = first;
+  await send(host, ID);
+  await send(host, "LAPTOP-j2");
+  await first.w.tick(); await settle();
+  first.ds[0].resolve({ file: "S:\\o.mp4" });
+  await settle();
+  await first.w.tick(); await settle();
+  // j1 filed by both sides
+  await moveMine(host, ROOT, ID, "laptop");
+  await moveMine(host, ROOT, ID, "desktop");
+  const saved = first.jobs.list();
+  first.w.stop();
+  let ctx;
+  const jobs = makeJobs(host, { runners: { blender: { lane: "gpu", start: () => new Promise(() => {}), resume: (_j, c) => { ctx = c; return new Promise(() => {}); } } } });
+  jobs.restore(saved.map((j) => (j.request === "LAPTOP-j2" ? { ...j, jobRef: "r" } : j)));
+  await settle();
+  // One failed read of j2's answer while the restarted worker first meets it.
+  const read = host.fs.read;
+  let failRead = 1;
+  host.fs.read = async (p, ...r) => { if (String(p).includes("LAPTOP-j2.answer") && failRead-- > 0) throw new Error("EIO"); return read(p, ...r); };
+  const calls = [];
+  for (const k of ["read", "exists"]) {
+    const orig = host.fs[k];
+    host.fs[k] = async (p, ...r) => { if (String(p).includes(`${ID}.answer`)) calls.push(k); return orig(p, ...r); };
+  }
+  const w = makeDesktopWorker({ host, root: ROOT, computer: "DESK", jobs, spellings: [], paused: () => false, now: () => host.now() });
+  ctx.progress(0.3); // the worker first meets both jobs here, through a job change
+  await settle();
+  assert.ok(failRead <= 0, "the failed read hit the worker's first look");
+  await w.tick(); await settle();
+  const n = calls.length;
+  ctx.progress(0.5, "1 min");
+  await settle();
+  host.t += 6000;
+  await w.tick(); await settle();
+  assert.equal(calls.length, n, "a filed answer is settled and not read again");
+  const a = await readAnswer(host, ROOT, "LAPTOP-j2");
+  assert.equal(a.progress, 0.5);
+  assert.equal(a.eta, "1 min");
+});

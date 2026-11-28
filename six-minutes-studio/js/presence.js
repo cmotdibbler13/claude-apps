@@ -16,8 +16,10 @@ const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
 export function makePresence(host, { root, computer, role, state }) {
   const dir = join(root, PRESENCE_DIR);
   const memory = new Map(); // file name -> { text, changedAt }
+  // A failed write and a failed read are kept apart, so a good read can't hide a failed beat (or the other way).
+  let beatError = null, readError = null;
   const api = {
-    serverError: null,
+    get serverError() { return beatError ?? readError; },
     async beat() {
       if (computer === UNNAMED) return;
       try {
@@ -25,15 +27,15 @@ export function makePresence(host, { root, computer, role, state }) {
         await host.fs.mkdir(dir);
         const body = { computer, role, at: host.now(), paused: !!s.paused, running: num(s.running), waiting: num(s.waiting), tools: s.tools ?? {} };
         await writeSafely(host, join(dir, `${computer}.json`), JSON.stringify(body, null, 2));
-        api.serverError = null;
-      } catch (e) { api.serverError = String(e?.message ?? e); }
+        beatError = null;
+      } catch (e) { beatError = String(e?.message ?? e); }
     },
     async read() {
       let entries;
       try {
         entries = await host.fs.list(dir);
-        api.serverError = null;
-      } catch (e) { api.serverError = String(e?.message ?? e); return []; }
+        readError = null;
+      } catch (e) { readError = String(e?.message ?? e); return []; }
       const peers = [];
       for (const e of entries) {
         if (e.isFile === false || !/\.json$/i.test(e.name)) continue;

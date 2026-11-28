@@ -134,3 +134,40 @@ test("moving with nothing to move is harmless", async () => {
   await moveMine(h, ROOT, ID, "desktop");
   assert.equal(h.files.size, 0);
 });
+
+test("pendingRequests lists the folder once: a failed listing shows nothing pending, never an answered request", async () => {
+  const h = new FakeHost();
+  await writeRequest(h, ROOT, req(ID));
+  await writeAnswer(h, ROOT, ans(ID));
+  const orig = h.fs.list.bind(h.fs);
+  let calls = 0, fail = 1;
+  h.fs.list = async (d) => { calls++; if (fail-- > 0) throw new Error("EIO"); return orig(d); };
+  assert.deepEqual(await pendingRequests(h, ROOT), []);
+  calls = 0;
+  assert.deepEqual(await pendingRequests(h, ROOT), []);
+  assert.equal(calls, 1);
+});
+
+test("readFinishedAnswer reads a filed answer; none is null", async () => {
+  const { readFinishedAnswer } = await import("../js/queue.js");
+  const h = new FakeHost();
+  assert.equal(await readFinishedAnswer(h, ROOT, ID), null);
+  await writeRequest(h, ROOT, req(ID));
+  await writeAnswer(h, ROOT, ans(ID, { file: "S:\\a.mp4" }));
+  await moveMine(h, ROOT, ID, "laptop");
+  await moveMine(h, ROOT, ID, "desktop");
+  assert.equal((await readFinishedAnswer(h, ROOT, ID)).file, "S:\\a.mp4");
+});
+
+test("requestAnywhere: in the queue, in finished, or nowhere; a failed look throws", async () => {
+  const { requestAnywhere } = await import("../js/queue.js");
+  const h = new FakeHost();
+  await h.fs.mkdir(ROOT);
+  assert.equal(await requestAnywhere(h, ROOT, ID), false);
+  await writeRequest(h, ROOT, req(ID));
+  assert.equal(await requestAnywhere(h, ROOT, ID), true);
+  await moveMine(h, ROOT, ID, "laptop");
+  assert.equal(await requestAnywhere(h, ROOT, ID), true);
+  h.fs.exists = async () => { throw new Error("EIO"); };
+  await assert.rejects(requestAnywhere(h, ROOT, ID));
+});

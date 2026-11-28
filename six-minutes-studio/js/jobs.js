@@ -50,9 +50,11 @@ export function makeJobs(host, { runners = {}, file } = {}) {
   };
   const laneOf = (j) => j.lane ?? runners[j.tool]?.lane ?? "connector";
 
-  function ctxFor(job) {
+  function ctxFor(job, checking = false) {
     return {
       host,
+      // True when this resume is Jon's Check (jobs.check), false for a resume after a restart.
+      checking,
       progress(p, eta) {
         job.progress = p ?? null;
         if (eta !== undefined) job.eta = eta ?? null;
@@ -65,6 +67,8 @@ export function makeJobs(host, { runners = {}, file } = {}) {
   }
 
   async function run(job, how) {
+    const checking = !!job.checkNext;
+    delete job.checkNext;
     job.status = "running";
     job.startedAt = host.now();
     changed();
@@ -73,7 +77,7 @@ export function makeJobs(host, { runners = {}, file } = {}) {
       if (!runner) throw new Error(`No runner for ${job.tool}`);
       const fn = runner[how];
       if (!fn) throw new Error(`${job.tool} cannot ${how}`);
-      const res = await fn.call(runner, job, ctxFor(job));
+      const res = await fn.call(runner, job, ctxFor(job, checking));
       if (res && res.file !== undefined) job.file = res.file;
       if (res && res.meta !== undefined) job.meta = res.meta;
       job.status = "done";
@@ -114,7 +118,7 @@ export function makeJobs(host, { runners = {}, file } = {}) {
         lane: spec.lane ?? runners[spec.tool]?.lane ?? "connector",
         status: "queued", progress: null, eta: null,
       };
-      delete job.file; delete job.meta; delete job.error; delete job.startedAt; delete job.endedAt; delete job.resumeNext; delete job.remote;
+      delete job.file; delete job.meta; delete job.error; delete job.startedAt; delete job.endedAt; delete job.resumeNext; delete job.checkNext; delete job.remote;
       jobs.push(job);
       changed();
       pump();
@@ -135,7 +139,7 @@ export function makeJobs(host, { runners = {}, file } = {}) {
       }
       if (job.status !== "failed" && job.status !== "interrupted") throw new Error(`Job ${id} is ${job.status}, not failed or interrupted`);
       delete job.error; delete job.ambiguous; delete job.endedAt;
-      job.status = "queued"; job.resumeNext = true;
+      job.status = "queued"; job.resumeNext = true; job.checkNext = true;
       changed();
       pump();
     },

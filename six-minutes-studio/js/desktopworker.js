@@ -2,7 +2,7 @@
 // answers withdrawals and Check requests, and files its finished answers. Everything runs one step at a time.
 import { rebaseDeep } from "./rebase.js";
 import {
-  pendingRequests, listAnswers, readAnswer, writeAnswer, hasWithdrawn, listChecks, moveMine, requestFinished,
+  pendingRequests, listAnswers, readAnswer, writeAnswer, hasWithdrawn, listChecks, moveMine, requestFinished, answerInQueue,
 } from "./queue.js";
 
 const PROGRESS_EVERY = 5000;
@@ -53,7 +53,14 @@ export function makeDesktopWorker({ host, root, computer, jobs, spellings = [], 
       let cur = cache.get(job.request);
       if (!cur) {
         const onDisk = await readAnswer(host, root, job.request);
-        if (!onDisk || onDisk.by !== computer) { settled.add(job.request); continue; }
+        if (!onDisk) {
+          // Settled only when the answer is really gone from the queue folder (filed); a failed read tries again later.
+          let there = true;
+          try { there = await answerInQueue(host, root, job.request); } catch { /* can't tell: try again */ }
+          if (!there) settled.add(job.request);
+          continue;
+        }
+        if (onDisk.by !== computer) { settled.add(job.request); continue; }
         cur = { checks: [], ...onDisk };
         cache.set(job.request, cur);
       }
@@ -86,6 +93,9 @@ export function makeDesktopWorker({ host, root, computer, jobs, spellings = [], 
       let pending = await pendingRequests(host, root);
       // Withdrawn before it was claimed: answer and forget it.
       const open = [];
+      // Never take a request twice: one that is already a job here is not new, whatever its answer says.
+      const taken = new Set(jobs.list().filter((j) => j.request).map((j) => j.request.toLowerCase()));
+      pending = pending.filter((r) => !taken.has(r.id.toLowerCase()));
       for (const r of pending) {
         if (await hasWithdrawn(host, root, r.id)) await put({ id: r.id, status: "withdrawn", checks: [] });
         else open.push(r);
@@ -95,11 +105,14 @@ export function makeDesktopWorker({ host, root, computer, jobs, spellings = [], 
         if (a.status !== "failed" || !a.ambiguous) continue;
         const fresh = (await listChecks(host, root, a.id)).filter((n) => !(a.checks ?? []).includes(n));
         if (!fresh.length) continue;
-        await put({ ...a, checks: [...(a.checks ?? []), ...fresh] });
+        // Check the job first, then write one answer: the job's state now plus the new checks, so the laptop
+        // never sees its check answered while the job is still marked failed.
         const job = jobs.list().find((j) => j.request === a.id);
         if (job && (job.status === "failed" || job.status === "interrupted")) {
           try { jobs.check(job.id); } catch { /* refused: the answer stays failed, the check is recorded */ }
         }
+        const after = jobs.list().find((j) => j.request === a.id);
+        await put({ ...a, ...(after ? fromJob(after) : {}), checks: [...(a.checks ?? []), ...fresh] });
       }
       // Claim the next request when the graphics lane is free.
       const busy = jobs.list().some((j) => j.lane === "gpu" && live(j));
